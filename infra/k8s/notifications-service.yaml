@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-service
+  namespace: retainiq
+  labels: { app: notifications-service }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notifications-service }
+  template:
+    metadata:
+      labels: { app: notifications-service }
+    spec:
+      # Allow in-flight messages to finish; the worker drains on SIGTERM.
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: notifications-service
+          image: retainiq/notifications-service:latest
+          command: ["node", "apps/notifications-service/dist/main.js"]
+          ports:
+            - { name: ops, containerPort: 3005 }
+          envFrom:
+            - configMapRef: { name: retainiq-config }
+            - secretRef: { name: retainiq-secrets }
+          env:
+            - { name: HEALTH_PORT, value: "3005" }
+            # Owns the notifications database (deliveries + OrgRecipient read model).
+            - { name: DATABASE_URL, valueFrom: { secretKeyRef: { name: retainiq-db, key: NOTIFICATIONS_DATABASE_URL } } }
+            # Unique consumer name per pod for the consumer group.
+            - { name: CONSUMER_NAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+          livenessProbe:
+            httpGet: { path: /health/live, port: ops }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: ops }
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-service
+  namespace: retainiq
+  labels: { app: notifications-service }
+spec:
+  clusterIP: None
+  selector: { app: notifications-service }
+  ports:
+    - { name: ops, port: 3005, targetPort: ops }
+---
+# Scale on the domain-events stream backlog (consumer-group lag), not CPU.
+# Requires KEDA installed in the cluster.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: notifications-service
+  namespace: retainiq
+spec:
+  scaleTargetRef:
+    name: notifications-service
+  minReplicaCount: 1
+  maxReplicaCount: 20
+  cooldownPeriod: 120
+  triggers:
+    - type: redis-streams
+      metadata:
+        addressFromEnv: REDIS_URL
+        stream: "retainiq.events"
+        consumerGroup: "notifications-service"
+        pendingEntriesCount: "100"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notifications-service
+  namespace: retainiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: notifications-service }

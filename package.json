@@ -1,0 +1,49 @@
+{
+  "name": "retainiq",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RetainIQ AI Workforce Intelligence Platform",
+  "license": "UNLICENSED",
+  "packageManager": "npm@11.8.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build:packages && npm run build:apps",
+    "build:packages": "npm run build -w @retainiq/authz -w @retainiq/config -w @retainiq/contracts -w @retainiq/database -w @retainiq/messaging -w @retainiq/observability -w @retainiq/platform",
+    "build:apps": "npm run build -w @retainiq/identity-service -w @retainiq/activity-ingestion -w @retainiq/event-processor -w @retainiq/analytics-service -w @retainiq/notifications-service",
+    "dev:identity": "npm run start:dev -w @retainiq/identity-service",
+    "dev:ingestion": "npm run start:dev -w @retainiq/activity-ingestion",
+    "lint": "npm run lint --workspaces --if-present",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml,prisma}\"",
+    "typecheck": "npm run build:packages && npm run typecheck -w @retainiq/identity-service -w @retainiq/activity-ingestion -w @retainiq/event-processor -w @retainiq/analytics-service -w @retainiq/notifications-service",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run db:generate -w @retainiq/database",
+    "db:migrate:identity": "npm run db:migrate:identity -w @retainiq/database",
+    "db:migrate:inbox": "npm run db:migrate:inbox -w @retainiq/database",
+    "db:migrate:analytics": "npm run db:migrate:analytics -w @retainiq/database",
+    "db:migrate:notifications": "npm run db:migrate:notifications -w @retainiq/database",
+    "migrate:containers": "docker exec retainiq-identity-service npx prisma migrate deploy --schema packages/database/prisma/identity/schema.prisma && docker exec retainiq-event-processor npx prisma migrate deploy --schema packages/database/prisma/inbox/schema.prisma && docker exec retainiq-analytics-service npx prisma migrate deploy --schema packages/database/prisma/analytics/schema.prisma && docker exec retainiq-notifications-service npx prisma migrate deploy --schema packages/database/prisma/notifications/schema.prisma",
+    "up": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml up -d --build",
+    "down": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml down",
+    "down:clean": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml down -v",
+    "restart": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml restart",
+    "logs": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml logs -f",
+    "ps": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml ps",
+    "up:redis": "docker compose up -d --build",
+    "down:redis": "docker compose down"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.29.0",
+    "@types/node": "^24.0.3",
+    "eslint": "^9.29.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.1"
+  }
+}

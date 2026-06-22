@@ -1,0 +1,80 @@
+# Optional Kafka broker (KRaft, no Zookeeper) + service overrides that switch the
+# whole stack from the default Redis Streams driver to Kafka.
+#
+# Run the full stack ON Kafka (layer this file over the base compose):
+#   docker compose -f docker-compose.yml -f docker-compose.kafka.yml up -d --build
+#
+# Or just start the broker (services stay on Redis):
+#   docker compose -f docker-compose.yml -f docker-compose.kafka.yml up -d kafka
+#
+# Host tools connect at localhost:29092; in-cluster services at kafka:9092.
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: retainiq-kafka
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  # ---- Switch every service to the Kafka driver (merged over the base file) ----
+  identity-service:
+    environment:
+      BROKER_DRIVER: kafka
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  activity-ingestion:
+    environment:
+      BROKER_DRIVER: kafka
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  event-processor:
+    environment:
+      BROKER_DRIVER: kafka
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  analytics-service:
+    environment:
+      BROKER_DRIVER: kafka
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  notifications-service:
+    environment:
+      BROKER_DRIVER: kafka
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+volumes:
+  kafka_data:

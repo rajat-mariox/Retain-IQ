@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: retainiq-config
+  namespace: retainiq
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  PERMISSION_CACHE_DRIVER: "redis"
+  ACCESS_TOKEN_TTL_SECONDS: "900"
+  REFRESH_TOKEN_TTL_DAYS: "30"
+  AUTH_RATE_LIMIT: "10"
+  AUTH_RATE_TTL_SECONDS: "60"
+---
+# Template only. In real environments, sync these from AWS Secrets Manager /
+# SSM via External Secrets Operator — never commit real secrets. Distinct
+# access/refresh secrets are enforced by @retainiq/config at boot.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: retainiq-secrets
+  namespace: retainiq
+type: Opaque
+stringData:
+  REDIS_URL: "redis://HOST:6379"
+  JWT_ACCESS_SECRET: "REPLACE_FROM_SECRETS_MANAGER"
+  JWT_REFRESH_SECRET: "REPLACE_FROM_SECRETS_MANAGER_DIFFERENT"
+---
+# Database-per-service connection strings. Each service maps exactly ONE of these
+# to its own DATABASE_URL (see each Deployment). identity-service additionally reads the
+# notifications DB read-only for the in-app inbox feed (BFF).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: retainiq-db
+  namespace: retainiq
+type: Opaque
+stringData:
+  IDENTITY_DATABASE_URL: "postgresql://identity:PASSWORD@postgres-identity:5432/retainiq-identity?schema=public"
+  INBOX_DATABASE_URL: "postgresql://inbox:PASSWORD@postgres-inbox:5432/retainiq-inbox?schema=public"
+  ANALYTICS_DATABASE_URL: "postgresql://analytics:PASSWORD@postgres-analytics:5432/retainiq-analytics?schema=public"
+  NOTIFICATIONS_DATABASE_URL: "postgresql://notifications:PASSWORD@postgres-notifications:5432/retainiq-notifications?schema=public"

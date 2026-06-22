@@ -1,0 +1,230 @@
+services:
+  # ---- One PostgreSQL instance per service (database-per-service) ----
+  postgres-identity:
+    image: postgres:16-alpine
+    container_name: retainiq-identity-db
+    environment:
+      POSTGRES_DB: retainiq-identity
+      POSTGRES_USER: identity
+      POSTGRES_PASSWORD: identity
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_identity_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U identity -d retainiq-identity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-inbox:
+    image: postgres:16-alpine
+    container_name: retainiq-inbox-db
+    environment:
+      POSTGRES_DB: retainiq-inbox
+      POSTGRES_USER: inbox
+      POSTGRES_PASSWORD: inbox
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_inbox_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inbox -d retainiq-inbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-analytics:
+    image: postgres:16-alpine
+    container_name: retainiq-analytics-db
+    environment:
+      POSTGRES_DB: retainiq-analytics
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics -d retainiq-analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-notifications:
+    image: postgres:16-alpine
+    container_name: retainiq-notifications-db
+    environment:
+      POSTGRES_DB: retainiq-notifications
+      POSTGRES_USER: notifications
+      POSTGRES_PASSWORD: notifications
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_notifications_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifications -d retainiq-notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: retainiq-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---- Migrator (runs once, applies each service's migrations, then exits) ----
+  # App services wait for this to complete successfully before starting, so a
+  # fresh `docker compose up` is fully provisioned with no manual steps.
+  migrator:
+    build:
+      context: .
+      dockerfile: apps/identity-service/Dockerfile
+    image: retainiq/identity-service
+    container_name: retainiq-migrator
+    environment:
+      IDENTITY_DATABASE_URL: postgresql://identity:identity@postgres-identity:5432/retainiq-identity?schema=public
+      INBOX_DATABASE_URL: postgresql://inbox:inbox@postgres-inbox:5432/retainiq-inbox?schema=public
+      ANALYTICS_DATABASE_URL: postgresql://analytics:analytics@postgres-analytics:5432/retainiq-analytics?schema=public
+      NOTIFICATIONS_DATABASE_URL: postgresql://notifications:notifications@postgres-notifications:5432/retainiq-notifications?schema=public
+    # $$VAR is escaped so the container shell (not compose) expands it.
+    command:
+      - sh
+      - -c
+      - >
+        DATABASE_URL=$$IDENTITY_DATABASE_URL npx prisma migrate deploy --schema packages/database/prisma/identity/schema.prisma &&
+        DATABASE_URL=$$INBOX_DATABASE_URL npx prisma migrate deploy --schema packages/database/prisma/inbox/schema.prisma &&
+        DATABASE_URL=$$ANALYTICS_DATABASE_URL npx prisma migrate deploy --schema packages/database/prisma/analytics/schema.prisma &&
+        DATABASE_URL=$$NOTIFICATIONS_DATABASE_URL npx prisma migrate deploy --schema packages/database/prisma/notifications/schema.prisma
+    restart: "no"
+    depends_on:
+      postgres-identity:
+        condition: service_healthy
+      postgres-inbox:
+        condition: service_healthy
+      postgres-analytics:
+        condition: service_healthy
+      postgres-notifications:
+        condition: service_healthy
+
+  # ---- Application services (independent deployables, one image each) ----
+  # Each connects ONLY to its own database. No service shares a schema.
+  identity-service:
+    build:
+      context: .
+      dockerfile: apps/identity-service/Dockerfile
+    image: retainiq/identity-service
+    container_name: retainiq-identity-service
+    environment:
+      DATABASE_URL: postgresql://identity:identity@postgres-identity:5432/retainiq-identity?schema=public
+      # Read-only BFF binding to the notifications service DB (in-app inbox feed).
+      NOTIFICATIONS_DATABASE_URL: postgresql://notifications:notifications@postgres-notifications:5432/retainiq-notifications?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      PORT: "3001"
+    ports:
+      - "3001:3001"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres-identity:
+        condition: service_healthy
+      postgres-notifications:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  activity-ingestion:
+    build:
+      context: .
+      dockerfile: apps/activity-ingestion/Dockerfile
+    image: retainiq/activity-ingestion
+    container_name: retainiq-activity-ingestion
+    environment:
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
+      PORT: "3002"
+    ports:
+      - "3002:3002"
+    depends_on:
+      identity-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  event-processor:
+    build:
+      context: .
+      dockerfile: apps/event-processor/Dockerfile
+    image: retainiq/event-processor
+    container_name: retainiq-event-processor
+    environment:
+      DATABASE_URL: postgresql://inbox:inbox@postgres-inbox:5432/retainiq-inbox?schema=public
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: "3003"
+    ports:
+      - "3003:3003"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres-inbox:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: apps/analytics-service/Dockerfile
+    image: retainiq/analytics-service
+    container_name: retainiq-analytics-service
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres-analytics:5432/retainiq-analytics?schema=public
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: "3004"
+    ports:
+      - "3004:3004"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres-analytics:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  notifications-service:
+    build:
+      context: .
+      dockerfile: apps/notifications-service/Dockerfile
+    image: retainiq/notifications-service
+    container_name: retainiq-notifications-service
+    environment:
+      DATABASE_URL: postgresql://notifications:notifications@postgres-notifications:5432/retainiq-notifications?schema=public
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: "3005"
+    ports:
+      - "3005:3005"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres-notifications:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_identity_data:
+  postgres_inbox_data:
+  postgres_analytics_data:
+  postgres_notifications_data:
+  redis_data:

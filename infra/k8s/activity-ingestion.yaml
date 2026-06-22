@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: activity-ingestion
+  namespace: retainiq
+  labels: { app: activity-ingestion }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: activity-ingestion }
+  template:
+    metadata:
+      labels: { app: activity-ingestion }
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: activity-ingestion
+          image: retainiq/activity-ingestion:latest
+          command: ["node", "apps/activity-ingestion/dist/main.js"]
+          ports:
+            - { name: http, containerPort: 3002 }
+          envFrom:
+            - configMapRef: { name: retainiq-config }
+            - secretRef: { name: retainiq-secrets }
+          env:
+            - { name: PORT, value: "3002" }
+          resources:
+            requests: { cpu: "250m", memory: "192Mi" }
+            limits: { cpu: "1", memory: "384Mi" }
+          startupProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /v1/health/ready, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: activity-ingestion
+  namespace: retainiq
+  labels: { app: activity-ingestion }
+spec:
+  selector: { app: activity-ingestion }
+  ports:
+    - { name: http, port: 3002, targetPort: http }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: activity-ingestion
+  namespace: retainiq
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: activity-ingestion
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: activity-ingestion
+  namespace: retainiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: activity-ingestion }

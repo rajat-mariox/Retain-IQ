@@ -1,0 +1,28 @@
+// inbox database — owned by apps/events-worker.
+// Idempotent inbox only: a (eventId, consumer) pair is recorded the first time an
+// event is processed; duplicate deliveries hit the unique constraint and are skipped.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/inbox"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ConsumedEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  eventId    String   @db.Uuid
+  consumer   String
+  stream     String
+  eventType  String
+  orgId      String?  @db.Uuid
+  payload    Json
+  consumedAt DateTime @default(now())
+
+  @@unique([eventId, consumer])
+  @@index([orgId, consumedAt])
+  @@index([eventType, consumedAt])
+}

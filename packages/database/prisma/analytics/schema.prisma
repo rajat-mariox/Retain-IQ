@@ -1,0 +1,48 @@
+// analytics database — owned by apps/analytics-worker.
+// Holds its own idempotent inbox (so the inbox-write and fact-upsert commit in one
+// local transaction) plus the precomputed daily productivity read model.
+// Postgres for now; EmployeeDayFact mirrors a ClickHouse ReplacingMergeTree fact.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/analytics"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ConsumedEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  eventId    String   @db.Uuid
+  consumer   String
+  stream     String
+  eventType  String
+  orgId      String?  @db.Uuid
+  payload    Json
+  consumedAt DateTime @default(now())
+
+  @@unique([eventId, consumer])
+  @@index([orgId, consumedAt])
+  @@index([eventType, consumedAt])
+}
+
+model EmployeeDayFact {
+  id                String   @id @default(uuid()) @db.Uuid
+  orgId             String   @db.Uuid
+  employeeId        String   @db.Uuid
+  day               DateTime @db.Date
+  activeSeconds     Int      @default(0)
+  idleSeconds       Int      @default(0)
+  productiveSeconds Int      @default(0)
+  eventCount        Int      @default(0)
+  productivityScore Float    @default(0)
+  focusScore        Float    @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([orgId, employeeId, day])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+}

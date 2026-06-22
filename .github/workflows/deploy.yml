@@ -1,0 +1,64 @@
+# Deploy pipeline (skeleton). Requires repo/org secrets and GitHub Environments
+# (`staging`, `production`) with protection rules + required reviewers.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write, id-token: write }
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      # - configure kube creds (aws-actions/configure-aws-credentials via OIDC) ...
+      - name: Run DB migrations (expand phase, backward-compatible)
+        run: echo "kubectl apply -f infra/k8s/migrate-job.yaml && kubectl -n retainiq wait --for=condition=complete job/db-migrate"
+      - name: Deploy
+        run: echo "kustomize edit set image retainiq/app=${IMAGE}:${{ needs.build.outputs.tag }} && kubectl apply -k infra/k8s"
+      - name: Smoke test
+        run: echo "curl -fsS https://staging.retainiq/v1/health/ready"
+
+  production:
+    needs: [build, staging]
+    runs-on: ubuntu-latest
+    environment: production # protected: requires manual approval
+    steps:
+      - uses: actions/checkout@v4
+      - name: Canary (10%) then promote
+        run: echo "argo rollouts / kubectl canary -> verify SLOs -> promote"
+      - name: Smoke test
+        run: echo "curl -fsS https://app.retainiq/v1/health/ready"

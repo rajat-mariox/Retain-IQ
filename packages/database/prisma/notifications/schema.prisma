@@ -1,0 +1,64 @@
+// notifications database — owned by apps/notifications-service.
+// Holds delivered notifications plus a LOCAL read model of org members/roles
+// (OrgRecipient), projected from `org.member.upserted` events published by the
+// identity service. The worker resolves recipients from this local copy instead
+// of querying the identity database directly (database-per-service: no cross-DB reads).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/notifications"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  PUSH
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  READ
+  DEFERRED
+  SUPPRESSED
+  FAILED
+}
+
+model Notification {
+  id              String              @id @default(uuid()) @db.Uuid
+  orgId           String              @db.Uuid
+  recipientUserId String              @db.Uuid
+  channel         NotificationChannel
+  type            String
+  title           String
+  body            String
+  status          NotificationStatus  @default(PENDING)
+  dedupeKey       String              @unique
+  sourceEventId   String?             @db.Uuid
+  sentAt          DateTime?
+  readAt          DateTime?
+  createdAt       DateTime            @default(now())
+
+  @@index([orgId, recipientUserId, status, createdAt])
+  @@index([orgId, createdAt])
+}
+
+// Local projection of org memberships, kept in sync from identity domain events.
+// Used to resolve notification recipients (e.g. org admins) without reaching into
+// the identity database. One row per (orgId, userId).
+model OrgRecipient {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @db.Uuid
+  userId    String   @db.Uuid
+  roleName  String
+  status    String   @default("ACTIVE")
+  updatedAt DateTime @default(now())
+
+  @@unique([orgId, userId])
+  @@index([orgId, status, roleName])
+}
