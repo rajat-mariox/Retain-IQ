@@ -3,10 +3,10 @@ import { JwtService } from "@nestjs/jwt";
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "@retainiq/config";
 import type { AccessTokenClaims, AuthTokens } from "@retainiq/contracts";
+import { TokenDenylist } from "@retainiq/platform";
 import { generateRefreshToken, hashRefreshToken } from "../../common/crypto/refresh-token.util.js";
 import { getRequestContext } from "../../common/context/request-context.store.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
-import { TokenDenylist } from "../../common/security/token-denylist.js";
 
 const config = loadConfig();
 const REFRESH_TTL_MS = config.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000;

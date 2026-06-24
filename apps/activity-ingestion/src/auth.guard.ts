@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import type { AccessTokenClaims } from "@retainiq/contracts";
+import { TokenDenylist } from "@retainiq/platform";
 
 type IngestRequest = {
   headers: Record<string, string | undefined>;
@@ -20,7 +21,10 @@ type IngestRequest = {
  */
 @Injectable()
 export class IngestAuthGuard implements CanActivate {
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly denylist: TokenDenylist,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<IngestRequest>();
@@ -29,13 +33,19 @@ export class IngestAuthGuard implements CanActivate {
       throw new UnauthorizedException("Authentication is required.");
     }
 
+    let claims: AccessTokenClaims & { iat?: number };
     try {
-      const claims = await this.jwtService.verifyAsync<AccessTokenClaims>(token);
-      request.orgId = claims.orgId;
+      claims = await this.jwtService.verifyAsync<AccessTokenClaims & { iat?: number }>(token);
     } catch {
       throw new UnauthorizedException("Invalid or expired access token.");
     }
 
+    // Honour logout revocation from identity-service via the shared Redis denylist.
+    if (await this.denylist.isRevoked(claims.jti, claims.sub, claims.iat)) {
+      throw new UnauthorizedException("Session has been logged out.");
+    }
+
+    request.orgId = claims.orgId;
     return true;
   }
 }

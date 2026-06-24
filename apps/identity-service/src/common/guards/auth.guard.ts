@@ -1,8 +1,8 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import type { AccessTokenClaims } from "@retainiq/contracts";
+import { TokenDenylist } from "@retainiq/platform";
 import { requestContextStorage } from "../context/request-context.store.js";
-import { TokenDenylist } from "../security/token-denylist.js";
 
 /**
  * Authenticates requests via a Bearer access JWT and populates the request

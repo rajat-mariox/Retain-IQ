@@ -2,6 +2,7 @@ import { Global, Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
 import { ThrottlerModule } from "@nestjs/throttler";
 import { loadConfig } from "@retainiq/config";
+import { TokenDenylist } from "@retainiq/platform";
 import { Redis } from "ioredis";
 import { AuditService } from "../audit/audit.service.js";
 import { AuthGuard } from "../guards/auth.guard.js";
@@ -10,7 +11,6 @@ import { TenantGuard } from "../guards/tenant.guard.js";
 import { PermissionBundleService } from "./permission-bundle.service.js";
 import { InMemoryPermissionCache, PermissionCache } from "./permission-cache.js";
 import { RedisPermissionCache } from "./redis-permission-cache.js";
-import { TokenDenylist } from "./token-denylist.js";
 
 const config = loadConfig();
 
