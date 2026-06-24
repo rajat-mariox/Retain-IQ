@@ -97,6 +97,9 @@ model Session {
   membershipId     String?       @db.Uuid
   orgId            String?       @db.Uuid
   refreshTokenHash String        @unique
+  // jti of the access token minted with this session. On logout we denylist it
+  // so the still-valid access JWT is rejected immediately, not just at expiry.
+  accessTokenId    String?       @db.Uuid
   status           SessionStatus @default(ACTIVE)
   ipAddress        String?
   userAgent        String?

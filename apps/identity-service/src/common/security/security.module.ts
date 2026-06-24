@@ -10,6 +10,7 @@ import { TenantGuard } from "../guards/tenant.guard.js";
 import { PermissionBundleService } from "./permission-bundle.service.js";
 import { InMemoryPermissionCache, PermissionCache } from "./permission-cache.js";
 import { RedisPermissionCache } from "./redis-permission-cache.js";
+import { TokenDenylist } from "./token-denylist.js";
 
 const config = loadConfig();
 
@@ -50,6 +51,20 @@ const config = loadConfig();
         return new InMemoryPermissionCache();
       },
     },
+    {
+      provide: TokenDenylist,
+      useFactory: (): TokenDenylist => {
+        // Dedicated lazy Redis client (mirrors the permission cache). REDIS_URL
+        // is always configured for identity-service; the denylist fails open if
+        // the connection is not ready.
+        const redis = new Redis(config.REDIS_URL, {
+          maxRetriesPerRequest: 2,
+          lazyConnect: true,
+        });
+        void redis.connect().catch(() => undefined);
+        return new TokenDenylist(redis, config.ACCESS_TOKEN_TTL_SECONDS);
+      },
+    },
   ],
   exports: [
     JwtModule,
@@ -59,6 +74,7 @@ const config = loadConfig();
     PermissionGuard,
     PermissionBundleService,
     AuditService,
+    TokenDenylist,
   ],
 })
 export class SecurityModule {}

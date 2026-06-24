@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { JwtService } from "@nestjs/jwt";
 import type { AccessTokenClaims } from "@retainiq/contracts";
 import { requestContextStorage } from "../context/request-context.store.js";
+import { TokenDenylist } from "../security/token-denylist.js";
 
 /**
  * Authenticates requests via a Bearer access JWT and populates the request
@@ -10,7 +11,10 @@ import { requestContextStorage } from "../context/request-context.store.js";
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly denylist: TokenDenylist,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<{
@@ -22,11 +26,16 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException("Authentication is required.");
     }
 
-    let claims: AccessTokenClaims;
+    let claims: AccessTokenClaims & { iat?: number };
     try {
-      claims = await this.jwtService.verifyAsync<AccessTokenClaims>(token);
+      claims = await this.jwtService.verifyAsync<AccessTokenClaims & { iat?: number }>(token);
     } catch {
       throw new UnauthorizedException("Invalid or expired access token.");
+    }
+
+    // Reject tokens revoked by logout before their natural expiry.
+    if (await this.denylist.isRevoked(claims.jti, claims.sub, claims.iat)) {
+      throw new UnauthorizedException("Session has been logged out.");
     }
 
     const store = requestContextStorage.getStore();

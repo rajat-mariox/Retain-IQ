@@ -47,13 +47,21 @@ export const logoutSchema = z.object({
 
 export type LogoutInput = z.infer<typeof logoutSchema>;
 
-/** Claims embedded in the short-lived access JWT. */
+/**
+ * Claims embedded in the short-lived access JWT. `jti`/`sid` are stamped by the
+ * token service at signing time (the service layer builds only the principal
+ * fields), so they are optional on the constructed shape but always present on a
+ * verified token. `jti` is the per-token id used for denylist revocation; `sid`
+ * is the backing refresh-session id.
+ */
 export type AccessTokenClaims = {
   sub: string; // userId
   orgId: string;
   membershipId: string;
   role: string;
   permissionsVersion: number;
+  jti?: string;
+  sid?: string;
 };
 
 export type AuthTokens = {

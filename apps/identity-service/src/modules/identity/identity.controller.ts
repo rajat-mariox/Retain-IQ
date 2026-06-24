@@ -45,6 +45,15 @@ export class IdentityController {
     await this.identityService.logout(body.refreshToken);
   }
 
+  /** Logout everywhere: revokes every active session for the authenticated user. */
+  @Post("logout-all")
+  @HttpCode(204)
+  @UseGuards(AuthGuard)
+  async logoutAll() {
+    const context = requireTenantContext();
+    await this.identityService.logoutAll(context.userId, context.orgId);
+  }
+
   @Get("me")
   @UseGuards(AuthGuard)
   me() {

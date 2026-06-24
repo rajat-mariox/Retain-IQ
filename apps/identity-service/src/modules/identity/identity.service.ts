@@ -203,8 +203,31 @@ export class IdentityService {
     return this.tokenService.issue(claims);
   }
 
+  /** Single-session logout: revokes the refresh session and denylists its access token. */
   async logout(rawRefreshToken: string): Promise<void> {
-    await this.tokenService.revoke(rawRefreshToken);
+    const revoked = await this.tokenService.revoke(rawRefreshToken);
+    if (revoked?.orgId) {
+      await this.audit.record({
+        orgId: revoked.orgId,
+        actorUserId: revoked.userId,
+        action: "auth.logout",
+        resourceType: "session",
+        resourceId: revoked.userId,
+      });
+    }
+  }
+
+  /** Logout everywhere: revokes all of the user's active sessions and access tokens. */
+  async logoutAll(userId: string, orgId: string): Promise<void> {
+    const count = await this.tokenService.revokeAllForUser(userId);
+    await this.audit.record({
+      orgId,
+      actorUserId: userId,
+      action: "auth.logout.all",
+      resourceType: "session",
+      resourceId: userId,
+      metadata: { sessionsRevoked: count },
+    });
   }
 
   /** Returns the current principal's identity, membership, and permissions. */
