@@ -10,25 +10,27 @@
     "npm": ">=10.0.0"
   },
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "backend/apps/*",
+    "backend/packages/*",
+    "frontend/*"
   ],
   "scripts": {
     "build": "npm run build:packages && npm run build:apps",
     "build:packages": "npm run build -w @retainiq/authz -w @retainiq/config -w @retainiq/contracts -w @retainiq/database -w @retainiq/messaging -w @retainiq/observability -w @retainiq/platform",
-    "build:apps": "npm run build -w @retainiq/identity-service -w @retainiq/activity-ingestion -w @retainiq/event-processor -w @retainiq/analytics-service -w @retainiq/notifications-service",
+    "build:apps": "npm run build -w @retainiq/identity-service -w @retainiq/activity-ingestion -w @retainiq/event-processor -w @retainiq/analytics-service -w @retainiq/notifications-service -w @retainiq/billing-service",
     "dev:identity": "npm run start:dev -w @retainiq/identity-service",
     "dev:ingestion": "npm run start:dev -w @retainiq/activity-ingestion",
     "lint": "npm run lint --workspaces --if-present",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml,prisma}\"",
-    "typecheck": "npm run build:packages && npm run typecheck -w @retainiq/identity-service -w @retainiq/activity-ingestion -w @retainiq/event-processor -w @retainiq/analytics-service -w @retainiq/notifications-service",
+    "typecheck": "npm run build:packages && npm run typecheck -w @retainiq/identity-service -w @retainiq/activity-ingestion -w @retainiq/event-processor -w @retainiq/analytics-service -w @retainiq/notifications-service -w @retainiq/billing-service",
     "test": "npm run test --workspaces --if-present",
     "db:generate": "npm run db:generate -w @retainiq/database",
     "db:migrate:identity": "npm run db:migrate:identity -w @retainiq/database",
     "db:migrate:inbox": "npm run db:migrate:inbox -w @retainiq/database",
     "db:migrate:analytics": "npm run db:migrate:analytics -w @retainiq/database",
     "db:migrate:notifications": "npm run db:migrate:notifications -w @retainiq/database",
-    "migrate:containers": "docker exec retainiq-identity-service npx prisma migrate deploy --schema packages/database/prisma/identity/schema.prisma && docker exec retainiq-event-processor npx prisma migrate deploy --schema packages/database/prisma/inbox/schema.prisma && docker exec retainiq-analytics-service npx prisma migrate deploy --schema packages/database/prisma/analytics/schema.prisma && docker exec retainiq-notifications-service npx prisma migrate deploy --schema packages/database/prisma/notifications/schema.prisma",
+    "db:migrate:billing": "npm run db:migrate:billing -w @retainiq/database",
+    "migrate:containers": "docker exec retainiq-identity-service npx prisma migrate deploy --schema backend/packages/database/prisma/identity/schema.prisma && docker exec retainiq-event-processor npx prisma migrate deploy --schema backend/packages/database/prisma/inbox/schema.prisma && docker exec retainiq-analytics-service npx prisma migrate deploy --schema backend/packages/database/prisma/analytics/schema.prisma && docker exec retainiq-notifications-service npx prisma migrate deploy --schema backend/packages/database/prisma/notifications/schema.prisma && docker exec retainiq-billing-service npx prisma migrate deploy --schema backend/packages/database/prisma/billing/schema.prisma",
     "up": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml up -d --build",
     "down": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml down",
     "down:clean": "docker compose -f docker-compose.yml -f docker-compose.kafka.yml down -v",

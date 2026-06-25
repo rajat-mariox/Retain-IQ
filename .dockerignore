@@ -8,3 +8,6 @@ node_modules
 .env.*
 !.env.example
 docs
+
+# Frontend app is not part of any backend image
+frontend

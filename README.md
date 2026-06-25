@@ -8,16 +8,16 @@ The repo is an npm-workspace monorepo that has taken its first microservices
 decomposition step: a transactional core plus an extracted async event path
 (see [Microservices Topology](docs/architecture/07-microservices-topology.md)).
 
-Services (`apps/*`):
+Services (`backend/apps/*`):
 
-- **identity-service** (`apps/identity-service`) — NestJS OLTP API: identity, tenancy, RBAC, employees;
+- **identity-service** (`backend/apps/identity-service`) — NestJS OLTP API: identity, tenancy, RBAC, employees;
   emits domain events via a transactional outbox + relay.
-- **activity-ingestion** (`apps/activity-ingestion`) — NestJS high-volume activity
+- **activity-ingestion** (`backend/apps/activity-ingestion`) — NestJS high-volume activity
   intake; publishes to the broker, no DB access.
-- **event-processor** (`apps/event-processor`) — Node consumer-group worker; projects
+- **event-processor** (`backend/apps/event-processor`) — Node consumer-group worker; projects
   events into the `ConsumedEvent` idempotent inbox.
 
-Shared packages (`packages/*`): `contracts`, `messaging` (pluggable broker),
+Shared packages (`backend/packages/*`): `contracts`, `messaging` (pluggable broker),
 `authz`, `config`, `observability`, `platform`, `database` (Prisma). PostgreSQL +
 Redis + all services run via Docker Compose; GitHub Actions CI builds/typechecks/
 lints/tests the whole workspace.
@@ -82,7 +82,7 @@ npm run db:generate
 npm run db:migrate:identity && npm run db:migrate:inbox && npm run db:migrate:analytics && npm run db:migrate:notifications
 npm run dev:identity     # identity-service   on :3001
 npm run dev:ingestion    # activity-ingestion on :3002
-node apps/event-processor/dist/main.js   # after `npm run build`
+node backend/apps/event-processor/dist/main.js   # after `npm run build`
 ```
 
 > Host `npm run dev:*` needs port `5432` free — stop the native PostgreSQL service if it conflicts,
@@ -105,8 +105,8 @@ Prometheus at `http://localhost:9090`.
 ### Kubernetes / production
 
 Manifests (Deployments with liveness/readiness/startup probes, HPA, PDB, KEDA
-autoscaling on stream lag, ServiceMonitors) live in [infra/k8s/](infra/k8s/);
-Terraform skeleton in [infra/terraform/](infra/terraform/); deploy pipeline in
+autoscaling on stream lag, ServiceMonitors) live in [backend/infra/k8s/](backend/infra/k8s/);
+Terraform skeleton in [backend/infra/terraform/](backend/infra/terraform/); deploy pipeline in
 [.github/workflows/deploy.yml](.github/workflows/deploy.yml). See
 [Production Operations](docs/architecture/08-production-operations.md).
 

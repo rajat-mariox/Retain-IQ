@@ -1,0 +1,414 @@
+// identity database — owned by apps/api (core-api).
+// Tenancy, auth, RBAC, employees, audit, idempotency, and the transactional outbox.
+// No other service may connect to this database; cross-service reads go via events.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/identity"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DELETED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  REMOVED
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  NOTICE_PERIOD
+  EXITED
+  SUSPENDED
+}
+
+enum IdempotencyStatus {
+  STARTED
+  COMPLETED
+  FAILED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+enum SessionStatus {
+  ACTIVE
+  ROTATED
+  REVOKED
+  EXPIRED
+}
+
+model Organization {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String    @unique
+  status    OrgStatus @default(ACTIVE)
+  region    String    @default("ap-south-1")
+  timezone  String    @default("Asia/Kolkata")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  memberships OrganizationMembership[]
+  employees   Employee[]
+  roles       Role[]
+  auditEvents AuditEvent[]
+  teams       Team[]
+  projects    Project[]
+  // Billing (Plan/Subscription/Invoice) lives in billing-service / billing-db.
+
+  @@index([status])
+  @@index([region, status])
+}
+
+model User {
+  id                 String     @id @default(uuid()) @db.Uuid
+  email              String     @unique
+  passwordHash       String?
+  status             UserStatus @default(ACTIVE)
+  mfaEnabled         Boolean    @default(false)
+  // Set when a temp password is issued (invite/create); forces a password
+  // change on first login before the rest of the app is accessible.
+  mustChangePassword Boolean    @default(false)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  memberships OrganizationMembership[]
+  sessions    Session[]
+}
+
+model Session {
+  id               String        @id @default(uuid()) @db.Uuid
+  userId           String        @db.Uuid
+  membershipId     String?       @db.Uuid
+  orgId            String?       @db.Uuid
+  refreshTokenHash String        @unique
+  // jti of the access token minted with this session. On logout we denylist it
+  // so the still-valid access JWT is rejected immediately, not just at expiry.
+  accessTokenId    String?       @db.Uuid
+  status           SessionStatus @default(ACTIVE)
+  ipAddress        String?
+  userAgent        String?
+  expiresAt        DateTime
+  lastUsedAt       DateTime      @default(now())
+  rotatedAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@index([orgId, status])
+}
+
+model OrganizationMembership {
+  id         String           @id @default(uuid()) @db.Uuid
+  orgId      String           @db.Uuid
+  userId     String           @db.Uuid
+  employeeId String?          @db.Uuid
+  roleId     String           @db.Uuid
+  status     MembershipStatus @default(ACTIVE)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  user     User         @relation(fields: [userId], references: [id])
+  employee Employee?    @relation(fields: [employeeId], references: [id])
+  role     Role         @relation(fields: [roleId], references: [id])
+
+  @@unique([orgId, userId])
+  @@index([userId, status])
+  @@index([orgId, status])
+  @@index([orgId, roleId])
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  name        String
+  description String?
+  permissions String[]
+  isSystem    Boolean  @default(false)
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org         Organization             @relation(fields: [orgId], references: [id])
+  memberships OrganizationMembership[]
+
+  @@unique([orgId, name])
+  @@index([orgId, isSystem])
+}
+
+model Employee {
+  id           String         @id @default(uuid()) @db.Uuid
+  orgId        String         @db.Uuid
+  employeeCode String?
+  email        String?
+  firstName    String
+  lastName     String
+  department   String?
+  title        String?
+  departmentId String?        @db.Uuid
+  teamId       String?        @db.Uuid
+  managerId    String?        @db.Uuid
+  status       EmployeeStatus @default(ACTIVE)
+  joinedAt     DateTime?
+  exitedAt     DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  createdBy    String?        @db.Uuid
+  updatedBy    String?        @db.Uuid
+
+  org         Organization             @relation(fields: [orgId], references: [id])
+  memberships OrganizationMembership[]
+  attendance  AttendanceRecord[]
+
+  @@unique([orgId, employeeCode])
+  @@index([orgId, email])
+  @@index([orgId, status])
+  @@index([orgId, departmentId, status])
+  @@index([orgId, teamId, status])
+  @@index([orgId, managerId, status])
+  @@index([orgId, createdAt])
+}
+
+model AuditEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  actorUserId  String?  @db.Uuid
+  action       String
+  resourceType String
+  resourceId   String?
+  ipAddress    String?
+  userAgent    String?
+  before       Json?
+  after        Json?
+  metadata     Json?
+  occurredAt   DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, occurredAt])
+  @@index([orgId, action, occurredAt])
+  @@index([orgId, resourceType, resourceId])
+}
+
+model IdempotencyRecord {
+  id           String            @id @default(uuid()) @db.Uuid
+  orgId        String            @db.Uuid
+  key          String
+  requestHash  String
+  status       IdempotencyStatus
+  responseCode Int?
+  responseBody Json?
+  lockedUntil  DateTime?
+  createdAt    DateTime          @default(now())
+  expiresAt    DateTime
+
+  @@unique([orgId, key])
+  @@index([orgId, expiresAt])
+  @@index([status, lockedUntil])
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  orgId         String?      @db.Uuid
+  topic         String
+  eventType     String
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  nextRunAt     DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, nextRunAt])
+  @@index([orgId, createdAt])
+  @@index([topic, status])
+}
+
+// ---------------------------------------------------------------------------
+// Platform (super-admin) identity — a cross-tenant principal that is NOT a
+// member of any organization. Kept in its own table with its own token type so
+// platform access can never be confused with org-scoped access.
+// ---------------------------------------------------------------------------
+
+enum PlatformRole {
+  SUPER_ADMIN
+  ADMIN
+}
+
+model PlatformAdmin {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  passwordHash String
+  name         String
+  role         PlatformRole @default(SUPER_ADMIN)
+  status       UserStatus   @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  sessions PlatformAdminSession[]
+}
+
+model PlatformAdminSession {
+  id               String        @id @default(uuid()) @db.Uuid
+  adminId          String        @db.Uuid
+  refreshTokenHash String        @unique
+  // jti of the access token minted with this session, denylisted on logout.
+  accessTokenId    String?       @db.Uuid
+  status           SessionStatus @default(ACTIVE)
+  ipAddress        String?
+  userAgent        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  rotatedAt        DateTime?
+  createdAt        DateTime      @default(now())
+
+  admin PlatformAdmin @relation(fields: [adminId], references: [id])
+
+  @@index([adminId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Attendance — daily check-in/out per employee. One row per (org, employee, day);
+// the org-admin and platform-admin views roll these up (present/late/absent,
+// attendance rate, worked hours).
+// ---------------------------------------------------------------------------
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  ABSENT
+  ON_LEAVE
+}
+
+model AttendanceRecord {
+  id          String           @id @default(uuid()) @db.Uuid
+  orgId       String           @db.Uuid
+  employeeId  String           @db.Uuid
+  day         DateTime         @db.Date
+  checkInAt   DateTime?
+  checkOutAt  DateTime?
+  status      AttendanceStatus @default(PRESENT)
+  workMinutes Int              @default(0)
+  source      String           @default("web")
+  ipAddress   String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([orgId, employeeId, day])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+}
+
+
+// ---------------------------------------------------------------------------
+// Projects & Teams — org-facing work management. Managers create projects and
+// assign tasks; the org dashboard aggregates status/progress.
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Team {
+  id             String   @id @default(uuid()) @db.Uuid
+  orgId          String   @db.Uuid
+  name           String
+  description    String?
+  leadEmployeeId String?  @db.Uuid
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  projects Project[]
+
+  @@index([orgId])
+}
+
+model Project {
+  id              String        @id @default(uuid()) @db.Uuid
+  orgId           String        @db.Uuid
+  name            String
+  description     String?
+  status          ProjectStatus @default(ACTIVE)
+  ownerEmployeeId String?       @db.Uuid
+  teamId          String?       @db.Uuid
+  startDate       DateTime?
+  dueDate         DateTime?
+  progress        Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  org   Organization @relation(fields: [orgId], references: [id])
+  team  Team?        @relation(fields: [teamId], references: [id])
+  tasks Task[]
+
+  @@index([orgId, status])
+}
+
+model Task {
+  id                 String       @id @default(uuid()) @db.Uuid
+  orgId              String       @db.Uuid
+  projectId          String       @db.Uuid
+  title              String
+  description        String?
+  status             TaskStatus   @default(TODO)
+  priority           TaskPriority @default(MEDIUM)
+  assigneeEmployeeId String?      @db.Uuid
+  dueDate            DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([projectId, status])
+  @@index([assigneeEmployeeId, status])
+}

@@ -46,9 +46,9 @@ jobs:
       - uses: actions/checkout@v4
       # - configure kube creds (aws-actions/configure-aws-credentials via OIDC) ...
       - name: Run DB migrations (expand phase, backward-compatible)
-        run: echo "kubectl apply -f infra/k8s/migrate-job.yaml && kubectl -n retainiq wait --for=condition=complete job/db-migrate"
+        run: echo "kubectl apply -f backend/infra/k8s/migrate-job.yaml && kubectl -n retainiq wait --for=condition=complete job/db-migrate"
       - name: Deploy
-        run: echo "kustomize edit set image retainiq/app=${IMAGE}:${{ needs.build.outputs.tag }} && kubectl apply -k infra/k8s"
+        run: echo "kustomize edit set image retainiq/app=${IMAGE}:${{ needs.build.outputs.tag }} && kubectl apply -k backend/infra/k8s"
       - name: Smoke test
         run: echo "curl -fsS https://staging.retainiq/v1/health/ready"
 

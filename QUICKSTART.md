@@ -48,9 +48,9 @@ npm run dev:ingestion
 
 ## Services & databases
 
-Each service is a **separate microservice** with its **own image** (`apps/<svc>/Dockerfile`).
+Each service is a **separate microservice** with its **own image** (`backend/apps/<svc>/Dockerfile`).
 
-| Service (apps/) | HTTP/ops port | Database | Host:Port | User / Password |
+| Service (backend/apps/) | HTTP/ops port | Database | Host:Port | User / Password |
 |---|---|---|---|---|
 | `identity-service` | 3001 | retainiq-identity | localhost:5432 | identity / identity |
 | `activity-ingestion` | 3002 | — (stateless) | — | — |
@@ -96,9 +96,9 @@ docker exec retainiq-redis redis-cli XINFO GROUPS retainiq.events
 ## Kubernetes
 
 ```bash
-kubectl apply -k infra/k8s
+kubectl apply -k backend/infra/k8s
 # Run migrations (one job per service DB) before/with rollout:
-kubectl apply -f infra/k8s/migrate-job.yaml
+kubectl apply -f backend/infra/k8s/migrate-job.yaml
 ```
 
 ## Files reference
@@ -109,8 +109,8 @@ kubectl apply -f infra/k8s/migrate-job.yaml
 | `docker-compose.kafka.yml` | Kafka broker + switches all services to the Kafka driver |
 | `docker-compose.infra.yml` | Databases + Redis only (run apps via npm) |
 | `docker-compose.observability.yml` | Prometheus + Grafana + Loki + Promtail |
-| `packages/database/prisma/<svc>/schema.prisma` | Per-service Prisma schema + migrations |
-| `infra/k8s/` | Kubernetes manifests (one Deployment per service) |
+| `backend/packages/database/prisma/<svc>/schema.prisma` | Per-service Prisma schema + migrations |
+| `backend/infra/k8s/` | Kubernetes manifests (one Deployment per service) |
 | `docs/architecture/13-phase-1-database-per-service.md` | As-built architecture |
 
 ## npm script shortcuts
