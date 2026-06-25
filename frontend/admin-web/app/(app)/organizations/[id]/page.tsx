@@ -6,6 +6,8 @@ import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { StatusBadge } from "@/components/ui/badges";
+import { OrgActions } from "@/components/orgs/OrgActions";
+import { PaginatedTable } from "@/components/ui/Pagination";
 import { adminFetch } from "@/lib/admin-api";
 import { formatCompact, formatDate, formatNumber } from "@/lib/format";
 import type { OrgStatus } from "@/lib/data/types";
@@ -45,6 +47,8 @@ interface AdminOrgDetail {
     activeHours: number;
     createdAt: string;
     lastActiveAt: string | null;
+    region?: string;
+    timezone?: string;
   };
   employees: AdminEmployee[];
   attendanceToday: AdminAttendanceToday;
@@ -89,12 +93,15 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
     <>
       <Topbar title={org.name} subtitle={`Organization · created ${formatDate(org.createdAt)}`} />
       <PageBody>
-        <div className="flex items-center justify-between">
-          <Link href="/organizations" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800">
-            <ArrowLeft className="size-4" />
-            All organizations
-          </Link>
-          <StatusBadge status={STATUS_MAP[org.status] ?? "active"} />
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <Link href="/organizations" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800">
+              <ArrowLeft className="size-4" />
+              All organizations
+            </Link>
+            <StatusBadge status={STATUS_MAP[org.status] ?? "active"} />
+          </div>
+          <OrgActions org={{ id: org.id, name: org.name, status: org.status, region: org.region, timezone: org.timezone }} />
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -116,61 +123,58 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
 
         <Card>
           <CardHeader title="Employees" subtitle={`${employees.length} in this organization · productivity & attendance · last 30 days · live`} />
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[680px] text-sm">
-              <thead>
-                <tr className="border-b border-hairline text-xs text-slate-500">
-                  <th className="px-5 py-3 text-left font-medium">Employee</th>
-                  <th className="px-5 py-3 text-left font-medium">Today</th>
-                  <th className="px-5 py-3 text-right font-medium">Attendance (30d)</th>
-                  <th className="px-5 py-3 text-right font-medium">Productivity</th>
-                  <th className="px-5 py-3 text-right font-medium">Active hrs</th>
-                  <th className="px-5 py-3 text-right font-medium">Productive hrs</th>
-                  <th className="px-5 py-3 text-right font-medium">Last active</th>
-                </tr>
-              </thead>
-              <tbody>
-                {employees.map((e) => (
-                  <tr key={e.id} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-3">
-                        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-panel-2 text-[11px] font-semibold text-slate-700 ring-1 ring-inset ring-hairline">
-                          {e.name.slice(0, 2).toUpperCase()}
-                        </span>
-                        <div className="min-w-0">
-                          <span className="block truncate font-medium text-slate-900">{e.name}</span>
-                          {e.email ? <span className="block truncate text-xs text-slate-500">{e.email}</span> : null}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3">
-                      <AttendancePill status={e.todayStatus} />
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-700">
-                      {e.daysPresent > 0 ? (
-                        <>
-                          {e.attendanceRate}%<span className="text-slate-400"> · {e.daysPresent}d</span>
-                        </>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      {e.avgProductivity > 0 ? <ProductivityCell value={e.avgProductivity} /> : <span className="text-slate-400">—</span>}
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatNumber(e.activeHours)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatNumber(e.productiveHours)}</td>
-                    <td className="px-5 py-3 text-right text-xs text-slate-500">{e.lastActiveDay ?? "—"}</td>
-                  </tr>
-                ))}
-                {employees.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="px-5 py-8 text-center text-sm text-slate-500">No employees yet.</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+          <PaginatedTable
+            minWidth="min-w-[680px]"
+            head={
+              <tr className="border-b border-hairline text-xs text-slate-500">
+                <th className="px-5 py-3 text-left font-medium">Employee</th>
+                <th className="px-5 py-3 text-left font-medium">Today</th>
+                <th className="px-5 py-3 text-right font-medium">Attendance (30d)</th>
+                <th className="px-5 py-3 text-right font-medium">Productivity</th>
+                <th className="px-5 py-3 text-right font-medium">Active hrs</th>
+                <th className="px-5 py-3 text-right font-medium">Productive hrs</th>
+                <th className="px-5 py-3 text-right font-medium">Last active</th>
+              </tr>
+            }
+            empty={
+              <tr>
+                <td colSpan={7} className="px-5 py-8 text-center text-sm text-slate-500">No employees yet.</td>
+              </tr>
+            }
+            rows={employees.map((e) => (
+              <tr key={e.id} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
+                <td className="px-5 py-3">
+                  <div className="flex items-center gap-3">
+                    <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-panel-2 text-[11px] font-semibold text-slate-700 ring-1 ring-inset ring-hairline">
+                      {e.name.slice(0, 2).toUpperCase()}
+                    </span>
+                    <div className="min-w-0">
+                      <span className="block truncate font-medium text-slate-900">{e.name}</span>
+                      {e.email ? <span className="block truncate text-xs text-slate-500">{e.email}</span> : null}
+                    </div>
+                  </div>
+                </td>
+                <td className="px-5 py-3">
+                  <AttendancePill status={e.todayStatus} />
+                </td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-700">
+                  {e.daysPresent > 0 ? (
+                    <>
+                      {e.attendanceRate}%<span className="text-slate-400"> · {e.daysPresent}d</span>
+                    </>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
+                </td>
+                <td className="px-5 py-3 text-right">
+                  {e.avgProductivity > 0 ? <ProductivityCell value={e.avgProductivity} /> : <span className="text-slate-400">—</span>}
+                </td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatNumber(e.activeHours)}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatNumber(e.productiveHours)}</td>
+                <td className="px-5 py-3 text-right text-xs text-slate-500">{e.lastActiveDay ?? "—"}</td>
+              </tr>
+            ))}
+          />
         </Card>
       </PageBody>
     </>

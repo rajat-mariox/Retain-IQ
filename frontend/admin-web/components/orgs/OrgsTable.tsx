@@ -5,8 +5,11 @@ import Link from "next/link";
 import { ArrowDown, ArrowUp, ChevronRight, Search } from "lucide-react";
 import type { Organization } from "@/lib/data/types";
 import { PlanBadge, StatusBadge } from "@/components/ui/badges";
+import { PaginationBar } from "@/components/ui/Pagination";
 import { cn } from "@/lib/cn";
 import { formatCompact, formatNumber, timeAgo } from "@/lib/format";
+
+const PAGE_SIZE = 10;
 
 type SortKey = "name" | "users" | "employees" | "avgProductivity" | "activeHours" | "lastActiveAt";
 
@@ -29,6 +32,7 @@ export function OrgsTable({ organizations, now }: OrgsTableProps) {
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("activeHours");
   const [asc, setAsc] = useState(false);
+  const [page, setPage] = useState(1);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -42,7 +46,14 @@ export function OrgsTable({ organizations, now }: OrgsTableProps) {
     });
   }, [organizations, query, sortKey, asc]);
 
+  const total = rows.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const current = Math.min(page, pageCount);
+  const start = (current - 1) * PAGE_SIZE;
+  const pageRows = rows.slice(start, start + PAGE_SIZE);
+
   function toggleSort(key: SortKey) {
+    setPage(1);
     if (key === sortKey) {
       setAsc((v) => !v);
     } else {
@@ -64,7 +75,7 @@ export function OrgsTable({ organizations, now }: OrgsTableProps) {
           <Search className="size-4 text-slate-500" />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             placeholder="Filter by name…"
             className="w-44 bg-transparent text-slate-800 placeholder:text-slate-400 focus:outline-none sm:w-56"
           />
@@ -98,7 +109,14 @@ export function OrgsTable({ organizations, now }: OrgsTableProps) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((o) => (
+            {total === 0 ? (
+              <tr>
+                <td colSpan={COLUMNS.length + 1} className="px-5 py-8 text-center text-sm text-slate-500">
+                  No organizations match.
+                </td>
+              </tr>
+            ) : null}
+            {pageRows.map((o) => (
               <tr
                 key={o.id}
                 className="group border-b border-hairline/60 transition-colors last:border-0 hover:bg-slate-50"
@@ -143,6 +161,15 @@ export function OrgsTable({ organizations, now }: OrgsTableProps) {
           </tbody>
         </table>
       </div>
+
+      <PaginationBar
+        page={current}
+        pageCount={pageCount}
+        from={total ? start + 1 : 0}
+        to={Math.min(start + PAGE_SIZE, total)}
+        total={total}
+        onPage={setPage}
+      />
     </div>
   );
 }

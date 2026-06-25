@@ -17,7 +17,7 @@ export class EmployeeService {
     private readonly outbox: OutboxService,
   ) {}
 
-  listEmployees(query: { limit: number; cursor?: string }) {
+  listEmployees(query: { page: number; pageSize: number }) {
     const context = requireTenantContext();
     return this.employeeRepository.list(context, query);
   }

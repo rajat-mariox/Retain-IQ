@@ -3,6 +3,7 @@ import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { InvoiceBadge, SubscriptionBadge } from "@/components/ui/badges";
+import { PaginatedTable } from "@/components/ui/Pagination";
 import { getBilling } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
@@ -91,33 +92,31 @@ export default async function BillingPage() {
 
         <Card>
           <CardHeader title="Billing history" subtitle="Recent invoices" />
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-sm">
-              <thead>
-                <tr className="border-b border-hairline text-xs text-slate-500">
-                  <th className="px-5 py-3 text-left font-medium">Invoice</th>
-                  <th className="px-5 py-3 text-left font-medium">Period</th>
-                  <th className="px-5 py-3 text-left font-medium">Status</th>
-                  <th className="px-5 py-3 text-right font-medium">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoices.map((inv) => (
-                  <tr key={inv.invoiceNumber} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
-                    <td className="px-5 py-3 font-medium text-slate-800">{inv.invoiceNumber}</td>
-                    <td className="px-5 py-3 text-slate-600">{formatDate(inv.periodStart)} – {formatDate(inv.periodEnd)}</td>
-                    <td className="px-5 py-3"><InvoiceBadge status={inv.status} /></td>
-                    <td className="px-5 py-3 text-right tabular-nums font-medium text-slate-900">{usd(inv.totalAmount)}</td>
-                  </tr>
-                ))}
-                {invoices.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-5 py-8 text-center text-sm text-slate-500">No invoices yet.</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+          <PaginatedTable
+            minWidth="min-w-[640px]"
+            pageSize={8}
+            head={
+              <tr className="border-b border-hairline text-xs text-slate-500">
+                <th className="px-5 py-3 text-left font-medium">Invoice</th>
+                <th className="px-5 py-3 text-left font-medium">Period</th>
+                <th className="px-5 py-3 text-left font-medium">Status</th>
+                <th className="px-5 py-3 text-right font-medium">Amount</th>
+              </tr>
+            }
+            empty={
+              <tr>
+                <td colSpan={4} className="px-5 py-8 text-center text-sm text-slate-500">No invoices yet.</td>
+              </tr>
+            }
+            rows={invoices.map((inv) => (
+              <tr key={inv.invoiceNumber} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
+                <td className="px-5 py-3 font-medium text-slate-800">{inv.invoiceNumber}</td>
+                <td className="px-5 py-3 text-slate-600">{formatDate(inv.periodStart)} – {formatDate(inv.periodEnd)}</td>
+                <td className="px-5 py-3"><InvoiceBadge status={inv.status} /></td>
+                <td className="px-5 py-3 text-right tabular-nums font-medium text-slate-900">{usd(inv.totalAmount)}</td>
+              </tr>
+            ))}
+          />
         </Card>
       </PageBody>
     </>

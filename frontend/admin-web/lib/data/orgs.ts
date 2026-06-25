@@ -53,9 +53,19 @@ function toOrg(o: ApiOrg): Organization {
   };
 }
 
+interface OffsetPage<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+// The /organizations API is offset-paginated. The admin table does client-side
+// search + sort over the full set, so we fetch a large page; the dashboards are
+// demo-scale. (A future enhancement is server-side search/sort/pagination.)
 export async function getOrganizations(): Promise<Organization[]> {
-  const orgs = await adminFetch<ApiOrg[]>("organizations");
-  return orgs.map(toOrg);
+  const page = await adminFetch<OffsetPage<ApiOrg>>("organizations?page=1&pageSize=100");
+  return page.items.map(toOrg);
 }
 
 export async function getKpiSummary(): Promise<KpiSummary> {

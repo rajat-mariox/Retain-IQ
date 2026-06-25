@@ -2,11 +2,15 @@ import { Bell } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card } from "@/components/ui/Card";
+import { PageNav } from "@/components/ui/PageNav";
 import { getNotifications } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 
-export default async function NotificationsPage() {
-  const items = await getNotifications().catch(() => []);
+const PAGE_SIZE = 10;
+
+export default async function NotificationsPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  const page = Math.max(1, Number((await searchParams).page) || 1);
+  const data = await getNotifications(page, PAGE_SIZE).catch(() => ({ items: [], total: 0, page, pageSize: PAGE_SIZE }));
   const now = Date.now();
 
   return (
@@ -15,7 +19,7 @@ export default async function NotificationsPage() {
       <PageBody>
         <Card>
           <ul className="divide-y divide-hairline/60">
-            {items.map((n) => {
+            {data.items.map((n) => {
               const unread = !n.readAt;
               return (
                 <li key={n.id} className="flex items-start gap-3 px-5 py-4">
@@ -33,10 +37,11 @@ export default async function NotificationsPage() {
                 </li>
               );
             })}
-            {items.length === 0 ? (
+            {data.items.length === 0 ? (
               <li className="px-5 py-12 text-center text-sm text-slate-500">You're all caught up — no notifications.</li>
             ) : null}
           </ul>
+          <PageNav page={data.page} pageSize={data.pageSize} total={data.total} basePath="/notifications" />
         </Card>
       </PageBody>
     </>

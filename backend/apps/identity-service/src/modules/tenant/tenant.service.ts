@@ -29,28 +29,38 @@ export class TenantService {
   }
 
   /** Members of the caller's org (user + role + employee), for the Settings screen. */
-  async listMembers(context: RequestContext) {
-    const members = await this.prisma.organizationMembership.findMany({
-      where: { orgId: context.orgId },
-      orderBy: { createdAt: "asc" },
-      take: 500,
-      select: {
-        id: true,
-        status: true,
-        createdAt: true,
-        role: { select: { name: true } },
-        user: { select: { email: true } },
-        employee: { select: { firstName: true, lastName: true } },
-      },
-    });
+  async listMembers(context: RequestContext, query: { page: number; pageSize: number }) {
+    const where = { orgId: context.orgId };
+    const [members, total] = await this.prisma.$transaction([
+      this.prisma.organizationMembership.findMany({
+        where,
+        orderBy: { createdAt: "asc" },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        select: {
+          id: true,
+          status: true,
+          createdAt: true,
+          role: { select: { name: true } },
+          user: { select: { email: true } },
+          employee: { select: { firstName: true, lastName: true } },
+        },
+      }),
+      this.prisma.organizationMembership.count({ where }),
+    ]);
 
-    return members.map((m) => ({
-      id: m.id,
-      email: m.user.email,
-      role: m.role.name,
-      status: m.status,
-      name: m.employee ? `${m.employee.firstName} ${m.employee.lastName}`.trim() : null,
-      joinedAt: m.createdAt.toISOString(),
-    }));
+    return {
+      items: members.map((m) => ({
+        id: m.id,
+        email: m.user.email,
+        role: m.role.name,
+        status: m.status,
+        name: m.employee ? `${m.employee.firstName} ${m.employee.lastName}`.trim() : null,
+        joinedAt: m.createdAt.toISOString(),
+      })),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
   }
 }

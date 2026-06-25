@@ -2,7 +2,8 @@ import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { AddMemberForm } from "@/components/members/AddMemberForm";
-import { apiFetch } from "@/lib/api";
+import { PageNav } from "@/components/ui/PageNav";
+import { apiFetch, type OffsetPage } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 interface Employee {
@@ -15,8 +16,13 @@ interface Employee {
   createdAt: string;
 }
 
-export default async function EmployeesPage() {
-  const data = await apiFetch<{ items: Employee[]; nextCursor: string | null }>("employees").catch(() => ({ items: [] as Employee[], nextCursor: null }));
+const PAGE_SIZE = 10;
+
+export default async function EmployeesPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  const page = Math.max(1, Number((await searchParams).page) || 1);
+  const data = await apiFetch<OffsetPage<Employee>>(`employees?page=${page}&pageSize=${PAGE_SIZE}`).catch(
+    () => ({ items: [] as Employee[], total: 0, page, pageSize: PAGE_SIZE }),
+  );
   const employees = data.items;
 
   return (
@@ -25,7 +31,7 @@ export default async function EmployeesPage() {
       <PageBody>
         <AddMemberForm />
         <Card>
-          <CardHeader title="Employees" subtitle={`${employees.length} in your organization`} />
+          <CardHeader title="Employees" subtitle={`${data.total} in your organization`} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[640px] text-sm">
               <thead>
@@ -66,6 +72,7 @@ export default async function EmployeesPage() {
               </tbody>
             </table>
           </div>
+          <PageNav page={data.page} pageSize={data.pageSize} total={data.total} basePath="/employees" />
         </Card>
       </PageBody>
     </>

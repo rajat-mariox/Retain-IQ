@@ -1,9 +1,11 @@
-import { Controller, Get, Sse, UseGuards, type MessageEvent } from "@nestjs/common";
+import { Controller, Get, Query, Sse, UseGuards, type MessageEvent } from "@nestjs/common";
+import { offsetPaginationQuerySchema, type OffsetPaginationQuery } from "@retainiq/contracts";
 import { Observable, Subject } from "rxjs";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { NotificationsReadPrismaService } from "../../common/database/notifications-prisma.service.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { SseHub } from "../../common/realtime/sse-hub.js";
 
 const PING_INTERVAL_MS = 25_000;
@@ -16,16 +18,22 @@ export class NotificationsController {
     private readonly hub: SseHub,
   ) {}
 
-  /** The caller's recent in-app inbox (load history, then stream live updates). */
+  /** The caller's in-app inbox (paginated history; live updates arrive via SSE). */
   @Get()
-  listInbox() {
+  async listInbox(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
     const ctx = requireTenantContext();
-    return this.prisma.notification.findMany({
-      where: { orgId: ctx.orgId, recipientUserId: ctx.userId, channel: "IN_APP" },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-      select: { id: true, type: true, title: true, body: true, status: true, readAt: true, createdAt: true },
-    });
+    const where = { orgId: ctx.orgId, recipientUserId: ctx.userId, channel: "IN_APP" as const };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.notification.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        select: { id: true, type: true, title: true, body: true, status: true, readAt: true, createdAt: true },
+      }),
+      this.prisma.notification.count({ where }),
+    ]);
+    return { items, total, page: query.page, pageSize: query.pageSize };
   }
 
   /**

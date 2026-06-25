@@ -15,40 +15,52 @@ export class ProjectsService {
     return new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
   }
 
-  async listProjects() {
+  async listProjects(query: { page: number; pageSize: number }) {
     const ctx = requireTenantContext();
-    // Task tallies come from DB aggregates — don't load every task row just to count.
-    const [projects, doneAgg] = await Promise.all([
+    const where = { orgId: ctx.orgId };
+    const [projects, total] = await this.prisma.$transaction([
       this.prisma.project.findMany({
-        where: { orgId: ctx.orgId },
+        where,
         orderBy: { createdAt: "desc" },
-        take: 200,
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
         include: { team: { select: { name: true } }, _count: { select: { tasks: true } } },
       }),
-      this.prisma.task.groupBy({
-        by: ["projectId"],
-        where: { orgId: ctx.orgId, status: "DONE" },
-        _count: { _all: true },
-      }),
+      this.prisma.project.count({ where }),
     ]);
+
+    // Done-task tallies for this page only — DB aggregate, never load task rows.
+    const ids = projects.map((p) => p.id);
+    const doneAgg = ids.length
+      ? await this.prisma.task.groupBy({
+          by: ["projectId"],
+          where: { orgId: ctx.orgId, status: "DONE", projectId: { in: ids } },
+          _count: { _all: true },
+        })
+      : [];
     const doneByProject = new Map(doneAgg.map((d) => [d.projectId, d._count._all]));
 
-    return projects.map((p) => {
-      const total = p._count.tasks;
-      const done = doneByProject.get(p.id) ?? 0;
-      return {
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        status: p.status,
-        teamName: p.team?.name ?? null,
-        startDate: p.startDate?.toISOString() ?? null,
-        dueDate: p.dueDate?.toISOString() ?? null,
-        progress: total > 0 ? Math.round((done / total) * 100) : p.progress,
-        taskCount: total,
-        doneCount: done,
-      };
-    });
+    return {
+      items: projects.map((p) => {
+        const taskTotal = p._count.tasks;
+        const done = doneByProject.get(p.id) ?? 0;
+        return {
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          status: p.status,
+          teamName: p.team?.name ?? null,
+          startDate: p.startDate?.toISOString() ?? null,
+          dueDate: p.dueDate?.toISOString() ?? null,
+          progress: taskTotal > 0 ? Math.round((done / taskTotal) * 100) : p.progress,
+          taskCount: taskTotal,
+          doneCount: done,
+        };
+      }),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
   }
 
   async getProject(id: string) {

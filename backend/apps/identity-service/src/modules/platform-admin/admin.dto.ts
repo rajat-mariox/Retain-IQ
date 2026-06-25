@@ -25,6 +25,8 @@ export interface AdminOrg {
   lastActiveAt: string | null;
   plan: string | null;
   subscriptionStatus: string | null;
+  region?: string;
+  timezone?: string;
 }
 
 export interface AdminPlanDist {

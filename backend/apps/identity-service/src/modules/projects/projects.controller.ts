@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { permissions } from "@retainiq/authz";
+import { offsetPaginationQuerySchema, type OffsetPaginationQuery } from "@retainiq/contracts";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
@@ -23,8 +24,8 @@ export class ProjectsController {
   // Reads are open to any member; writes require project.write (Owner/Manager).
 
   @Get("projects")
-  listProjects() {
-    return this.projects.listProjects();
+  listProjects(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
+    return this.projects.listProjects(query);
   }
 
   @Post("projects")

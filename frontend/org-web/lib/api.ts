@@ -27,6 +27,14 @@ export interface OrgSession {
 /** The signed-in principal (org + user + role), deduplicated per render. */
 export const getSession = cache(() => apiFetch<OrgSession>("auth/me"));
 
+/** Offset (page-number) pagination envelope returned by the list APIs. */
+export interface OffsetPage<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export interface AttendanceToday {
   day: string;
   totalEmployees: number;
@@ -91,7 +99,9 @@ export interface ProjectSummary {
   taskCount: number;
   doneCount: number;
 }
-export const getProjects = cache(() => apiFetch<ProjectSummary[]>("projects"));
+export const getProjects = cache((page = 1, pageSize = 9) =>
+  apiFetch<OffsetPage<ProjectSummary>>(`projects?page=${page}&pageSize=${pageSize}`),
+);
 
 export interface ProjectTask {
   id: string;
@@ -129,7 +139,9 @@ export interface OrgMember {
   name: string | null;
   joinedAt: string;
 }
-export const getMembers = cache(() => apiFetch<OrgMember[]>("org/members"));
+export const getMembers = cache((page = 1, pageSize = 10) =>
+  apiFetch<OffsetPage<OrgMember>>(`org/members?page=${page}&pageSize=${pageSize}`),
+);
 
 export interface OrgProfile {
   id: string;
@@ -151,5 +163,7 @@ export interface InboxNotification {
   readAt: string | null;
   createdAt: string;
 }
-export const getNotifications = cache(() => apiFetch<InboxNotification[]>("notifications"));
+export const getNotifications = cache((page = 1, pageSize = 10) =>
+  apiFetch<OffsetPage<InboxNotification>>(`notifications?page=${page}&pageSize=${pageSize}`),
+);
 

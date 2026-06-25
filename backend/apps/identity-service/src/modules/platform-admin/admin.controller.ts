@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { offsetPaginationQuerySchema, type OffsetPaginationQuery } from "@retainiq/contracts";
 import { z } from "zod";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { AdminService } from "./admin.service.js";
@@ -14,6 +15,17 @@ const createOrgSchema = z.object({
 });
 type CreateOrgInput = z.infer<typeof createOrgSchema>;
 
+const updateOrgSchema = z
+  .object({
+    name: z.string().min(2).max(120).optional(),
+    region: z.string().min(1).max(40).optional(),
+    timezone: z.string().min(1).max(60).optional(),
+  })
+  .refine((v) => v.name !== undefined || v.region !== undefined || v.timezone !== undefined, {
+    message: "Provide at least one field to update.",
+  });
+type UpdateOrgInput = z.infer<typeof updateOrgSchema>;
+
 /** Cross-org reporting reads for the super-admin dashboard. Platform-guarded. */
 @Controller("platform/admin")
 @UseGuards(PlatformAuthGuard)
@@ -26,8 +38,8 @@ export class AdminController {
   }
 
   @Get("organizations")
-  organizations() {
-    return this.admin.organizations();
+  organizations(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
+    return this.admin.organizations(query);
   }
 
   @Post("organizations")
@@ -38,6 +50,29 @@ export class AdminController {
   @Get("organizations/:id")
   organizationDetail(@Param("id", new ParseUUIDPipe()) id: string) {
     return this.admin.organizationDetail(id);
+  }
+
+  @Patch("organizations/:id")
+  updateOrganization(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body(new ZodValidationPipe(updateOrgSchema)) body: UpdateOrgInput,
+  ) {
+    return this.admin.updateOrganization(id, body);
+  }
+
+  @Post("organizations/:id/suspend")
+  suspendOrganization(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.admin.setOrganizationStatus(id, "SUSPENDED");
+  }
+
+  @Post("organizations/:id/activate")
+  activateOrganization(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.admin.setOrganizationStatus(id, "ACTIVE");
+  }
+
+  @Delete("organizations/:id")
+  deleteOrganization(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.admin.setOrganizationStatus(id, "DELETED");
   }
 
   @Get("usage")

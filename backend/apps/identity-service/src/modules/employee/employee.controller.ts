@@ -2,9 +2,9 @@ import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from "@
 import { permissions } from "@retainiq/authz";
 import {
   createEmployeeSchema,
-  cursorPaginationQuerySchema,
+  offsetPaginationQuerySchema,
   type CreateEmployeeInput,
-  type CursorPaginationQuery,
+  type OffsetPaginationQuery,
 } from "@retainiq/contracts";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
@@ -21,7 +21,7 @@ export class EmployeeController {
   @Get()
   @RequirePermissions(permissions.employeeRead)
   listEmployees(
-    @Query(new ZodValidationPipe(cursorPaginationQuerySchema)) query: CursorPaginationQuery,
+    @Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery,
   ) {
     return this.employeeService.listEmployees(query);
   }

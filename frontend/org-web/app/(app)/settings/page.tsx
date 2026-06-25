@@ -1,11 +1,18 @@
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
+import { PageNav } from "@/components/ui/PageNav";
 import { getMembers, getOrg } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
-export default async function SettingsPage() {
-  const [org, members] = await Promise.all([getOrg().catch(() => null), getMembers().catch(() => [])]);
+const PAGE_SIZE = 10;
+
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  const page = Math.max(1, Number((await searchParams).page) || 1);
+  const [org, members] = await Promise.all([
+    getOrg().catch(() => null),
+    getMembers(page, PAGE_SIZE).catch(() => ({ items: [], total: 0, page, pageSize: PAGE_SIZE })),
+  ]);
 
   return (
     <>
@@ -26,7 +33,7 @@ export default async function SettingsPage() {
         </Card>
 
         <Card>
-          <CardHeader title="Members" subtitle={`${members.length} people with access`} />
+          <CardHeader title="Members" subtitle={`${members.total} people with access`} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm">
               <thead>
@@ -39,7 +46,7 @@ export default async function SettingsPage() {
                 </tr>
               </thead>
               <tbody>
-                {members.map((m) => (
+                {members.items.map((m) => (
                   <tr key={m.id} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
                     <td className="px-5 py-3 font-medium text-slate-900">{m.name ?? m.email}</td>
                     <td className="px-5 py-3 text-slate-600">{m.email}</td>
@@ -50,9 +57,15 @@ export default async function SettingsPage() {
                     <td className="px-5 py-3 text-right text-xs text-slate-500">{formatDate(m.joinedAt)}</td>
                   </tr>
                 ))}
+                {members.items.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-5 py-8 text-center text-sm text-slate-500">No members yet.</td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </div>
+          <PageNav page={members.page} pageSize={members.pageSize} total={members.total} basePath="/settings" />
         </Card>
       </PageBody>
     </>

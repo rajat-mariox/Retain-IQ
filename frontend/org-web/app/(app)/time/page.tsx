@@ -3,12 +3,13 @@ import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
+import { PaginatedTable } from "@/components/ui/Pagination";
 import { getInsightsMe } from "@/lib/api";
 
 export default async function TimePage() {
   const data = await getInsightsMe().catch(() => null);
   const totals = data?.totals;
-  const recent = [...(data?.series ?? [])].reverse().slice(0, 14);
+  const recent = [...(data?.series ?? [])].reverse();
   const productiveRatio = totals && totals.activeHours > 0 ? Math.round((totals.productiveHours / totals.activeHours) * 100) : 0;
   const momentum = data?.momentum;
 
@@ -25,37 +26,34 @@ export default async function TimePage() {
 
         <Card>
           <CardHeader title="Recent days" subtitle="Hours and scores per day" />
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-sm">
-              <thead>
-                <tr className="border-b border-hairline text-xs text-slate-500">
-                  <th className="px-5 py-3 text-left font-medium">Day</th>
-                  <th className="px-5 py-3 text-right font-medium">Active</th>
-                  <th className="px-5 py-3 text-right font-medium">Productive</th>
-                  <th className="px-5 py-3 text-right font-medium">Productivity</th>
-                  <th className="px-5 py-3 text-right font-medium">Focus</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recent.map((d) => (
-                  <tr key={d.date} className="border-b border-hairline/60 last:border-0">
-                    <td className="px-5 py-3 tabular-nums text-slate-700">{d.date}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-700">{d.activeHours}h</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">{d.productiveHours}h</td>
-                    <td className="px-5 py-3 text-right">
-                      <Bar value={d.productivity} />
-                    </td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">{d.focus}%</td>
-                  </tr>
-                ))}
-                {recent.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-5 py-8 text-center text-sm text-slate-500">No tracked time yet.</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+          <PaginatedTable
+            minWidth="min-w-[560px]"
+            head={
+              <tr className="border-b border-hairline text-xs text-slate-500">
+                <th className="px-5 py-3 text-left font-medium">Day</th>
+                <th className="px-5 py-3 text-right font-medium">Active</th>
+                <th className="px-5 py-3 text-right font-medium">Productive</th>
+                <th className="px-5 py-3 text-right font-medium">Productivity</th>
+                <th className="px-5 py-3 text-right font-medium">Focus</th>
+              </tr>
+            }
+            empty={
+              <tr>
+                <td colSpan={5} className="px-5 py-8 text-center text-sm text-slate-500">No tracked time yet.</td>
+              </tr>
+            }
+            rows={recent.map((d) => (
+              <tr key={d.date} className="border-b border-hairline/60 last:border-0">
+                <td className="px-5 py-3 tabular-nums text-slate-700">{d.date}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-700">{d.activeHours}h</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{d.productiveHours}h</td>
+                <td className="px-5 py-3 text-right">
+                  <Bar value={d.productivity} />
+                </td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{d.focus}%</td>
+              </tr>
+            ))}
+          />
         </Card>
       </PageBody>
     </>

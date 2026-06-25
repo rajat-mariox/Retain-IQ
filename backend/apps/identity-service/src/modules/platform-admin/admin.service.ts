@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
+import type { OffsetPage } from "@retainiq/contracts";
 import { AnalyticsReadPrismaService } from "../../common/database/analytics-prisma.service.js";
 import { BillingReadPrismaService } from "../../common/database/billing-prisma.service.js";
 import { hashPassword } from "../../common/crypto/password.util.js";
@@ -76,7 +77,7 @@ export class AdminService {
 
     const [totalOrgs, statusGroups, totalUsers, totalEmployees, newOrgsThisMonth, prodAgg, trackedOrgRows] =
       await Promise.all([
-        this.prisma.organization.count(),
+        this.prisma.organization.count({ where: { status: { not: "DELETED" } } }),
         this.prisma.organization.groupBy({ by: ["status"], _count: { _all: true } }),
         this.prisma.user.count(),
         this.prisma.employee.count(),
@@ -104,27 +105,38 @@ export class AdminService {
     };
   }
 
-  organizations(): Promise<AdminOrg[]> {
-    return this.cached("organizations", () => this.computeOrganizations());
+  organizations(query: { page: number; pageSize: number }): Promise<OffsetPage<AdminOrg>> {
+    return this.cached(`organizations:${query.page}:${query.pageSize}`, () => this.computeOrganizations(query));
   }
 
-  private async computeOrganizations(): Promise<AdminOrg[]> {
+  private async computeOrganizations(query: { page: number; pageSize: number }): Promise<OffsetPage<AdminOrg>> {
     const since = this.windowStart();
-    const [orgs, memberCounts, employeeCounts, lastSessions, factAgg, subs] = await Promise.all([
+    const where = { status: { not: "DELETED" as const } };
+
+    // Paginate the orgs at the DB, then enrich only this page's orgIds.
+    const [orgs, total] = await this.prisma.$transaction([
       this.prisma.organization.findMany({
+        where,
         select: { id: true, name: true, slug: true, status: true, createdAt: true },
         orderBy: { createdAt: "desc" },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
       }),
-      this.prisma.organizationMembership.groupBy({ by: ["orgId"], _count: { _all: true } }),
-      this.prisma.employee.groupBy({ by: ["orgId"], _count: { _all: true } }),
-      this.prisma.session.groupBy({ by: ["orgId"], _max: { lastUsedAt: true } }),
+      this.prisma.organization.count({ where }),
+    ]);
+    const ids = orgs.map((o) => o.id);
+
+    const [memberCounts, employeeCounts, lastSessions, factAgg, subs] = await Promise.all([
+      this.prisma.organizationMembership.groupBy({ by: ["orgId"], where: { orgId: { in: ids } }, _count: { _all: true } }),
+      this.prisma.employee.groupBy({ by: ["orgId"], where: { orgId: { in: ids } }, _count: { _all: true } }),
+      this.prisma.session.groupBy({ by: ["orgId"], where: { orgId: { in: ids } }, _max: { lastUsedAt: true } }),
       this.analytics.employeeDayFact.groupBy({
         by: ["orgId"],
-        where: { day: { gte: since } },
+        where: { orgId: { in: ids }, day: { gte: since } },
         _sum: { activeSeconds: true },
         _avg: { productivityScore: true },
       }),
-      this.billing.subscription.findMany({ select: { orgId: true, planId: true, status: true } }),
+      this.billing.subscription.findMany({ where: { orgId: { in: ids } }, select: { orgId: true, planId: true, status: true } }),
     ]);
 
     const members = new Map(memberCounts.map((m) => [m.orgId, m._count._all]));
@@ -133,7 +145,7 @@ export class AdminService {
     const facts = new Map(factAgg.map((f) => [f.orgId, f]));
     const subByOrg = new Map(subs.map((s) => [s.orgId, s]));
 
-    return orgs.map((o): AdminOrg => {
+    const items = orgs.map((o): AdminOrg => {
       const fact = facts.get(o.id);
       const last = lastActive.get(o.id) ?? null;
       const sub = subByOrg.get(o.id);
@@ -152,15 +164,17 @@ export class AdminService {
         subscriptionStatus: sub?.status ?? null,
       };
     });
+
+    return { items, total, page: query.page, pageSize: query.pageSize };
   }
 
   async organizationDetail(id: string): Promise<AdminOrgDetail> {
     const since = this.windowStart();
     const org = await this.prisma.organization.findUnique({
-      select: { id: true, name: true, slug: true, status: true, createdAt: true },
+      select: { id: true, name: true, slug: true, status: true, region: true, timezone: true, createdAt: true },
       where: { id },
     });
-    if (!org) {
+    if (!org || org.status === "DELETED") {
       throw new NotFoundException("Organization not found.");
     }
 
@@ -248,6 +262,8 @@ export class AdminService {
       lastActiveAt: lastSession._max.lastUsedAt ? lastSession._max.lastUsedAt.toISOString() : null,
       plan: subscription?.planId ?? null,
       subscriptionStatus: subscription?.status ?? null,
+      region: org.region,
+      timezone: org.timezone,
     };
 
     return { org: orgRow, employees: employeeRows, attendanceToday };
@@ -310,6 +326,46 @@ export class AdminService {
       owner: { email, tempPassword },
       plan: { id: plan.id, name: plan.name },
     };
+  }
+
+  /** Edit an org's profile (name/region/timezone). Slug is immutable. */
+  async updateOrganization(
+    id: string,
+    input: { name?: string; region?: string; timezone?: string },
+  ): Promise<{ id: string; name: string; slug: string; status: string }> {
+    await this.ensureLiveOrg(id);
+    const org = await this.prisma.organization.update({
+      where: { id },
+      data: { name: input.name, region: input.region, timezone: input.timezone },
+      select: { id: true, name: true, slug: true, status: true },
+    });
+    this.cache.clear();
+    return org;
+  }
+
+  /**
+   * Change an org's lifecycle status: suspend (block access), activate (restore),
+   * or delete (soft — sets DELETED so it drops out of the dashboards). We never
+   * hard-delete: it would cascade across employees/sessions/projects and orphan
+   * the org's subscription in billing-db.
+   */
+  async setOrganizationStatus(id: string, status: "ACTIVE" | "SUSPENDED" | "DELETED"): Promise<{ id: string; status: string }> {
+    await this.ensureLiveOrg(id);
+    const org = await this.prisma.organization.update({
+      where: { id },
+      data: { status },
+      select: { id: true, status: true },
+    });
+    this.cache.clear();
+    return org;
+  }
+
+  /** Throws NotFound for a missing or already-deleted org. */
+  private async ensureLiveOrg(id: string): Promise<void> {
+    const org = await this.prisma.organization.findUnique({ where: { id }, select: { status: true } });
+    if (!org || org.status === "DELETED") {
+      throw new NotFoundException("Organization not found.");
+    }
   }
 
   private async uniqueSlug(orgName: string): Promise<string> {

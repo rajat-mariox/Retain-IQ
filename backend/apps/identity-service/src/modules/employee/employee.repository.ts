@@ -17,19 +17,21 @@ const LIST_SELECT = {
 export class EmployeeRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Keyset-paginated list scoped to the tenant. Fetches one extra row to detect more pages. */
-  async list(context: RequestContext, options: { limit: number; cursor?: string }) {
-    const rows = await this.prisma.employee.findMany({
-      where: { orgId: context.orgId },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: options.limit + 1,
-      ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
-      select: LIST_SELECT,
-    });
+  /** Offset-paginated list scoped to the tenant, with a total for page-number UIs. */
+  async list(context: RequestContext, options: { page: number; pageSize: number }) {
+    const where = { orgId: context.orgId };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.employee.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip: (options.page - 1) * options.pageSize,
+        take: options.pageSize,
+        select: LIST_SELECT,
+      }),
+      this.prisma.employee.count({ where }),
+    ]);
 
-    const items = rows.slice(0, options.limit);
-    const nextCursor = rows.length > options.limit ? (items.at(-1)?.id ?? null) : null;
-    return { items, nextCursor };
+    return { items, total, page: options.page, pageSize: options.pageSize };
   }
 
   findById(context: RequestContext, employeeId: string) {

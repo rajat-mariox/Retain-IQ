@@ -155,6 +155,8 @@ export class IdentityService {
       where: {
         userId: user.id,
         status: "ACTIVE",
+        // Suspended/deleted orgs cannot be logged into (platform-admin gate).
+        org: { status: "ACTIVE" },
         ...(input.orgId ? { orgId: input.orgId } : {}),
       },
       orderBy: { createdAt: "asc" },
@@ -278,7 +280,8 @@ export class IdentityService {
 
   private async resolveClaimsForMembership(membershipId: string): Promise<AccessTokenClaims> {
     const membership = await this.prisma.organizationMembership.findFirst({
-      where: { id: membershipId, status: "ACTIVE" },
+      // Also stops refresh from extending a session once the org is suspended/deleted.
+      where: { id: membershipId, status: "ACTIVE", org: { status: "ACTIVE" } },
       select: {
         id: true,
         orgId: true,

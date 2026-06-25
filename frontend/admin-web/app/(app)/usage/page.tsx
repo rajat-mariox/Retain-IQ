@@ -5,6 +5,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { UsageAreaChart } from "@/components/charts/UsageAreaChart";
 import { ProductivityLineChart } from "@/components/charts/ProductivityLineChart";
+import { PaginatedList } from "@/components/ui/Pagination";
 import { getTopOrgsByUsage, getUsageSeries, getUsageTotals } from "@/lib/data/analytics";
 import { formatCompact } from "@/lib/format";
 
@@ -46,8 +47,10 @@ export default async function UsagePage() {
 
           <Card>
             <CardHeader title="Top orgs by usage" subtitle="Active hours (30d)" />
-            <ul className="divide-y divide-hairline/60">
-              {topOrgs.map((o) => (
+            <PaginatedList
+              pageSize={8}
+              empty={<li className="px-5 py-8 text-center text-sm text-slate-500">No usage data yet.</li>}
+              items={topOrgs.map((o) => (
                 <li key={o.id} className="px-5 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="truncate text-sm font-medium text-slate-800">{o.name}</span>
@@ -60,7 +63,7 @@ export default async function UsagePage() {
                   </span>
                 </li>
               ))}
-            </ul>
+            />
           </Card>
         </div>
       </PageBody>
