@@ -1,5 +1,6 @@
 import { getSession } from "@/lib/api";
 import { LogoutButton } from "@/components/auth/LogoutButton";
+import { MobileMenuButton } from "@/components/layout/MobileNav";
 
 interface TopbarProps {
   title: string;
@@ -23,9 +24,12 @@ export async function Topbar({ title, subtitle }: TopbarProps) {
 
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-hairline bg-canvas/70 px-5 py-4 backdrop-blur lg:px-8">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight text-slate-900">{title}</h1>
-        {subtitle ? <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p> : null}
+      <div className="flex min-w-0 items-center gap-3">
+        <MobileMenuButton />
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold tracking-tight text-slate-900">{title}</h1>
+          {subtitle ? <p className="mt-0.5 truncate text-xs text-slate-500">{subtitle}</p> : null}
+        </div>
       </div>
 
       <div className="flex items-center gap-3">

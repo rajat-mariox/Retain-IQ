@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { MobileNavProvider } from "@/components/layout/MobileNav";
 import { getSession } from "@/lib/api";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -14,9 +15,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     session && (session.role.permissions.includes("employee.read") || session.role.name === "Owner"),
   );
   return (
-    <div className="min-h-screen">
-      <Sidebar orgName={session?.org.name ?? "Organization"} isAdmin={isAdmin} />
-      <div className="lg:pl-64">{children}</div>
-    </div>
+    <MobileNavProvider>
+      <div className="min-h-screen">
+        <Sidebar orgName={session?.org.name ?? "Organization"} isAdmin={isAdmin} />
+        <div className="lg:pl-64">{children}</div>
+      </div>
+    </MobileNavProvider>
   );
 }
