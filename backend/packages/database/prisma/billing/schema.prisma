@@ -1,0 +1,97 @@
+// billing database — owned by apps/billing-service.
+// Plans (catalog), per-org Subscriptions, and Invoices. No Organization table
+// here: orgId is a plain UUID (no cross-database FK). The org is created in
+// identity-service, which emits `organization.created`; billing-service
+// consumes it and provisions the subscription.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/billing"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+}
+
+model Plan {
+  id            String   @id // free | starter | growth | enterprise
+  name          String
+  description   String?
+  pricePerSeat  Int // USD cents
+  billingPeriod String   @default("monthly")
+  seatLimit     Int?
+  features      String[]
+  color         String
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@index([isActive])
+}
+
+model Subscription {
+  id                 String             @id @default(uuid()) @db.Uuid
+  orgId              String             @unique @db.Uuid
+  planId             String
+  status             SubscriptionStatus @default(TRIALING)
+  seats              Int                @default(1)
+  activeSeats        Int                @default(1)
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  trialEndsAt        DateTime?
+  canceledAt         DateTime?
+  autoRenew          Boolean            @default(true)
+  billingEmail       String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  plan     Plan      @relation(fields: [planId], references: [id])
+  invoices Invoice[]
+
+  @@index([status])
+  @@index([planId, status])
+}
+
+model Invoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  orgId          String        @db.Uuid
+  subscriptionId String        @db.Uuid
+  invoiceNumber  String        @unique
+  status         InvoiceStatus @default(OPEN)
+  issuedAt       DateTime
+  dueAt          DateTime
+  paidAt         DateTime?
+  periodStart    DateTime
+  periodEnd      DateTime
+  subtotal       Int
+  totalAmount    Int
+  amountDue      Int           @default(0)
+  currency       String        @default("USD")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([orgId, issuedAt])
+  @@index([status, paidAt])
+  @@index([subscriptionId])
+}

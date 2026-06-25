@@ -76,5 +76,13 @@ services:
       kafka:
         condition: service_healthy
 
+  billing-service:
+    environment:
+      BROKER_DRIVER: kafka
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
 volumes:
   kafka_data:
