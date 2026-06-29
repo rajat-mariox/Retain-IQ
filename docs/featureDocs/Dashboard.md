@@ -89,8 +89,8 @@ Select: V1
 - ARR
 - Monthly Revenue Trend
 - Revenue by Plan
-- Revenue by Industry
-- Top Paying Customers
+- Revenue by Organization
+- Top Paying Organization
 
 ---
 

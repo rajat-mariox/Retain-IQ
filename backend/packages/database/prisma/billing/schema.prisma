@@ -30,14 +30,15 @@ enum InvoiceStatus {
 }
 
 model Plan {
-  id            String   @id // free | starter | growth | enterprise
+  id            String   @id // free | basic | professional | enterprise
   name          String
   description   String?
   pricePerSeat  Int // USD cents
-  billingPeriod String   @default("monthly")
-  seatLimit     Int?
-  features      String[]
-  color         String
+  billingPeriod  String   @default("monthly")
+  seatLimit      Int?
+  storageLimitMb Int? // screenshot storage quota in MB; null = unlimited
+  features       String[]
+  color          String
   sortOrder     Int      @default(0)
   isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
@@ -69,6 +70,20 @@ model Subscription {
 
   @@index([status])
   @@index([planId, status])
+}
+
+// Append-only billing lifecycle events (provisioning, renewals, dunning, payment
+// failures). Read by identity's platform activity feed via the read binding.
+model BillingEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  type       String // subscription.created | .renewed | .canceled | .suspended | payment.failed
+  summary    String
+  planId     String?
+  amountCents Int?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
 }
 
 model Invoice {
