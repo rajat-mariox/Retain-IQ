@@ -127,11 +127,38 @@ async function handleOrganizationCreated(event: Record<string, unknown>): Promis
   logger.info({ orgId, planId, status }, "Provisioned subscription from org.created");
 }
 
+/**
+ * Reconcile activeSeats from identity's authoritative active-employee headcount.
+ * identity owns Employee data and emits the count; we only update our own column,
+ * capped at the licensed seat quantity. activeSeats drives MRR.
+ */
+async function handleOrganizationHeadcount(event: Record<string, unknown>): Promise<void> {
+  const orgId = typeof event.orgId === "string" ? event.orgId : null;
+  const payload = (event.payload as Record<string, unknown> | undefined) ?? {};
+  const activeEmployees = typeof payload.activeEmployees === "number" ? payload.activeEmployees : null;
+  if (!orgId || activeEmployees == null) {
+    eventsSkipped.inc({ reason: "missing_fields" });
+    return;
+  }
+  const sub = await prisma.subscription.findUnique({ where: { orgId }, select: { seats: true, activeSeats: true } });
+  if (!sub) {
+    eventsSkipped.inc({ reason: "no_subscription" });
+    return;
+  }
+  const next = Math.min(activeEmployees, sub.seats); // active seats never exceed the licensed count
+  if (next === sub.activeSeats) return; // already in sync — no write, no churn
+  await prisma.subscription.update({ where: { orgId }, data: { activeSeats: next } });
+  logger.info({ orgId, activeSeats: next }, "Reconciled active seats from headcount");
+}
+
 function handler(message: StreamMessage): Promise<void> {
   const event = message.event;
   const eventType = typeof event.eventType === "string" ? event.eventType : "unknown";
   if (eventType === "organization.created") {
     return handleOrganizationCreated(event);
+  }
+  if (eventType === "organization.headcount") {
+    return handleOrganizationHeadcount(event);
   }
   eventsSkipped.inc({ reason: "irrelevant" });
   return Promise.resolve();

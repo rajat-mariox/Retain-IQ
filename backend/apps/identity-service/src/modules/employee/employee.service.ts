@@ -5,6 +5,7 @@ import { requireTenantContext } from "../../common/context/request-context.store
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { IdempotencyService } from "../../common/idempotency/idempotency.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
+import { SeatLimitService } from "../../common/seat-limit/seat-limit.service.js";
 import { EmployeeRepository } from "./employee.repository.js";
 
 @Injectable()
@@ -15,6 +16,7 @@ export class EmployeeService {
     private readonly audit: AuditService,
     private readonly idempotency: IdempotencyService,
     private readonly outbox: OutboxService,
+    private readonly seatLimit: SeatLimitService,
   ) {}
 
   listEmployees(query: { page: number; pageSize: number }) {
@@ -35,6 +37,7 @@ export class EmployeeService {
 
   async createEmployee(input: CreateEmployeeInput, idempotencyKey?: string) {
     const context = requireTenantContext();
+    await this.seatLimit.assertCanAddEmployee(context.orgId); // 409 if at the licensed seat count
 
     const run = async () => {
       try {

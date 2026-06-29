@@ -1,6 +1,6 @@
 import Link from "next/link";
 import {
-  AlertTriangle, Ban, Building2, CreditCard, Pencil, RefreshCw, Trash2, UserPlus, XCircle, CircleCheck,
+  AlertTriangle, ArrowLeftRight, Ban, Building2, CreditCard, Pencil, RefreshCw, Trash2, UserPlus, XCircle, CircleCheck,
   type LucideIcon,
 } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
@@ -20,6 +20,7 @@ const META: Record<string, { icon: LucideIcon; color: string }> = {
   "org.updated": { icon: Pencil, color: "#64748b" },
   "org.member_added": { icon: UserPlus, color: "#0d9488" },
   "subscription.created": { icon: CreditCard, color: "#1f883d" },
+  "subscription.plan_changed": { icon: ArrowLeftRight, color: "#0d9488" },
   "subscription.renewed": { icon: RefreshCw, color: "#16a34a" },
   "subscription.canceled": { icon: XCircle, color: "#64748b" },
   "subscription.suspended": { icon: Ban, color: "#e5484d" },

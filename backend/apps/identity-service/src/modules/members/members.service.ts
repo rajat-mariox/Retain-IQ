@@ -3,17 +3,23 @@ import { requireTenantContext } from "../../common/context/request-context.store
 import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { SeatLimitService } from "../../common/seat-limit/seat-limit.service.js";
 import { ensureSystemRoles } from "../../common/security/roles.util.js";
 import type { AddMemberInput } from "./dto.js";
 
 @Injectable()
 export class MembersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly seatLimit: SeatLimitService,
+  ) {}
 
   /** Adds an employee + a login account with a temporary password (first-login change). */
   async addMember(input: AddMemberInput) {
     const ctx = requireTenantContext();
     const email = input.email.toLowerCase();
+
+    await this.seatLimit.assertCanAddEmployee(ctx.orgId); // 409 if at the licensed seat count
 
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {

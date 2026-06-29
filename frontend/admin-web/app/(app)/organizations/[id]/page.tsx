@@ -7,8 +7,10 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { StatusBadge } from "@/components/ui/badges";
 import { OrgActions } from "@/components/orgs/OrgActions";
+import { EditSubscriptionButton } from "@/components/orgs/EditSubscriptionButton";
 import { PaginatedTable } from "@/components/ui/Pagination";
 import { adminFetch } from "@/lib/admin-api";
+import { getPlans } from "@/lib/plans-api";
 import { formatCompact, formatDate, formatNumber } from "@/lib/format";
 import type { OrgStatus } from "@/lib/data/types";
 
@@ -58,6 +60,7 @@ interface AdminOrgDetail {
     activeSeats: number;
     pricePerSeat: number;
     mrr: number;
+    autoRenew: boolean;
     currentPeriodEnd: string | null;
     trialEndsAt: string | null;
   };
@@ -98,6 +101,7 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
   } catch {
     notFound();
   }
+  const plans = await getPlans().catch(() => []);
   const { org, subscription, storage, employees, attendanceToday } = data;
   const att = attendanceToday;
 
@@ -143,7 +147,18 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
           <Card>
             <CardHeader
               title="Subscription"
-              action={subscription.status ? <SubBadge status={subscription.status} /> : null}
+              action={
+                <div className="flex items-center gap-2">
+                  {subscription.status ? <SubBadge status={subscription.status} /> : null}
+                  {subscription.planName && plans.length > 0 ? (
+                    <EditSubscriptionButton
+                      orgId={org.id}
+                      current={{ planId: subscription.planId, seats: subscription.seats, autoRenew: subscription.autoRenew }}
+                      plans={plans.map((p) => ({ id: p.id, name: p.name, pricePerSeat: p.pricePerSeat }))}
+                    />
+                  ) : null}
+                </div>
+              }
             />
             <CardBody>
               {subscription.planName ? (
