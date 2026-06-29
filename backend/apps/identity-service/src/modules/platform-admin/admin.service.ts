@@ -9,6 +9,8 @@ import { PrismaService } from "../../common/database/prisma.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { ensureSystemRoles } from "../../common/security/roles.util.js";
 import type {
+  AdminActivityFeed,
+  AdminActivityItem,
   AdminAttendanceToday,
   AdminBilling,
   AdminEmployee,
@@ -16,8 +18,14 @@ import type {
   AdminOrg,
   AdminOrgDetail,
   AdminOverview,
+  AdminFailedPaymentRow,
   AdminPlanDist,
   AdminRevenue,
+  AdminStorage,
+  AdminSubLifecycleRow,
+  AdminSubscription,
+  AdminSubscriptionsView,
+  AdminTopCustomer,
   AdminUsage,
   AdminUsagePoint,
 } from "./admin.dto.js";
@@ -179,7 +187,7 @@ export class AdminService {
     }
 
     const today = startOfUtcDay();
-    const [employees, memberCount, lastSession, factByEmployee, attendance, subscription] = await Promise.all([
+    const [employees, memberCount, lastSession, factByEmployee, attendance, subscription, storageAgg] = await Promise.all([
       this.prisma.employee.findMany({
         where: { orgId: id },
         select: { id: true, firstName: true, lastName: true, email: true, status: true },
@@ -198,7 +206,8 @@ export class AdminService {
         where: { orgId: id, day: { gte: since } },
         select: { employeeId: true, status: true, day: true },
       }),
-      this.billing.subscription.findUnique({ where: { orgId: id }, select: { planId: true, status: true } }),
+      this.billing.subscription.findUnique({ where: { orgId: id }, include: { plan: true } }),
+      this.prisma.screenshotObject.aggregate({ where: { orgId: id }, _sum: { sizeBytes: true } }),
     ]);
 
     // Per-employee attendance over the window: present+late days / tracked days.
@@ -266,7 +275,26 @@ export class AdminService {
       timezone: org.timezone,
     };
 
-    return { org: orgRow, employees: employeeRows, attendanceToday };
+    const subscriptionDto: AdminSubscription = subscription
+      ? {
+          planId: subscription.planId,
+          planName: subscription.plan.name,
+          status: subscription.status,
+          seats: subscription.seats,
+          activeSeats: subscription.activeSeats,
+          pricePerSeat: subscription.plan.pricePerSeat,
+          mrr: subscription.activeSeats * subscription.plan.pricePerSeat,
+          currentPeriodEnd: subscription.currentPeriodEnd.toISOString(),
+          trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
+        }
+      : { planId: null, planName: null, status: null, seats: 0, activeSeats: 0, pricePerSeat: 0, mrr: 0, currentPeriodEnd: null, trialEndsAt: null };
+
+    const storage: AdminStorage = {
+      usedBytes: storageAgg._sum.sizeBytes ? Number(storageAgg._sum.sizeBytes) : 0,
+      limitBytes: subscription?.plan?.storageLimitMb != null ? subscription.plan.storageLimitMb * 1024 * 1024 : null,
+    };
+
+    return { org: orgRow, subscription: subscriptionDto, storage, employees: employeeRows, attendanceToday };
   }
 
   /** Super-admin provisions a new org + its owner account (temp password) + subscription. */
@@ -320,6 +348,7 @@ export class AdminService {
     });
 
     this.cache.clear(); // new org should appear in the dashboards immediately
+    this.recordEvent("org.created", org.id, `Organization "${org.name}" created on the ${plan.name} plan`);
 
     return {
       org: { id: org.id, name: org.name, slug: org.slug },
@@ -340,6 +369,7 @@ export class AdminService {
       select: { id: true, name: true, slug: true, status: true },
     });
     this.cache.clear();
+    this.recordEvent("org.updated", id, `Organization "${org.name}" profile updated`);
     return org;
   }
 
@@ -354,10 +384,12 @@ export class AdminService {
     const org = await this.prisma.organization.update({
       where: { id },
       data: { status },
-      select: { id: true, status: true },
+      select: { id: true, status: true, name: true },
     });
     this.cache.clear();
-    return org;
+    const verb = status === "SUSPENDED" ? "suspended" : status === "DELETED" ? "deleted" : "activated";
+    this.recordEvent(`org.${verb}`, id, `Organization "${org.name}" ${verb}`);
+    return { id: org.id, status: org.status };
   }
 
   /** Throws NotFound for a missing or already-deleted org. */
@@ -366,6 +398,11 @@ export class AdminService {
     if (!org || org.status === "DELETED") {
       throw new NotFoundException("Organization not found.");
     }
+  }
+
+  /** Append a row to the platform activity feed. Best-effort (never blocks the action). */
+  private recordEvent(type: string, orgId: string | null, summary: string): void {
+    void this.prisma.platformEvent.create({ data: { type, orgId, summary } }).catch(() => undefined);
   }
 
   private async uniqueSlug(orgName: string): Promise<string> {
@@ -458,11 +495,115 @@ export class AdminService {
       totalSeats,
     };
 
-    return { plans: planDist, revenue, trend };
+    // Top paying customers — per-org MRR (paying subs), ranked. Org count is
+    // small, so loading the paying subs + joining names is cheap.
+    const planNameById = new Map(plans.map((p) => [p.id, p.name]));
+    const paidSubs = await this.billing.subscription.findMany({
+      where: { status: { in: ["ACTIVE", "PAST_DUE"] } },
+      select: { orgId: true, planId: true, activeSeats: true },
+    });
+    const ranked = paidSubs
+      .map((s) => ({
+        orgId: s.orgId,
+        plan: planNameById.get(s.planId) ?? s.planId,
+        seats: s.activeSeats,
+        mrr: Math.round((s.activeSeats * (priceByPlan.get(s.planId) ?? 0)) / 100),
+      }))
+      .sort((a, b) => b.mrr - a.mrr)
+      .slice(0, 10);
+    const custOrgs = await this.prisma.organization.findMany({ where: { id: { in: ranked.map((r) => r.orgId) } }, select: { id: true, name: true } });
+    const custName = new Map(custOrgs.map((o) => [o.id, o.name]));
+    const topCustomers: AdminTopCustomer[] = ranked.map((r) => ({ orgId: r.orgId, orgName: custName.get(r.orgId) ?? "Unknown", plan: r.plan, seats: r.seats, mrr: r.mrr }));
+
+    return { plans: planDist, revenue, trend, topCustomers };
   }
 
   usage(): Promise<AdminUsage> {
     return this.cached("usage", () => this.computeUsage());
+  }
+
+  subscriptions(): Promise<AdminSubscriptionsView> {
+    return this.cached("subscriptions", () => this.computeSubscriptions());
+  }
+
+  /** Platform activity feed: org actions (identity-db) merged with billing events (billing-db). */
+  async activity(query: { page: number; pageSize: number }): Promise<AdminActivityFeed> {
+    const take = query.page * query.pageSize; // enough from each source to cover the page after merge
+    const [orgEvents, billingEvents, orgTotal, billingTotal] = await Promise.all([
+      this.prisma.platformEvent.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, createdAt: true } }),
+      this.billing.billingEvent.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, createdAt: true } }),
+      this.prisma.platformEvent.count(),
+      this.billing.billingEvent.count(),
+    ]);
+
+    const orgIds = [...new Set([...orgEvents.map((e) => e.orgId), ...billingEvents.map((e) => e.orgId)].filter((x): x is string => Boolean(x)))];
+    const orgs = await this.prisma.organization.findMany({ where: { id: { in: orgIds } }, select: { id: true, name: true } });
+    const nameById = new Map(orgs.map((o) => [o.id, o.name]));
+
+    const merged: AdminActivityItem[] = [
+      ...orgEvents.map((e) => ({ id: e.id, source: "org" as const, type: e.type, summary: e.summary, orgId: e.orgId, orgName: e.orgId ? (nameById.get(e.orgId) ?? null) : null, createdAt: e.createdAt.toISOString() })),
+      ...billingEvents.map((e) => ({ id: e.id, source: "billing" as const, type: e.type, summary: e.summary, orgId: e.orgId, orgName: nameById.get(e.orgId) ?? null, createdAt: e.createdAt.toISOString() })),
+    ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+    const start = (query.page - 1) * query.pageSize;
+    return { items: merged.slice(start, start + query.pageSize), total: orgTotal + billingTotal, page: query.page, pageSize: query.pageSize };
+  }
+
+  /** Subscription lifecycle: status counts + upcoming renewals/expirations + failed payments. */
+  private async computeSubscriptions(): Promise<AdminSubscriptionsView> {
+    const now = new Date();
+    const soon = new Date(now.getTime() + 14 * DAY_MS);
+    const [statusGroups, upcomingSubs, failedSubs] = await Promise.all([
+      this.billing.subscription.groupBy({ by: ["status"], _count: { _all: true } }),
+      this.billing.subscription.findMany({
+        where: { status: { in: ["ACTIVE", "TRIALING", "PAST_DUE"] }, currentPeriodEnd: { lte: soon } },
+        include: { plan: { select: { name: true } } },
+        orderBy: { currentPeriodEnd: "asc" },
+        take: 50,
+      }),
+      this.billing.subscription.findMany({
+        where: { status: { in: ["PAST_DUE", "SUSPENDED"] } },
+        include: { plan: { select: { name: true } }, invoices: { where: { status: "OPEN" }, orderBy: { dueAt: "asc" }, take: 1 } },
+        orderBy: { updatedAt: "desc" },
+        take: 50,
+      }),
+    ]);
+
+    const count = (s: string) => statusGroups.find((g) => g.status === s)?._count._all ?? 0;
+
+    const orgIds = [...new Set([...upcomingSubs, ...failedSubs].map((s) => s.orgId))];
+    const orgs = await this.prisma.organization.findMany({ where: { id: { in: orgIds } }, select: { id: true, name: true } });
+    const nameById = new Map(orgs.map((o) => [o.id, o.name]));
+
+    const upcoming: AdminSubLifecycleRow[] = upcomingSubs.map((s) => ({
+      orgId: s.orgId,
+      orgName: nameById.get(s.orgId) ?? "Unknown",
+      plan: s.plan.name,
+      status: s.status,
+      autoRenew: s.autoRenew,
+      currentPeriodEnd: s.currentPeriodEnd.toISOString(),
+      daysLeft: Math.ceil((s.currentPeriodEnd.getTime() - now.getTime()) / DAY_MS),
+    }));
+
+    const failed: AdminFailedPaymentRow[] = failedSubs.map((s) => {
+      const inv = s.invoices[0];
+      return {
+        orgId: s.orgId,
+        orgName: nameById.get(s.orgId) ?? "Unknown",
+        plan: s.plan.name,
+        status: s.status,
+        amountDue: inv?.amountDue ?? 0,
+        dueAt: inv?.dueAt ? inv.dueAt.toISOString() : null,
+        daysOverdue: inv ? Math.max(0, Math.floor((now.getTime() - inv.dueAt.getTime()) / DAY_MS)) : 0,
+      };
+    });
+
+    const expiringSoon = upcomingSubs.filter((s) => s.status !== "PAST_DUE").length;
+    return {
+      counts: { active: count("ACTIVE"), trialing: count("TRIALING"), pastDue: count("PAST_DUE"), suspended: count("SUSPENDED"), canceled: count("CANCELED"), expiringSoon },
+      upcoming,
+      failed,
+    };
   }
 
   private async computeUsage(): Promise<AdminUsage> {

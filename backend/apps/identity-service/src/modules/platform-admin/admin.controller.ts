@@ -84,4 +84,14 @@ export class AdminController {
   billing() {
     return this.admin.getBilling();
   }
+
+  @Get("subscriptions")
+  subscriptions() {
+    return this.admin.subscriptions();
+  }
+
+  @Get("activity")
+  activity(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
+    return this.admin.activity(query);
+  }
 }

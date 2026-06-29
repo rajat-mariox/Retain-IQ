@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { Activity, ArrowLeft, CalendarOff, Gauge, Timer, UserCheck, Users, UserX, type LucideIcon } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
-import { Card, CardHeader } from "@/components/ui/Card";
+import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { StatusBadge } from "@/components/ui/badges";
 import { OrgActions } from "@/components/orgs/OrgActions";
@@ -50,6 +50,18 @@ interface AdminOrgDetail {
     region?: string;
     timezone?: string;
   };
+  subscription: {
+    planId: string | null;
+    planName: string | null;
+    status: string | null;
+    seats: number;
+    activeSeats: number;
+    pricePerSeat: number;
+    mrr: number;
+    currentPeriodEnd: string | null;
+    trialEndsAt: string | null;
+  };
+  storage: { usedBytes: number; limitBytes: number | null };
   employees: AdminEmployee[];
   attendanceToday: AdminAttendanceToday;
 }
@@ -86,7 +98,7 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
   } catch {
     notFound();
   }
-  const { org, employees, attendanceToday } = data;
+  const { org, subscription, storage, employees, attendanceToday } = data;
   const att = attendanceToday;
 
   return (
@@ -109,6 +121,76 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
           <StatTile label="Employees" value={formatCompact(org.employees)} icon={Users} accent="#1f883d" />
           <StatTile label="Avg productivity" value={org.avgProductivity > 0 ? `${org.avgProductivity}%` : "—"} icon={Gauge} accent="#16a34a" />
           <StatTile label="Active hours (30d)" value={formatCompact(org.activeHours)} icon={Activity} accent="#166534" />
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          {/* Company information */}
+          <Card>
+            <CardHeader title="Company information" />
+            <CardBody>
+              <dl className="space-y-3 text-sm">
+                <InfoRow label="Slug" value={org.slug} mono />
+                <InfoRow label="Status" value={titleCase(org.status)} />
+                <InfoRow label="Region" value={org.region ?? "—"} />
+                <InfoRow label="Timezone" value={org.timezone ?? "—"} />
+                <InfoRow label="Created" value={formatDate(org.createdAt)} />
+                <InfoRow label="Last activity" value={org.lastActiveAt ? formatDate(org.lastActiveAt) : "No activity yet"} />
+              </dl>
+            </CardBody>
+          </Card>
+
+          {/* Subscription */}
+          <Card>
+            <CardHeader
+              title="Subscription"
+              action={subscription.status ? <SubBadge status={subscription.status} /> : null}
+            />
+            <CardBody>
+              {subscription.planName ? (
+                <dl className="space-y-3 text-sm">
+                  <InfoRow label="Plan" value={subscription.planName} />
+                  <InfoRow label="Seats" value={`${subscription.activeSeats} / ${subscription.seats} active`} />
+                  <InfoRow label="Price" value={subscription.pricePerSeat === 0 ? "Free" : `${usd(subscription.pricePerSeat)} / seat`} />
+                  <InfoRow label="MRR" value={usd(subscription.mrr)} />
+                  {subscription.trialEndsAt ? <InfoRow label="Trial ends" value={formatDate(subscription.trialEndsAt)} /> : null}
+                  <InfoRow label="Renews" value={subscription.currentPeriodEnd ? formatDate(subscription.currentPeriodEnd) : "—"} />
+                </dl>
+              ) : (
+                <p className="text-sm text-slate-500">No active subscription.</p>
+              )}
+            </CardBody>
+          </Card>
+
+          {/* Storage usage */}
+          <Card>
+            <CardHeader title="Storage usage" subtitle="Employee screenshots" />
+            <CardBody className="space-y-4">
+              <div>
+                <div className="flex items-end justify-between">
+                  <span className="text-2xl font-semibold tabular-nums text-slate-900">{formatBytes(storage.usedBytes)}</span>
+                  <span className="text-sm text-slate-500">
+                    of {storage.limitBytes == null ? "Unlimited" : formatBytes(storage.limitBytes)}
+                  </span>
+                </div>
+                {storage.limitBytes != null ? (
+                  (() => {
+                    const pct = Math.min(100, Math.round((storage.usedBytes / storage.limitBytes!) * 100));
+                    const tone = pct >= 90 ? "#e5484d" : pct >= 75 ? "#d97706" : "#1f883d";
+                    return (
+                      <>
+                        <span className="mt-3 block h-2 overflow-hidden rounded-full bg-panel-2">
+                          <span className="block h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: tone }} />
+                        </span>
+                        <p className="mt-1.5 text-xs text-slate-500">{pct}% of the {subscription.planName ?? "plan"} quota used</p>
+                      </>
+                    );
+                  })()
+                ) : (
+                  <p className="mt-2 text-xs text-slate-500">Unlimited storage on the {subscription.planName ?? "Enterprise"} plan.</p>
+                )}
+              </div>
+            </CardBody>
+          </Card>
         </div>
 
         <Card>
@@ -205,4 +287,44 @@ function ProductivityCell({ value }: { value: number }) {
       <span className="w-8 tabular-nums text-slate-700">{value}%</span>
     </div>
   );
+}
+
+function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <dt className="text-slate-500">{label}</dt>
+      <dd className={`text-right font-medium text-slate-800 ${mono ? "font-mono text-xs" : ""}`}>{value}</dd>
+    </div>
+  );
+}
+
+const SUB_TONE: Record<string, string> = {
+  ACTIVE: "bg-emerald-500/10 text-emerald-700 ring-emerald-600/20",
+  TRIALING: "bg-sky-500/10 text-sky-700 ring-sky-600/20",
+  PAST_DUE: "bg-amber-500/10 text-amber-700 ring-amber-600/20",
+  SUSPENDED: "bg-rose-500/10 text-rose-700 ring-rose-600/20",
+  CANCELED: "bg-slate-500/10 text-slate-600 ring-slate-500/20",
+};
+
+function SubBadge({ status }: { status: string }) {
+  const tone = SUB_TONE[status] ?? "bg-panel-2 text-slate-600 ring-hairline";
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tone}`}>{titleCase(status)}</span>;
+}
+
+function titleCase(s: string): string {
+  return s
+    .split("_")
+    .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1).toLowerCase() : w))
+    .join(" ");
+}
+
+const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 MB";
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`;
+  const mb = bytes / 1024 ** 2;
+  if (mb >= 1) return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }

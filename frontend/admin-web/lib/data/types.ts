@@ -2,7 +2,7 @@
 // data module returns, regardless of whether the source is the current mock or
 // a real platform-admin API later — the UI only ever imports from here.
 
-export type PlanId = "free" | "starter" | "growth" | "enterprise";
+export type PlanId = "free" | "basic" | "professional" | "enterprise";
 export type OrgStatus = "active" | "trialing" | "suspended" | "churned";
 
 export interface Plan {

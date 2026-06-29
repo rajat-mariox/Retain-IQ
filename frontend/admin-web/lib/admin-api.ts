@@ -43,7 +43,34 @@ export interface ApiBilling {
     totalSeats: number;
   };
   trend: { month: string; mrr: number; newMrr: number; churnedMrr: number }[];
+  topCustomers: { orgId: string; orgName: string; plan: string; seats: number; mrr: number }[];
 }
 
 /** Deduplicated per-render: subscriptions + revenue + overview share one /billing call. */
 export const getBilling = cache(() => adminFetch<ApiBilling>("billing"));
+
+export interface ApiSubscriptions {
+  counts: { active: number; trialing: number; pastDue: number; suspended: number; canceled: number; expiringSoon: number };
+  upcoming: { orgId: string; orgName: string; plan: string; status: string; autoRenew: boolean; currentPeriodEnd: string; daysLeft: number }[];
+  failed: { orgId: string; orgName: string; plan: string; status: string; amountDue: number; dueAt: string | null; daysOverdue: number }[];
+}
+export const getSubscriptionsView = cache(() => adminFetch<ApiSubscriptions>("subscriptions"));
+
+export interface ApiActivityItem {
+  id: string;
+  source: "org" | "billing";
+  type: string;
+  summary: string;
+  orgId: string | null;
+  orgName: string | null;
+  createdAt: string;
+}
+export interface ApiActivityFeed {
+  items: ApiActivityItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+export const getActivity = cache((page = 1, pageSize = 25) =>
+  adminFetch<ApiActivityFeed>(`activity?page=${page}&pageSize=${pageSize}`),
+);

@@ -21,6 +21,10 @@ export async function getMrrTrend(): Promise<MrrPoint[]> {
   return (await getBilling()).trend;
 }
 
+export async function getTopCustomers() {
+  return (await getBilling()).topCustomers;
+}
+
 export async function getRevenueSummary(): Promise<RevenueSummary> {
   const { revenue } = await getBilling();
   return {

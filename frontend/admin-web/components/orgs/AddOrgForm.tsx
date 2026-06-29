@@ -11,7 +11,7 @@ export function AddOrgForm({ plans }: { plans: { id: string; name: string }[] })
   const [ownerEmail, setOwnerEmail] = useState("");
   const [ownerFirstName, setFirst] = useState("");
   const [ownerLastName, setLast] = useState("");
-  const [planId, setPlanId] = useState(plans.find((p) => p.id === "starter")?.id ?? plans[0]?.id ?? "");
+  const [planId, setPlanId] = useState(plans.find((p) => p.id === "basic")?.id ?? plans[0]?.id ?? "");
   const [seats, setSeats] = useState("10");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

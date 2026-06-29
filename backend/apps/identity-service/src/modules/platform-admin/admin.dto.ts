@@ -57,10 +57,19 @@ export interface AdminMrrPoint {
   churnedMrr: number;
 }
 
+export interface AdminTopCustomer {
+  orgId: string;
+  orgName: string;
+  plan: string;
+  seats: number;
+  mrr: number; // USD whole dollars
+}
+
 export interface AdminBilling {
   plans: AdminPlanDist[];
   revenue: AdminRevenue;
   trend: AdminMrrPoint[];
+  topCustomers: AdminTopCustomer[];
 }
 
 export interface AdminUsagePoint {
@@ -108,8 +117,70 @@ export interface AdminAttendanceToday {
   attendanceRate: number;
 }
 
+export interface AdminSubscription {
+  planId: string | null;
+  planName: string | null;
+  status: string | null;
+  seats: number;
+  activeSeats: number;
+  pricePerSeat: number; // USD cents
+  mrr: number; // USD cents
+  currentPeriodEnd: string | null;
+  trialEndsAt: string | null;
+}
+
+export interface AdminStorage {
+  usedBytes: number;
+  limitBytes: number | null; // null = unlimited
+}
+
 export interface AdminOrgDetail {
   org: AdminOrg;
+  subscription: AdminSubscription;
+  storage: AdminStorage;
   employees: AdminEmployee[];
   attendanceToday: AdminAttendanceToday;
+}
+
+export interface AdminSubLifecycleRow {
+  orgId: string;
+  orgName: string;
+  plan: string;
+  status: string;
+  autoRenew: boolean;
+  currentPeriodEnd: string;
+  daysLeft: number;
+}
+
+export interface AdminFailedPaymentRow {
+  orgId: string;
+  orgName: string;
+  plan: string;
+  status: string;
+  amountDue: number; // USD cents
+  dueAt: string | null;
+  daysOverdue: number;
+}
+
+export interface AdminSubscriptionsView {
+  counts: { active: number; trialing: number; pastDue: number; suspended: number; canceled: number; expiringSoon: number };
+  upcoming: AdminSubLifecycleRow[]; // renewals + expirations within the window
+  failed: AdminFailedPaymentRow[];
+}
+
+export interface AdminActivityItem {
+  id: string;
+  source: "org" | "billing";
+  type: string;
+  summary: string;
+  orgId: string | null;
+  orgName: string | null;
+  createdAt: string;
+}
+
+export interface AdminActivityFeed {
+  items: AdminActivityItem[];
+  total: number;
+  page: number;
+  pageSize: number;
 }

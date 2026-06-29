@@ -17,6 +17,7 @@ import { ProjectsModule } from "./modules/projects/projects.module.js";
 import { InsightsModule } from "./modules/insights/insights.module.js";
 import { MembersModule } from "./modules/members/members.module.js";
 import { NotificationsModule } from "./modules/notifications/notifications.module.js";
+import { StorageModule } from "./modules/storage/storage.module.js";
 import { OutboxModule } from "./modules/outbox/outbox.module.js";
 
 @Module({
@@ -38,6 +39,7 @@ import { OutboxModule } from "./modules/outbox/outbox.module.js";
     InsightsModule,
     MembersModule,
     NotificationsModule,
+    StorageModule,
     OutboxModule,
   ],
 })

@@ -16,12 +16,12 @@ const DAY = 86_400_000;
 
 export const PLANS: Record<PlanId, Plan> = {
   free: { id: "free", name: "Free", pricePerSeat: 0, color: "#64748b" },
-  starter: { id: "starter", name: "Starter", pricePerSeat: 8, color: "#3fa45b" },
-  growth: { id: "growth", name: "Growth", pricePerSeat: 14, color: "#1f883d" },
+  basic: { id: "basic", name: "Basic", pricePerSeat: 8, color: "#3fa45b" },
+  professional: { id: "professional", name: "Professional", pricePerSeat: 14, color: "#1f883d" },
   enterprise: { id: "enterprise", name: "Enterprise", pricePerSeat: 22, color: "#14532d" },
 };
 
-export const PLAN_ORDER: PlanId[] = ["free", "starter", "growth", "enterprise"];
+export const PLAN_ORDER: PlanId[] = ["free", "basic", "professional", "enterprise"];
 
 /** Small, fast, deterministic PRNG (mulberry32). */
 function mulberry32(seed: number): () => number {
@@ -52,16 +52,16 @@ const COUNTRIES = ["US", "UK", "India", "Germany", "Canada", "Australia", "Singa
 
 const SEAT_RANGES: Record<PlanId, [number, number]> = {
   free: [3, 12],
-  starter: [8, 45],
-  growth: [25, 130],
+  basic: [8, 45],
+  professional: [25, 130],
   enterprise: [70, 420],
 };
 
 function weightedPlan(): PlanId {
   const r = rng();
   if (r < 0.16) return "free";
-  if (r < 0.52) return "starter";
-  if (r < 0.86) return "growth";
+  if (r < 0.52) return "basic";
+  if (r < 0.86) return "professional";
   return "enterprise";
 }
 

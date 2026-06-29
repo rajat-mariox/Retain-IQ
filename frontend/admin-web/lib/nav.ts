@@ -1,4 +1,4 @@
-import { Activity, Building2, CreditCard, DollarSign, LayoutDashboard, type LucideIcon } from "lucide-react";
+import { Activity, Bell, Building2, CreditCard, DollarSign, LayoutDashboard, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   label: string;
@@ -12,4 +12,5 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Usage & Analytics", href: "/usage", icon: Activity },
   { label: "Subscriptions", href: "/subscriptions", icon: CreditCard },
   { label: "Revenue", href: "/revenue", icon: DollarSign },
+  { label: "Activity", href: "/activity", icon: Bell },
 ];
