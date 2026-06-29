@@ -4,9 +4,11 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { AttendanceService } from "./attendance.service.js";
 
 @Controller("attendance")
+@RequireFeature("attendance")
 @UseGuards(AuthGuard, TenantGuard)
 export class AttendanceController {
   constructor(private readonly attendance: AttendanceService) {}

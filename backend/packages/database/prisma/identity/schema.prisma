@@ -66,7 +66,6 @@ model Organization {
   status    OrgStatus @default(ACTIVE)
   region    String    @default("ap-south-1")
   timezone  String    @default("Asia/Kolkata")
-  industry  String? // for revenue-by-industry analytics (e.g. Technology, Healthcare)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
@@ -448,4 +447,12 @@ model PlatformEvent {
   createdAt    DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// Platform-wide SaaS configuration (super-admin). Key-value so sections
+// (branding | notification | featureFlags | maintenance) evolve independently.
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
 }

@@ -12,9 +12,10 @@ function isActive(pathname: string, href: string): boolean {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function Sidebar() {
+export function Sidebar({ platformName = "RetainIQ", featureFlags = {} }: { platformName?: string; featureFlags?: Record<string, boolean> }) {
   const pathname = usePathname();
   const { open, setOpen } = useMobileNav();
+  const navItems = NAV_ITEMS.filter((item) => !item.flag || featureFlags[item.flag] !== false);
 
   // Close the drawer after navigating.
   useEffect(() => {
@@ -57,7 +58,7 @@ export function Sidebar() {
               <ShieldCheck className="size-5" />
             </span>
             <div className="leading-tight">
-              <p className="text-sm font-semibold text-slate-900">RetainIQ</p>
+              <p className="truncate text-sm font-semibold text-slate-900">{platformName}</p>
               <p className="text-[11px] font-medium uppercase tracking-wider text-brand-soft">Super Admin</p>
             </div>
           </div>
@@ -73,7 +74,7 @@ export function Sidebar() {
 
         <nav className="mt-7 flex flex-1 flex-col gap-1">
           <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Platform</p>
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const active = isActive(pathname, item.href);
             return (
               <Link

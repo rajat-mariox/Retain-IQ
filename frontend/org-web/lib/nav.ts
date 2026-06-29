@@ -17,17 +17,18 @@ export interface NavItem {
   href: string;
   icon: LucideIcon;
   adminOnly?: boolean;
+  flag?: string; // hidden when this platform feature flag is off
 }
 
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "My Time", href: "/time", icon: Timer },
-  { label: "Attendance", href: "/attendance", icon: CalendarCheck },
-  { label: "Projects", href: "/projects", icon: FolderKanban },
+  { label: "My Time", href: "/time", icon: Timer, flag: "timeTracking" },
+  { label: "Attendance", href: "/attendance", icon: CalendarCheck, flag: "attendance" },
+  { label: "Projects", href: "/projects", icon: FolderKanban, flag: "projects" },
   { label: "Notifications", href: "/notifications", icon: Bell },
-  { label: "Screenshots", href: "/screenshots", icon: Images },
+  { label: "Screenshots", href: "/screenshots", icon: Images, flag: "screenshots" },
   { label: "Employees", href: "/employees", icon: Users, adminOnly: true },
-  { label: "AI Insights", href: "/insights", icon: Sparkles, adminOnly: true },
-  { label: "Billing", href: "/billing", icon: CreditCard, adminOnly: true },
+  { label: "AI Insights", href: "/insights", icon: Sparkles, adminOnly: true, flag: "aiInsights" },
+  { label: "Billing", href: "/billing", icon: CreditCard, adminOnly: true, flag: "billing" },
   { label: "Settings", href: "/settings", icon: Settings, adminOnly: true },
 ];

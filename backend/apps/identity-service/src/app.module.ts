@@ -3,6 +3,8 @@ import { ScheduleModule } from "@nestjs/schedule";
 import { DatabaseModule } from "./common/database/database.module.js";
 import { IdempotencyModule } from "./common/idempotency/idempotency.module.js";
 import { MessagingModule } from "./common/messaging/messaging.module.js";
+import { SeatLimitModule } from "./common/seat-limit/seat-limit.module.js";
+import { SettingsModule } from "./common/settings/settings.module.js";
 import { ObservabilityModule } from "./common/observability/observability.module.js";
 import { SecurityModule } from "./common/security/security.module.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
@@ -18,6 +20,7 @@ import { InsightsModule } from "./modules/insights/insights.module.js";
 import { MembersModule } from "./modules/members/members.module.js";
 import { NotificationsModule } from "./modules/notifications/notifications.module.js";
 import { StorageModule } from "./modules/storage/storage.module.js";
+import { SeatSyncModule } from "./modules/seat-sync/seat-sync.module.js";
 import { OutboxModule } from "./modules/outbox/outbox.module.js";
 
 @Module({
@@ -27,6 +30,8 @@ import { OutboxModule } from "./modules/outbox/outbox.module.js";
     DatabaseModule,
     IdempotencyModule,
     MessagingModule,
+    SeatLimitModule,
+    SettingsModule,
     SecurityModule,
     HealthModule,
     IdentityModule,
@@ -40,6 +45,7 @@ import { OutboxModule } from "./modules/outbox/outbox.module.js";
     MembersModule,
     NotificationsModule,
     StorageModule,
+    SeatSyncModule,
     OutboxModule,
   ],
 })

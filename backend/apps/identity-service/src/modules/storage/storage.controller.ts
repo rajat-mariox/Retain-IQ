@@ -8,6 +8,7 @@ import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { StorageService } from "./storage.service.js";
 
 const uploadSchema = z.object({
@@ -29,6 +30,7 @@ type ListQuery = z.infer<typeof listQuerySchema>;
  * - Delete: Owner only (screenshots.delete).
  */
 @Controller("storage")
+@RequireFeature("screenshots")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class StorageController {
   constructor(private readonly storage: StorageService) {}

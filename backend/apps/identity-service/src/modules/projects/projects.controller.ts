@@ -14,9 +14,11 @@ import {
   type CreateTaskInput,
   type UpdateTaskInput,
 } from "./dto.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ProjectsService } from "./projects.service.js";
 
 @Controller()
+@RequireFeature("projects")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class ProjectsController {
   constructor(private readonly projects: ProjectsService) {}

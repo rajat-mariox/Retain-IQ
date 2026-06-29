@@ -12,10 +12,22 @@ function isActive(pathname: string, href: string): boolean {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function Sidebar({ orgName, isAdmin }: { orgName: string; isAdmin: boolean }) {
+export function Sidebar({
+  orgName,
+  isAdmin,
+  platformName = "RetainIQ",
+  featureFlags = {},
+}: {
+  orgName: string;
+  isAdmin: boolean;
+  platformName?: string;
+  featureFlags?: Record<string, boolean>;
+}) {
   const pathname = usePathname();
   const { open, setOpen } = useMobileNav();
-  const items = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+  const items = NAV_ITEMS.filter(
+    (item) => (!item.adminOnly || isAdmin) && (!item.flag || featureFlags[item.flag] !== false),
+  );
 
   // Close the drawer after navigating.
   useEffect(() => {
@@ -59,7 +71,7 @@ export function Sidebar({ orgName, isAdmin }: { orgName: string; isAdmin: boolea
             </span>
             <div className="min-w-0 leading-tight">
               <p className="truncate text-sm font-semibold text-slate-900">{orgName}</p>
-              <p className="text-[11px] font-medium uppercase tracking-wider text-brand-soft">RetainIQ</p>
+              <p className="truncate text-[11px] font-medium uppercase tracking-wider text-brand-soft">{platformName}</p>
             </div>
           </div>
           <button

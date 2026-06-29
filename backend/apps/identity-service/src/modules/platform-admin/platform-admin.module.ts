@@ -4,6 +4,7 @@ import { TokenDenylist } from "@retainiq/platform";
 import { Redis } from "ioredis";
 import { AdminController } from "./admin.controller.js";
 import { AdminService } from "./admin.service.js";
+import { PublicConfigController } from "./public-config.controller.js";
 import { PlatformAdminController } from "./platform-admin.controller.js";
 import { PlatformAdminService } from "./platform-admin.service.js";
 import { PlatformTokenService } from "./platform-token.service.js";
@@ -13,7 +14,7 @@ import { PLATFORM_DENYLIST } from "./dto.js";
 const config = loadConfig();
 
 @Module({
-  controllers: [PlatformAdminController, AdminController],
+  controllers: [PlatformAdminController, AdminController, PublicConfigController],
   providers: [
     PlatformAdminService,
     PlatformTokenService,
