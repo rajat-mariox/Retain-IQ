@@ -10,6 +10,8 @@ import {
 } from "@retainiq/observability";
 import { loadBillingConfig } from "./config.js";
 import { PLAN_CATALOG } from "./plan-catalog.js";
+import { startPlanApi } from "./plan-api.js";
+import { runBillingCycle } from "./lifecycle.js";
 
 const DAY_MS = 86_400_000;
 const config = loadBillingConfig();
@@ -37,16 +39,16 @@ function startOfUtcMonth(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 }
 
-/** Seed/refresh the plan catalog. billing-service owns the Plan table. */
+/**
+ * Bootstrap the default plans on a fresh DB. CREATE-ONLY: plans are now
+ * admin-managed (see plan-api), so we never overwrite an existing (possibly
+ * edited) plan — the catalog is only the initial default set.
+ */
 async function seedPlans(): Promise<void> {
   for (const p of PLAN_CATALOG) {
-    await prisma.plan.upsert({
-      where: { id: p.id },
-      create: p,
-      update: { name: p.name, pricePerSeat: p.pricePerSeat, seatLimit: p.seatLimit, color: p.color, sortOrder: p.sortOrder, features: p.features },
-    });
+    await prisma.plan.upsert({ where: { id: p.id }, create: p, update: {} });
   }
-  logger.info({ count: PLAN_CATALOG.length }, "Seeded billing plan catalog");
+  logger.info({ catalog: PLAN_CATALOG.length }, "Ensured default plans exist");
 }
 
 /** Provisions a subscription (+ first invoice) when identity emits org.created. */
@@ -117,6 +119,10 @@ async function handleOrganizationCreated(event: Record<string, unknown>): Promis
     if (!isUniqueViolation(error)) throw error;
   }
 
+  await prisma.billingEvent.create({
+    data: { orgId, type: "subscription.created", summary: `Subscribed to ${plan.name} (${seats} seats)`, planId, amountCents: amount },
+  });
+
   subsCreated.inc();
   logger.info({ orgId, planId, status }, "Provisioned subscription from org.created");
 }
@@ -156,6 +162,17 @@ async function main(): Promise<void> {
     },
   });
 
+  // Platform-admin plan-CRUD HTTP API (billing-service owns the Plan table).
+  const planApi = await startPlanApi({ prisma, port: config.API_PORT, jwtSecret: config.PLATFORM_JWT_SECRET, logger });
+
+  // Recurring-billing lifecycle: run on boot, then on an interval.
+  const billingCycle = () =>
+    runBillingCycle({ prisma, logger, paymentFailureRate: config.PAYMENT_FAILURE_RATE }).catch((err) =>
+      logger.error({ err: String(err) }, "billing lifecycle cycle failed"),
+    );
+  await billingCycle();
+  const lifecycleTimer = setInterval(() => void billingCycle(), config.LIFECYCLE_INTERVAL_MS);
+
   const runPromise = consumer.run(handler);
 
   let shuttingDown = false;
@@ -163,8 +180,10 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, "Shutting down billing-service");
+    clearInterval(lifecycleTimer);
     consumer.stop();
     opsServer.close();
+    void planApi.close();
     void Promise.race([runPromise, delay(8000)])
       .then(() => broker.close())
       .then(() => prisma.$disconnect())
@@ -173,7 +192,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  logger.info({ stream: STREAMS.domainEvents, group: config.CONSUMER_GROUP, healthPort: config.HEALTH_PORT, broker: config.BROKER_DRIVER }, "billing-service started");
+  logger.info({ stream: STREAMS.domainEvents, group: config.CONSUMER_GROUP, healthPort: config.HEALTH_PORT, apiPort: config.API_PORT, broker: config.BROKER_DRIVER }, "billing-service started");
   await runPromise;
 }
 

@@ -66,6 +66,7 @@ model Organization {
   status    OrgStatus @default(ACTIVE)
   region    String    @default("ap-south-1")
   timezone  String    @default("Asia/Kolkata")
+  industry  String? // for revenue-by-industry analytics (e.g. Technology, Healthcare)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
@@ -411,4 +412,40 @@ model Task {
   @@index([orgId, status])
   @@index([projectId, status])
   @@index([assigneeEmployeeId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot storage — metadata for employee monitoring screenshots. The binary
+// lives in S3 (MinIO locally); only lightweight metadata + size is stored here.
+// Per-org usage = SUM(sizeBytes); the quota comes from the org's Plan
+// (billing-db) storageLimitMb. orgId/employeeId are plain UUIDs (FKs in SQL).
+// ---------------------------------------------------------------------------
+model ScreenshotObject {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  employeeId  String?  @db.Uuid
+  key         String   @unique // S3 object key
+  sizeBytes   BigInt
+  contentType String   @default("image/jpeg")
+  capturedAt  DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([orgId, capturedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Platform activity feed — append-only log of notable org-level actions for the
+// super-admin (org created/suspended/activated/deleted/updated, member added).
+// Billing lifecycle events live in billing-db (BillingEvent) and are merged in
+// at read time. Written only by identity-service.
+// ---------------------------------------------------------------------------
+model PlatformEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String?  @db.Uuid
+  actorUserId  String?  @db.Uuid
+  type         String // org.created | org.suspended | org.activated | org.deleted | org.updated | org.member_added
+  summary      String
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
 }
