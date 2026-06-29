@@ -3,6 +3,7 @@ import { offsetPaginationQuerySchema, type OffsetPaginationQuery } from "@retain
 import { z } from "zod";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { AdminService } from "./admin.service.js";
+import { PlatformSettingsService } from "../../common/settings/platform-settings.service.js";
 import { PlatformAuthGuard } from "./platform-auth.guard.js";
 
 const createOrgSchema = z.object({
@@ -26,11 +27,44 @@ const updateOrgSchema = z
   });
 type UpdateOrgInput = z.infer<typeof updateOrgSchema>;
 
+const updateSettingsSchema = z
+  .object({
+    branding: z
+      .object({
+        platformName: z.string().min(1).max(60),
+        primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Expected #RRGGBB"),
+        supportEmail: z.string().email(),
+        logoUrl: z.string().max(500),
+      })
+      .partial()
+      .optional(),
+    notification: z
+      .object({
+        enabled: z.boolean(),
+        message: z.string().max(500),
+        level: z.enum(["info", "warning", "critical"]),
+      })
+      .partial()
+      .optional(),
+    featureFlags: z.record(z.boolean()).optional(),
+    maintenance: z
+      .object({ enabled: z.boolean(), message: z.string().max(500) })
+      .partial()
+      .optional(),
+  })
+  .refine((v) => v.branding || v.notification || v.featureFlags || v.maintenance, {
+    message: "Provide at least one settings section to update.",
+  });
+type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
+
 /** Cross-org reporting reads for the super-admin dashboard. Platform-guarded. */
 @Controller("platform/admin")
 @UseGuards(PlatformAuthGuard)
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly settings: PlatformSettingsService,
+  ) {}
 
   @Get("overview")
   overview() {
@@ -93,5 +127,30 @@ export class AdminController {
   @Get("activity")
   activity(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
     return this.admin.activity(query);
+  }
+
+  @Get("health")
+  systemHealth() {
+    return this.admin.systemHealth();
+  }
+
+  @Get("usage-analytics")
+  usageAnalytics() {
+    return this.admin.usageAnalytics();
+  }
+
+  @Get("customer-success")
+  customerSuccess(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
+    return this.admin.customerSuccess(query);
+  }
+
+  @Get("settings")
+  getSettings() {
+    return this.settings.getSettings();
+  }
+
+  @Patch("settings")
+  updateSettings(@Body(new ZodValidationPipe(updateSettingsSchema)) body: UpdateSettingsInput) {
+    return this.settings.updateSettings(body);
   }
 }

@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import type { OffsetPage } from "@retainiq/contracts";
 import { AnalyticsReadPrismaService } from "../../common/database/analytics-prisma.service.js";
 import { BillingReadPrismaService } from "../../common/database/billing-prisma.service.js";
+import { NotificationsReadPrismaService } from "../../common/database/notifications-prisma.service.js";
+import { BrokerService } from "../../common/messaging/broker.service.js";
 import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
@@ -13,21 +15,34 @@ import type {
   AdminActivityItem,
   AdminAttendanceToday,
   AdminBilling,
+  AdminCustomerSuccess,
+  AdminDbHealth,
   AdminEmployee,
+  AdminFeatureUsage,
+  AdminLoginPoint,
   AdminMrrPoint,
   AdminOrg,
   AdminOrgDetail,
+  AdminOrgHealth,
   AdminOverview,
   AdminFailedPaymentRow,
   AdminPlanDist,
+  AdminQueueHealth,
   AdminRevenue,
+  AdminServiceHealth,
   AdminStorage,
+  AdminStorageTotals,
   AdminSubLifecycleRow,
   AdminSubscription,
   AdminSubscriptionsView,
+  AdminSystemHealth,
   AdminTopCustomer,
   AdminUsage,
+  AdminUsageAnalytics,
   AdminUsagePoint,
+  ChurnReason,
+  HealthBand,
+  HealthStatus,
 } from "./admin.dto.js";
 
 const DAY_MS = 86_400_000;
@@ -54,6 +69,8 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly analytics: AnalyticsReadPrismaService,
     private readonly billing: BillingReadPrismaService,
+    private readonly notifications: NotificationsReadPrismaService,
+    private readonly broker: BrokerService,
     private readonly outbox: OutboxService,
   ) {}
 
@@ -284,10 +301,11 @@ export class AdminService {
           activeSeats: subscription.activeSeats,
           pricePerSeat: subscription.plan.pricePerSeat,
           mrr: subscription.activeSeats * subscription.plan.pricePerSeat,
+          autoRenew: subscription.autoRenew,
           currentPeriodEnd: subscription.currentPeriodEnd.toISOString(),
           trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
         }
-      : { planId: null, planName: null, status: null, seats: 0, activeSeats: 0, pricePerSeat: 0, mrr: 0, currentPeriodEnd: null, trialEndsAt: null };
+      : { planId: null, planName: null, status: null, seats: 0, activeSeats: 0, pricePerSeat: 0, mrr: 0, autoRenew: false, currentPeriodEnd: null, trialEndsAt: null };
 
     const storage: AdminStorage = {
       usedBytes: storageAgg._sum.sizeBytes ? Number(storageAgg._sum.sizeBytes) : 0,
@@ -547,6 +565,330 @@ export class AdminService {
 
     const start = (query.page - 1) * query.pageSize;
     return { items: merged.slice(start, start + query.pageSize), total: orgTotal + billingTotal, page: query.page, pageSize: query.pageSize };
+  }
+
+  // ---- Platform health ----
+
+  /** Peer services to probe. Overridable via PLATFORM_HEALTH_TARGETS (JSON). */
+  private static readonly HEALTH_TARGETS: { name: string; url: string }[] = (() => {
+    const raw = process.env.PLATFORM_HEALTH_TARGETS;
+    if (raw) {
+      try {
+        return JSON.parse(raw) as { name: string; url: string }[];
+      } catch {
+        /* fall through to defaults */
+      }
+    }
+    return [
+      { name: "billing-service", url: "http://billing-service:3006/health/ready" },
+      { name: "analytics-service", url: "http://analytics-service:3004/health/ready" },
+      { name: "notifications-service", url: "http://notifications-service:3005/health/ready" },
+      { name: "event-processor", url: "http://event-processor:3003/health/ready" },
+      // activity-ingestion is a Nest app with the /v1 global prefix (not the raw ops-server).
+      { name: "activity-ingestion", url: "http://activity-ingestion:3002/v1/health/ready" },
+    ];
+  })();
+
+  /** Live system metrics: per-service probes, DB checks, queue, platform storage. Not cached — status should be fresh. */
+  async systemHealth(): Promise<AdminSystemHealth> {
+    const driver = process.env.BROKER_DRIVER ?? "redis";
+
+    const probe = async (name: string, url: string): Promise<AdminServiceHealth> => {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 2500);
+      const start = Date.now();
+      try {
+        const res = await fetch(url, { signal: ac.signal });
+        const latencyMs = Date.now() - start;
+        const status: HealthStatus = res.ok ? "up" : res.status === 503 ? "degraded" : "down";
+        return { name, status, latencyMs, detail: `HTTP ${res.status}` };
+      } catch {
+        return { name, status: "down", latencyMs: null, detail: ac.signal.aborted ? "timeout" : "unreachable" };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    const checkDb = async (name: string, client: { $queryRaw: PrismaService["$queryRaw"] }): Promise<AdminDbHealth> => {
+      const start = Date.now();
+      try {
+        await client.$queryRaw`SELECT 1`;
+        return { name, status: "up", latencyMs: Date.now() - start };
+      } catch {
+        return { name, status: "down", latencyMs: null };
+      }
+    };
+
+    const checkQueue = async (): Promise<AdminQueueHealth> => {
+      const start = Date.now();
+      try {
+        await this.broker.ping();
+        return { driver, status: "up", latencyMs: Date.now() - start };
+      } catch {
+        return { driver, status: "down", latencyMs: null };
+      }
+    };
+
+    const [peers, identityDb, billingDb, analyticsDb, notificationsDb, queue, storage] = await Promise.all([
+      Promise.all(AdminService.HEALTH_TARGETS.map((t) => probe(t.name, t.url))),
+      checkDb("identity-db", this.prisma),
+      checkDb("billing-db", this.billing),
+      checkDb("analytics-db", this.analytics),
+      checkDb("notifications-db", this.notifications),
+      checkQueue(),
+      this.computeStorageTotals(),
+    ]);
+
+    // identity-service is answering this request, so it's up by definition.
+    const services: AdminServiceHealth[] = [{ name: "identity-service", status: "up", latencyMs: 0, detail: "self" }, ...peers];
+    const databases = [identityDb, billingDb, analyticsDb, notificationsDb];
+
+    const anyDown = services.some((s) => s.status === "down") || databases.some((d) => d.status === "down") || queue.status === "down";
+    const anyDegraded = services.some((s) => s.status === "degraded") || queue.status === "degraded";
+    const api: HealthStatus = anyDown || anyDegraded ? "degraded" : "up";
+
+    return { api, services, databases, queue, storage, checkedAt: new Date().toISOString() };
+  }
+
+  private async computeStorageTotals(): Promise<AdminStorageTotals> {
+    const agg = await this.prisma.screenshotObject.aggregate({ _sum: { sizeBytes: true }, _count: { _all: true } });
+    const orgRows = await this.prisma.screenshotObject.findMany({ distinct: ["orgId"], select: { orgId: true } });
+
+    // Sum plan storage limits across live subscriptions; any unlimited plan makes the total unbounded.
+    const [subs, plans] = await Promise.all([
+      this.billing.subscription.findMany({ where: { status: { in: ["ACTIVE", "TRIALING", "PAST_DUE"] } }, select: { planId: true } }),
+      this.billing.plan.findMany({ select: { id: true, storageLimitMb: true } }),
+    ]);
+    const limitByPlan = new Map(plans.map((p) => [p.id, p.storageLimitMb]));
+    let limitBytes: number | null = 0;
+    for (const s of subs) {
+      const mb = limitByPlan.get(s.planId);
+      if (mb == null) {
+        limitBytes = null; // unlimited tier in the mix
+        break;
+      }
+      if (limitBytes !== null) limitBytes += mb * 1024 * 1024;
+    }
+
+    return { usedBytes: Number(agg._sum.sizeBytes ?? 0n), objects: agg._count._all, orgs: orgRows.length, limitBytes };
+  }
+
+  usageAnalytics(): Promise<AdminUsageAnalytics> {
+    return this.cached("usage-analytics", () => this.computeUsageAnalytics());
+  }
+
+  /** Product usage: DAU/WAU/MAU + login trend (sessions) + feature adoption. */
+  private async computeUsageAnalytics(): Promise<AdminUsageAnalytics> {
+    const now = Date.now();
+    const startToday = startOfUtcDay();
+    const since30 = new Date(now - 30 * DAY_MS);
+
+    // Active users = distinct users with a session touched within the window.
+    const distinctActive = async (sinceMs: number): Promise<number> => {
+      const rows = await this.prisma.session.findMany({ where: { lastUsedAt: { gte: new Date(now - sinceMs) } }, distinct: ["userId"], select: { userId: true } });
+      return rows.length;
+    };
+
+    const [dau, wau, mau, loginsToday, trendRows, featureUsage] = await Promise.all([
+      distinctActive(DAY_MS),
+      distinctActive(7 * DAY_MS),
+      distinctActive(30 * DAY_MS),
+      this.prisma.session.count({ where: { createdAt: { gte: startToday } } }),
+      this.prisma.$queryRaw<{ d: Date; logins: bigint; users: bigint }[]>`
+        SELECT date_trunc('day', "createdAt") AS d, count(*) AS logins, count(DISTINCT "userId") AS users
+        FROM "Session" WHERE "createdAt" >= ${since30} GROUP BY 1 ORDER BY 1`,
+      this.computeFeatureUsage(),
+    ]);
+
+    const byDay = new Map<string, { logins: number; users: number }>();
+    for (const r of trendRows) byDay.set(r.d.toISOString().slice(0, 10), { logins: Number(r.logins), users: Number(r.users) });
+    const loginTrend: AdminLoginPoint[] = [];
+    for (let i = 29; i >= 0; i -= 1) {
+      const key = new Date(now - i * DAY_MS).toISOString().slice(0, 10);
+      const hit = byDay.get(key);
+      loginTrend.push({ date: key, logins: hit?.logins ?? 0, users: hit?.users ?? 0 });
+    }
+
+    return { dau, wau, mau, loginsToday, loginTrend, featureUsage };
+  }
+
+  private async computeFeatureUsage(): Promise<AdminFeatureUsage[]> {
+    const distinctOrgs = (rows: { orgId: string }[]) => new Set(rows.map((r) => r.orgId)).size;
+    const [attC, attO, ssC, ssO, prC, prO, tkC, tkO, tmC, tmO] = await Promise.all([
+      this.prisma.attendanceRecord.count(),
+      this.prisma.attendanceRecord.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.prisma.screenshotObject.count(),
+      this.prisma.screenshotObject.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.prisma.project.count(),
+      this.prisma.project.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.prisma.task.count(),
+      this.prisma.task.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.analytics.employeeDayFact.count(),
+      this.analytics.employeeDayFact.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+    ]);
+    return [
+      { feature: "Time tracking", orgs: distinctOrgs(tmO), events: tmC },
+      { feature: "Attendance", orgs: distinctOrgs(attO), events: attC },
+      { feature: "Screenshots", orgs: distinctOrgs(ssO), events: ssC },
+      { feature: "Projects", orgs: distinctOrgs(prO), events: prC },
+      { feature: "Tasks", orgs: distinctOrgs(tkO), events: tkC },
+    ];
+  }
+
+  // ---- Customer success ----
+
+  /** Summary + churn counts span ALL orgs; the org table is paginated (worst-first). */
+  async customerSuccess(query: { page: number; pageSize: number }): Promise<AdminCustomerSuccess> {
+    const full = await this.cached("customer-success", () => this.computeCustomerSuccess());
+    const start = (query.page - 1) * query.pageSize;
+    return {
+      summary: full.summary,
+      churn: full.churn,
+      organizations: {
+        items: full.organizations.slice(start, start + query.pageSize),
+        total: full.organizations.length,
+        page: query.page,
+        pageSize: query.pageSize,
+      },
+    };
+  }
+
+  /**
+   * Per-org health score + churn-risk flags, derived entirely from existing
+   * signals. Weights 35% frequency / 35% utilization / 30% adoption; bands
+   * healthy>=70 / attention 40-69 / at_risk<40; inactive>14d; renewal window 30d.
+   */
+  private async computeCustomerSuccess(): Promise<{
+    summary: AdminCustomerSuccess["summary"];
+    churn: AdminCustomerSuccess["churn"];
+    organizations: AdminOrgHealth[];
+  }> {
+    const INACTIVE_DAYS = 14;
+    const RENEWAL_DAYS = 30;
+    const now = Date.now();
+    const since = new Date(now - WINDOW_DAYS * DAY_MS);
+
+    const orgs = await this.prisma.organization.findMany({
+      where: { status: { not: "DELETED" } },
+      select: { id: true, name: true, status: true },
+    });
+    const orgIds = orgs.map((o) => o.id);
+    if (orgIds.length === 0) {
+      return { summary: { total: 0, healthy: 0, attention: 0, atRisk: 0, avgHealthScore: 0 }, churn: { lowUsage: 0, inactive: 0, renewalRisk: 0 }, organizations: [] };
+    }
+
+    const [subs, plans, sessions, factRows, attO, ssO, prO, tkO, tmO] = await Promise.all([
+      this.billing.subscription.findMany({
+        where: { orgId: { in: orgIds } },
+        select: { orgId: true, planId: true, status: true, seats: true, activeSeats: true, currentPeriodEnd: true, autoRenew: true },
+      }),
+      this.billing.plan.findMany({ select: { id: true, name: true } }),
+      this.prisma.session.groupBy({ by: ["orgId"], where: { orgId: { in: orgIds } }, _max: { lastUsedAt: true } }),
+      this.analytics.$queryRaw<{ orgId: string; active_days: bigint; active_emp: bigint; active_seconds: bigint; avg_prod: number | string | null }[]>`
+        SELECT "orgId",
+               count(DISTINCT "day") AS active_days,
+               count(DISTINCT "employeeId") AS active_emp,
+               COALESCE(sum("activeSeconds"), 0)::bigint AS active_seconds,
+               avg("productivityScore") AS avg_prod
+        FROM "EmployeeDayFact" WHERE "day" >= ${since} GROUP BY "orgId"`,
+      this.prisma.attendanceRecord.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.prisma.screenshotObject.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.prisma.project.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.prisma.task.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+      this.analytics.employeeDayFact.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+    ]);
+
+    const planName = new Map(plans.map((p) => [p.id, p.name]));
+    const subByOrg = new Map(subs.map((s) => [s.orgId, s]));
+    const lastActive = new Map(sessions.filter((s) => s.orgId).map((s) => [s.orgId as string, s._max.lastUsedAt]));
+    const fact = new Map(factRows.map((r) => [r.orgId, r]));
+    const setOf = (rows: { orgId: string }[]) => new Set(rows.map((r) => r.orgId));
+    const fAtt = setOf(attO);
+    const fSs = setOf(ssO);
+    const fPr = setOf(prO);
+    const fTk = setOf(tkO);
+    const fTm = setOf(tmO);
+
+    const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
+    const recencyScore = (days: number | null): number => {
+      if (days == null) return 0;
+      if (days <= 1) return 100;
+      if (days <= 3) return 90;
+      if (days <= 7) return 70;
+      if (days <= 14) return 45;
+      if (days <= 30) return 20;
+      return 0;
+    };
+
+    const organizations: AdminOrgHealth[] = orgs.map((o) => {
+      const sub = subByOrg.get(o.id);
+      const seats = sub?.seats ?? 0;
+      const f = fact.get(o.id);
+      const activeEmployees = f ? Number(f.active_emp) : 0;
+      const activeDays = f ? Number(f.active_days) : 0;
+      const activeHours = f ? Math.round(Number(f.active_seconds) / 3600) : 0;
+      const avgProductivity = f && f.avg_prod != null ? Math.round(Number(f.avg_prod)) : 0;
+
+      const last = lastActive.get(o.id) ?? null;
+      const daysSinceActive = last ? Math.floor((now - last.getTime()) / DAY_MS) : null;
+
+      let featuresUsed = 0;
+      for (const used of [fTm.has(o.id), fAtt.has(o.id), fSs.has(o.id), fPr.has(o.id), fTk.has(o.id)]) if (used) featuresUsed += 1;
+      const adoption = clamp((featuresUsed / 5) * 100);
+      const frequency = clamp(0.5 * recencyScore(daysSinceActive) + 0.5 * (activeDays / WINDOW_DAYS) * 100);
+      const seatUtil = seats > 0 ? (activeEmployees / seats) * 100 : 0;
+      const utilization = clamp(0.5 * Math.min(100, seatUtil) + 0.5 * avgProductivity);
+      const healthScore = clamp(0.35 * frequency + 0.35 * utilization + 0.3 * adoption);
+      const band: HealthBand = healthScore >= 70 ? "healthy" : healthScore >= 40 ? "attention" : "at_risk";
+
+      const renewsInDays = sub ? Math.ceil((sub.currentPeriodEnd.getTime() - now) / DAY_MS) : null;
+      const autoRenew = sub?.autoRenew ?? false;
+      const subStatus = sub?.status ?? null;
+
+      const risks: ChurnReason[] = [];
+      if (seats > 0 && seatUtil < 30) risks.push("low_usage");
+      if (daysSinceActive == null || daysSinceActive > INACTIVE_DAYS) risks.push("inactive");
+      const renewalSoon = renewsInDays != null && renewsInDays <= RENEWAL_DAYS;
+      if ((renewalSoon && (healthScore < 70 || !autoRenew)) || subStatus === "PAST_DUE" || subStatus === "SUSPENDED") risks.push("renewal_risk");
+
+      return {
+        orgId: o.id,
+        name: o.name,
+        plan: sub ? (planName.get(sub.planId) ?? sub.planId) : null,
+        status: o.status,
+        adoption,
+        frequency,
+        utilization,
+        healthScore,
+        band,
+        featuresUsed,
+        seats,
+        activeEmployees,
+        activeHours,
+        avgProductivity,
+        daysSinceActive,
+        renewsInDays,
+        autoRenew,
+        risks,
+      };
+    });
+
+    organizations.sort((a, b) => a.healthScore - b.healthScore); // worst first — the orgs that need attention
+
+    const summary = {
+      total: organizations.length,
+      healthy: organizations.filter((r) => r.band === "healthy").length,
+      attention: organizations.filter((r) => r.band === "attention").length,
+      atRisk: organizations.filter((r) => r.band === "at_risk").length,
+      avgHealthScore: organizations.length ? Math.round(organizations.reduce((s, r) => s + r.healthScore, 0) / organizations.length) : 0,
+    };
+    const churn = {
+      lowUsage: organizations.filter((r) => r.risks.includes("low_usage")).length,
+      inactive: organizations.filter((r) => r.risks.includes("inactive")).length,
+      renewalRisk: organizations.filter((r) => r.risks.includes("renewal_risk")).length,
+    };
+
+    return { summary, churn, organizations };
   }
 
   /** Subscription lifecycle: status counts + upcoming renewals/expirations + failed payments. */

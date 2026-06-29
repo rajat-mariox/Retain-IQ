@@ -74,3 +74,62 @@ export interface ApiActivityFeed {
 export const getActivity = cache((page = 1, pageSize = 25) =>
   adminFetch<ApiActivityFeed>(`activity?page=${page}&pageSize=${pageSize}`),
 );
+
+export type HealthStatus = "up" | "degraded" | "down";
+export interface ApiSystemHealth {
+  api: HealthStatus;
+  services: { name: string; status: HealthStatus; latencyMs: number | null; detail: string }[];
+  databases: { name: string; status: HealthStatus; latencyMs: number | null }[];
+  queue: { driver: string; status: HealthStatus; latencyMs: number | null };
+  storage: { usedBytes: number; objects: number; orgs: number; limitBytes: number | null };
+  checkedAt: string;
+}
+export interface ApiUsageAnalytics {
+  dau: number;
+  wau: number;
+  mau: number;
+  loginsToday: number;
+  loginTrend: { date: string; logins: number; users: number }[];
+  featureUsage: { feature: string; orgs: number; events: number }[];
+}
+export const getSystemHealth = cache(() => adminFetch<ApiSystemHealth>("health"));
+export const getUsageAnalytics = cache(() => adminFetch<ApiUsageAnalytics>("usage-analytics"));
+
+export type HealthBand = "healthy" | "attention" | "at_risk";
+export type ChurnReason = "low_usage" | "inactive" | "renewal_risk";
+export interface ApiOrgHealth {
+  orgId: string;
+  name: string;
+  plan: string | null;
+  status: string;
+  adoption: number;
+  frequency: number;
+  utilization: number;
+  healthScore: number;
+  band: HealthBand;
+  featuresUsed: number;
+  seats: number;
+  activeEmployees: number;
+  activeHours: number;
+  avgProductivity: number;
+  daysSinceActive: number | null;
+  renewsInDays: number | null;
+  autoRenew: boolean;
+  risks: ChurnReason[];
+}
+export interface ApiCustomerSuccess {
+  summary: { total: number; healthy: number; attention: number; atRisk: number; avgHealthScore: number };
+  churn: { lowUsage: number; inactive: number; renewalRisk: number };
+  organizations: { items: ApiOrgHealth[]; total: number; page: number; pageSize: number };
+}
+export const getCustomerSuccess = cache((page = 1, pageSize = 15) =>
+  adminFetch<ApiCustomerSuccess>(`customer-success?page=${page}&pageSize=${pageSize}`),
+);
+
+export interface ApiPlatformSettings {
+  branding: { platformName: string; primaryColor: string; supportEmail: string; logoUrl: string };
+  notification: { enabled: boolean; message: string; level: "info" | "warning" | "critical" };
+  featureFlags: Record<string, boolean>;
+  maintenance: { enabled: boolean; message: string };
+}
+export const getSettings = cache(() => adminFetch<ApiPlatformSettings>("settings"));
