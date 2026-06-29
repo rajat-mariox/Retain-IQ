@@ -33,6 +33,15 @@ export function formatCompact(value: number): string {
   return NUM_COMPACT.format(value);
 }
 
+export function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 MB";
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`;
+  const mb = bytes / 1024 ** 2;
+  if (mb >= 1) return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
 export function formatPercent(value: number, fractionDigits = 1): string {
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(fractionDigits)}%`;

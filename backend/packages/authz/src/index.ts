@@ -7,6 +7,7 @@ export const permissions = {
   projectWrite: "project.write",
   screenshotsRead: "screenshots.read",
   screenshotsDownload: "screenshots.download",
+  screenshotsDelete: "screenshots.delete",
   payrollRead: "payroll.read",
   payrollApprove: "payroll.approve",
   aiRiskRead: "ai_risk.read",
@@ -25,7 +26,10 @@ export const allPermissions: Permission[] = Object.values(permissions);
 // projects/tasks and add members; employees only see their own data + projects.
 // ---------------------------------------------------------------------------
 
-/** Department managers: manage team, projects/tasks, attendance, view insights. */
+/**
+ * Department managers (HR / project managers): manage team, projects/tasks,
+ * attendance, view insights, and view + DELETE employee screenshots.
+ */
 export const managerPermissions: Permission[] = [
   permissions.employeeRead,
   permissions.employeeWrite,
@@ -35,10 +39,16 @@ export const managerPermissions: Permission[] = [
   permissions.projectWrite,
   permissions.aiRiskRead,
   permissions.payrollRead,
+  permissions.screenshotsRead,
+  permissions.screenshotsDownload,
+  permissions.screenshotsDelete,
 ];
 
-/** Standard employee: read projects (own data needs no permission). */
-export const employeePermissions: Permission[] = [permissions.projectRead];
+/**
+ * Standard employee: read projects, and view their OWN screenshots (the API
+ * scopes the screenshot list to the caller for non-managers). Cannot delete.
+ */
+export const employeePermissions: Permission[] = [permissions.projectRead, permissions.screenshotsRead];
 
 export interface SystemRole {
   name: string;

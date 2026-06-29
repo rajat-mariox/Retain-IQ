@@ -51,7 +51,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                     <td className="px-5 py-3 font-medium text-slate-900">{m.name ?? m.email}</td>
                     <td className="px-5 py-3 text-slate-600">{m.email}</td>
                     <td className="px-5 py-3">
-                      <span className="rounded-full bg-brand/10 px-2 py-0.5 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-brand/20">{m.role}</span>
+                      <span className="rounded-full bg-brand/10 px-2 py-0.5 text-xs font-medium text-brand ring-1 ring-inset ring-brand/20">{m.role}</span>
                     </td>
                     <td className="px-5 py-3 text-slate-600">{m.status.toLowerCase()}</td>
                     <td className="px-5 py-3 text-right text-xs text-slate-500">{formatDate(m.joinedAt)}</td>

@@ -99,6 +99,39 @@ services:
       timeout: 5s
       retries: 10
 
+  # S3-compatible object storage for employee screenshots (MinIO = local AWS S3).
+  minio:
+    image: minio/minio:latest
+    container_name: retainiq-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    volumes:
+      - minio_data:/data
+
+  # One-shot: wait for MinIO, then create the screenshots bucket.
+  minio-init:
+    image: minio/mc:latest
+    container_name: retainiq-minio-init
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      BUCKET: ${S3_BUCKET:-retainiq-screenshots}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do sleep 1; done &&
+        mc mb -p local/$$BUCKET || true &&
+        echo "bucket $$BUCKET ready"
+    restart: "no"
+
   # ---- Migrator (runs once, applies each service's migrations, then exits) ----
   # App services wait for this to complete successfully before starting, so a
   # fresh `docker compose up` is fully provisioned with no manual steps.
@@ -163,6 +196,15 @@ services:
       # scrypt password hashing runs on the libuv threadpool — give it room so
       # concurrent logins/invites don't serialize on the default 4 threads.
       UV_THREADPOOL_SIZE: "16"
+      # Screenshot object storage (MinIO locally; unset S3_ENDPOINT in prod = AWS S3).
+      S3_ENDPOINT: http://minio:9000
+      # Browser/agent-reachable host for presigned URLs (signature is host-bound).
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_REGION: us-east-1
+      S3_BUCKET: ${S3_BUCKET:-retainiq-screenshots}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_FORCE_PATH_STYLE: "true"
       PORT: "3001"
     ports:
       - "3001:3001"
@@ -179,6 +221,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
 
   activity-ingestion:
     build:
@@ -270,8 +314,12 @@ services:
       DATABASE_URL: postgresql://billing:billing@postgres-billing:5432/retainiq-billing?schema=public
       REDIS_URL: redis://redis:6379
       HEALTH_PORT: "3006"
+      # Platform-admin plan-CRUD API (verifies the super-admin's platform JWT).
+      API_PORT: "3007"
+      PLATFORM_JWT_SECRET: ${PLATFORM_JWT_SECRET:-change-me}
     ports:
       - "3006:3006"
+      - "3007:3007"
     depends_on:
       migrator:
         condition: service_completed_successfully
@@ -287,3 +335,4 @@ volumes:
   postgres_notifications_data:
   postgres_billing_data:
   redis_data:
+  minio_data:

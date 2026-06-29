@@ -167,3 +167,39 @@ export const getNotifications = cache((page = 1, pageSize = 10) =>
   apiFetch<OffsetPage<InboxNotification>>(`notifications?page=${page}&pageSize=${pageSize}`),
 );
 
+export interface ScreenshotEmployeeGroup {
+  employeeId: string | null;
+  name: string;
+  title: string | null;
+  count: number;
+  totalBytes: number;
+  lastCapturedAt: string | null;
+}
+/** Gallery folders — screenshots grouped by employee (RBAC-scoped server-side). */
+export const getScreenshotEmployees = cache(() =>
+  apiFetch<{ items: ScreenshotEmployeeGroup[] }>("storage/screenshots/employees"),
+);
+
+export interface Screenshot {
+  id: string;
+  employeeId: string | null;
+  employeeName: string;
+  sizeBytes: number;
+  contentType: string;
+  capturedAt: string;
+  viewUrl: string;
+}
+export const getScreenshots = cache((employeeId: string | undefined, page = 1, pageSize = 24) =>
+  apiFetch<OffsetPage<Screenshot>>(
+    `storage/screenshots?${employeeId ? `employeeId=${employeeId}&` : ""}page=${page}&pageSize=${pageSize}`,
+  ),
+);
+
+export interface StorageUsage {
+  usedBytes: number;
+  limitBytes: number | null;
+  planId: string | null;
+  planName: string | null;
+}
+export const getStorageUsage = cache(() => apiFetch<StorageUsage>("storage/usage"));
+
