@@ -49,6 +49,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           isAdmin={isAdmin}
           platformName={config.branding.platformName}
           featureFlags={config.featureFlags}
+          logoUrl={config.branding.logoUrl || undefined}
         />
         <div className="lg:pl-64">
           {notification.enabled && notification.message ? (

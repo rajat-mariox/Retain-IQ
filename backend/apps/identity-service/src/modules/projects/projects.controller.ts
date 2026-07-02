@@ -59,8 +59,7 @@ export class ProjectsController {
     return this.projects.updateTask(id, body);
   }
 
-  @Get("teams")
-  listTeams() {
-    return this.projects.listTeams();
-  }
+  // GET /teams is now owned by OrgStructureController (teams are org structure,
+  // not a project sub-resource). It returns a superset (dept + member counts),
+  // so existing callers stay compatible.
 }

@@ -93,6 +93,10 @@ export class IdentityService {
           status: "ACTIVE",
         },
       });
+      // Base-role grant (multi-grant RBAC): owner gets an ORG-scoped role grant.
+      await tx.roleAssignment.create({
+        data: { orgId: org.id, userId: user.id, employeeId: employee.id, roleId: role.id, scopeType: "ORG", status: "ACTIVE", createdBy: user.id },
+      });
 
       await this.outbox.enqueue(tx, {
         eventType: "org.registered",

@@ -17,11 +17,13 @@ export function Sidebar({
   isAdmin,
   platformName = "RetainIQ",
   featureFlags = {},
+  logoUrl,
 }: {
   orgName: string;
   isAdmin: boolean;
   platformName?: string;
   featureFlags?: Record<string, boolean>;
+  logoUrl?: string;
 }) {
   const pathname = usePathname();
   const { open, setOpen } = useMobileNav();
@@ -66,9 +68,14 @@ export function Sidebar({
       >
         <div className="flex items-center justify-between gap-2.5 px-2">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand/15 text-brand ring-1 ring-inset ring-brand/30">
-              <Building2 className="size-5" />
-            </span>
+            {logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={logoUrl} alt={platformName} className="size-9 shrink-0 rounded-xl object-cover ring-1 ring-inset ring-brand/20" />
+            ) : (
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand/15 text-brand ring-1 ring-inset ring-brand/30">
+                <Building2 className="size-5" />
+              </span>
+            )}
             <div className="min-w-0 leading-tight">
               <p className="truncate text-sm font-semibold text-slate-900">{orgName}</p>
               <p className="truncate text-[11px] font-medium uppercase tracking-wider text-brand-soft">{platformName}</p>

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RetainIQ">
+  <defs>
+    <linearGradient id="riqBg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16a34a"/>
+      <stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#riqBg)"/>
+  <polygon points="32,11 48.5,20.5 48.5,39.5 32,49 15.5,39.5 15.5,20.5"
+           fill="none" stroke="#ffffff" stroke-opacity="0.4" stroke-width="1.4"/>
+  <g fill="#ffffff" fill-opacity="0.72">
+    <circle cx="32" cy="11" r="2.6"/>
+    <circle cx="48.5" cy="20.5" r="2.6"/>
+    <circle cx="48.5" cy="39.5" r="2.6"/>
+    <circle cx="32" cy="49" r="2.6"/>
+    <circle cx="15.5" cy="39.5" r="2.6"/>
+    <circle cx="15.5" cy="20.5" r="2.6"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="32" cy="24.5" r="6.2"/>
+    <path d="M21 45.6c0-6.7 4.9-10.7 11-10.7s11 4 11 10.7c0 1-.8 1.7-1.7 1.7H22.7c-.9 0-1.7-.7-1.7-1.7z"/>
+  </g>
+</svg>
