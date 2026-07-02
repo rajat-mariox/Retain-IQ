@@ -20,7 +20,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <MobileNavProvider>
       <div className="min-h-screen">
-        <Sidebar platformName={branding?.platformName} featureFlags={settings?.featureFlags} />
+        <Sidebar platformName={branding?.platformName} featureFlags={settings?.featureFlags} logoUrl={branding?.logoUrl || undefined} />
         <div className="lg:pl-64">
           {maintenance?.enabled ? (
             <div className="flex items-center gap-2.5 border-b border-amber-200 bg-amber-100 px-5 py-2.5 text-sm font-medium text-amber-900 lg:px-8">

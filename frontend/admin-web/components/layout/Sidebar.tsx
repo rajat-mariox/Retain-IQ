@@ -12,7 +12,15 @@ function isActive(pathname: string, href: string): boolean {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function Sidebar({ platformName = "RetainIQ", featureFlags = {} }: { platformName?: string; featureFlags?: Record<string, boolean> }) {
+export function Sidebar({
+  platformName = "RetainIQ",
+  featureFlags = {},
+  logoUrl,
+}: {
+  platformName?: string;
+  featureFlags?: Record<string, boolean>;
+  logoUrl?: string;
+}) {
   const pathname = usePathname();
   const { open, setOpen } = useMobileNav();
   const navItems = NAV_ITEMS.filter((item) => !item.flag || featureFlags[item.flag] !== false);
@@ -54,9 +62,14 @@ export function Sidebar({ platformName = "RetainIQ", featureFlags = {} }: { plat
       >
         <div className="flex items-center justify-between gap-2.5 px-2">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand/15 text-brand ring-1 ring-inset ring-brand/30">
-              <ShieldCheck className="size-5" />
-            </span>
+            {logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={logoUrl} alt={platformName} className="size-9 shrink-0 rounded-xl object-cover ring-1 ring-inset ring-brand/20" />
+            ) : (
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand/15 text-brand ring-1 ring-inset ring-brand/30">
+                <ShieldCheck className="size-5" />
+              </span>
+            )}
             <div className="leading-tight">
               <p className="truncate text-sm font-semibold text-slate-900">{platformName}</p>
               <p className="text-[11px] font-medium uppercase tracking-wider text-brand-soft">Super Admin</p>

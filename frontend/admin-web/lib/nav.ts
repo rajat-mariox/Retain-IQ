@@ -1,4 +1,4 @@
-import { Activity, Bell, Building2, CreditCard, DollarSign, HeartHandshake, HeartPulse, LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
+import { Activity, Bell, Building2, CreditCard, DollarSign, HeartHandshake, HeartPulse, LayoutDashboard, ScrollText, Settings, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   label: string;
@@ -16,5 +16,6 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Revenue", href: "/revenue", icon: DollarSign },
   { label: "Platform Health", href: "/health", icon: HeartPulse, flag: "platformHealth" },
   { label: "Activity", href: "/activity", icon: Bell, flag: "activityFeed" },
+  { label: "Audit Logs", href: "/audit", icon: ScrollText },
   { label: "SaaS Configuration", href: "/settings", icon: Settings },
 ];

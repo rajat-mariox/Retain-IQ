@@ -143,6 +143,7 @@ function statusToCode(status: number): string {
     409: "conflict",
     422: "unprocessable_entity",
     429: "rate_limited",
+    503: "service_unavailable",
   };
   return map[status] ?? (status >= 500 ? "internal_error" : "error");
 }

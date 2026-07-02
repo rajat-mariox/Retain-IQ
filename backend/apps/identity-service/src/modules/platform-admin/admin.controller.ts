@@ -57,6 +57,11 @@ const updateSettingsSchema = z
   });
 type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
 
+const auditQuerySchema = offsetPaginationQuerySchema.extend({
+  category: z.enum(["all", "login", "subscription", "plan", "organization"]).default("all"),
+});
+type AuditQuery = z.infer<typeof auditQuerySchema>;
+
 /** Cross-org reporting reads for the super-admin dashboard. Platform-guarded. */
 @Controller("platform/admin")
 @UseGuards(PlatformAuthGuard)
@@ -127,6 +132,11 @@ export class AdminController {
   @Get("activity")
   activity(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
     return this.admin.activity(query);
+  }
+
+  @Get("audit")
+  audit(@Query(new ZodValidationPipe(auditQuerySchema)) query: AuditQuery) {
+    return this.admin.auditLogs(query);
   }
 
   @Get("health")

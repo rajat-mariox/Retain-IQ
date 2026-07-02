@@ -12,15 +12,24 @@ interface StatTileProps {
   accent?: string;
 }
 
-export function StatTile({ label, value, icon: Icon, deltaPct, hint, accent = "#1f883d" }: StatTileProps) {
+// Brand-green accents follow the configured primary colour (var(--color-brand));
+// semantic colours (rose/amber/blue/teal…) stay fixed so they keep their meaning.
+const BRAND_GREENS = new Set(["#1f883d", "#2da44e", "#16a34a", "#166534", "#15803d"]);
+
+export function StatTile({ label, value, icon: Icon, deltaPct, hint, accent }: StatTileProps) {
   const up = (deltaPct ?? 0) >= 0;
+  const useBrand = !accent || BRAND_GREENS.has(accent.toLowerCase());
+  const iconStyle = useBrand
+    ? {
+        backgroundColor: "color-mix(in srgb, var(--color-brand) 12%, transparent)",
+        color: "var(--color-brand)",
+        borderColor: "color-mix(in srgb, var(--color-brand) 22%, transparent)",
+      }
+    : { backgroundColor: `${accent}1f`, color: accent, borderColor: `${accent}33` };
   return (
     <div className="rounded-2xl border border-hairline bg-panel/70 p-5 backdrop-blur">
       <div className="flex items-center justify-between">
-        <span
-          className="grid size-9 place-items-center rounded-xl ring-1 ring-inset"
-          style={{ backgroundColor: `${accent}1f`, color: accent, borderColor: `${accent}33` }}
-        >
+        <span className="grid size-9 place-items-center rounded-xl ring-1 ring-inset" style={iconStyle}>
           <Icon className="size-4.5" strokeWidth={2} />
         </span>
         {deltaPct !== undefined ? (

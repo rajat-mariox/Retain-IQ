@@ -51,6 +51,12 @@ export class PlatformSettingsService {
     };
   }
 
+  /** updatedAt of the global-notification row — timestamps the inbox announcement. */
+  async notificationStamp(): Promise<Date | null> {
+    const row = await this.prisma.platformSetting.findUnique({ where: { key: "notification" }, select: { updatedAt: true } });
+    return row?.updatedAt ?? null;
+  }
+
   /** Cached read for hot paths (guards). Refreshed every 15s; busted on write. */
   async getSettingsCached(): Promise<PlatformSettings> {
     if (this.cache && Date.now() - this.cache.at < CACHE_TTL_MS) return this.cache.value;

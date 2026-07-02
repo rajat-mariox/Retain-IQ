@@ -23,7 +23,8 @@ export function PageNav({
   const current = Math.min(Math.max(1, page), pageCount); // tolerate out-of-range ?page=
   const from = (current - 1) * pageSize + 1;
   const to = Math.min(current * pageSize, total);
-  const href = (p: number) => `${basePath}?page=${p}`;
+  // basePath may already carry a query (e.g. ?category=login) — pick the right separator.
+  const href = (p: number) => `${basePath}${basePath.includes("?") ? "&" : "?"}page=${p}`;
 
   return (
     <div className="flex items-center justify-between gap-4 border-t border-hairline px-5 py-3 text-xs text-slate-500">

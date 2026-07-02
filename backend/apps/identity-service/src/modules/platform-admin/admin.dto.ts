@@ -282,6 +282,29 @@ export interface AdminCustomerSuccess {
   organizations: OffsetPage<AdminOrgHealth>; // worst health first, paginated
 }
 
+// ---- Audit & compliance ----
+
+export type AuditCategory = "login" | "subscription" | "plan" | "organization";
+
+export interface AdminAuditEntry {
+  id: string;
+  category: AuditCategory;
+  type: string; // auth.login | subscription.renewed | subscription.plan_changed | org.suspended ...
+  summary: string;
+  actor: string | null; // who performed it (email)
+  orgId: string | null;
+  orgName: string | null;
+  ip: string | null;
+  createdAt: string;
+}
+
+export interface AdminAuditPage {
+  items: AdminAuditEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 // ---- SaaS configuration (global settings) ----
 
 export interface PlatformBranding {

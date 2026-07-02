@@ -133,3 +133,25 @@ export interface ApiPlatformSettings {
   maintenance: { enabled: boolean; message: string };
 }
 export const getSettings = cache(() => adminFetch<ApiPlatformSettings>("settings"));
+
+export type AuditCategory = "login" | "subscription" | "plan" | "organization";
+export interface ApiAuditEntry {
+  id: string;
+  category: AuditCategory;
+  type: string;
+  summary: string;
+  actor: string | null;
+  orgId: string | null;
+  orgName: string | null;
+  ip: string | null;
+  createdAt: string;
+}
+export interface ApiAuditPage {
+  items: ApiAuditEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+export const getAudit = cache((category = "all", page = 1, pageSize = 25) =>
+  adminFetch<ApiAuditPage>(`audit?category=${category}&page=${page}&pageSize=${pageSize}`),
+);

@@ -14,7 +14,10 @@ import type {
   AdminActivityFeed,
   AdminActivityItem,
   AdminAttendanceToday,
+  AdminAuditEntry,
+  AdminAuditPage,
   AdminBilling,
+  AuditCategory,
   AdminCustomerSuccess,
   AdminDbHealth,
   AdminEmployee,
@@ -352,6 +355,10 @@ export class AdminService {
       await tx.organizationMembership.create({
         data: { orgId: created.id, userId: user.id, employeeId: employee.id, roleId: roles.get("Owner")!, status: "ACTIVE" },
       });
+      // Base-role grant (multi-grant RBAC): owner gets an ORG-scoped Owner grant.
+      await tx.roleAssignment.create({
+        data: { orgId: created.id, userId: user.id, employeeId: employee.id, roleId: roles.get("Owner")!, scopeType: "ORG", status: "ACTIVE", createdBy: user.id },
+      });
       // Provision the subscription via choreography: billing-service consumes
       // this and creates the Subscription in billing-db (transactional outbox).
       await this.outbox.enqueue(tx, {
@@ -565,6 +572,67 @@ export class AdminService {
 
     const start = (query.page - 1) * query.pageSize;
     return { items: merged.slice(start, start + query.pageSize), total: orgTotal + billingTotal, page: query.page, pageSize: query.pageSize };
+  }
+
+  /**
+   * Audit & compliance log. Merges login logs (tenant + super-admin sessions),
+   * organization activities (PlatformEvent), and subscription/plan changes
+   * (BillingEvent) into one filterable, paginated stream with actor + IP.
+   */
+  async auditLogs(query: { category: AuditCategory | "all"; page: number; pageSize: number }): Promise<AdminAuditPage> {
+    const { category, page, pageSize } = query;
+    const take = page * pageSize; // enough from each source to cover the page after merge
+    const want = (c: AuditCategory) => category === "all" || category === c;
+
+    const [sessions, adminSessions, orgEvents, billingEvents, sCount, aCount, oCount, bSubCount, bPlanCount] = await Promise.all([
+      want("login")
+        ? this.prisma.session.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, createdAt: true, orgId: true, ipAddress: true, user: { select: { email: true } } } })
+        : Promise.resolve([]),
+      want("login")
+        ? this.prisma.platformAdminSession.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, createdAt: true, ipAddress: true, admin: { select: { email: true } } } })
+        : Promise.resolve([]),
+      want("organization")
+        ? this.prisma.platformEvent.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, actorUserId: true, createdAt: true } })
+        : Promise.resolve([]),
+      want("subscription") || want("plan")
+        ? this.billing.billingEvent.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, createdAt: true } })
+        : Promise.resolve([]),
+      want("login") ? this.prisma.session.count() : Promise.resolve(0),
+      want("login") ? this.prisma.platformAdminSession.count() : Promise.resolve(0),
+      want("organization") ? this.prisma.platformEvent.count() : Promise.resolve(0),
+      want("subscription") ? this.billing.billingEvent.count({ where: { type: { not: "subscription.plan_changed" } } }) : Promise.resolve(0),
+      want("plan") ? this.billing.billingEvent.count({ where: { type: "subscription.plan_changed" } }) : Promise.resolve(0),
+    ]);
+
+    // Resolve actor emails (org events) + org names.
+    const actorIds = [...new Set(orgEvents.map((e) => e.actorUserId).filter((x): x is string => Boolean(x)))];
+    const orgIds = [...new Set([...sessions, ...orgEvents, ...billingEvents].map((e) => e.orgId).filter((x): x is string => Boolean(x)))];
+    const [actors, orgs] = await Promise.all([
+      actorIds.length ? this.prisma.user.findMany({ where: { id: { in: actorIds } }, select: { id: true, email: true } }) : Promise.resolve([]),
+      orgIds.length ? this.prisma.organization.findMany({ where: { id: { in: orgIds } }, select: { id: true, name: true } }) : Promise.resolve([]),
+    ]);
+    const actorEmail = new Map(actors.map((a) => [a.id, a.email]));
+    const orgName = new Map(orgs.map((o) => [o.id, o.name]));
+
+    const entries: AdminAuditEntry[] = [];
+    for (const s of sessions) {
+      entries.push({ id: `s_${s.id}`, category: "login", type: "auth.login", summary: `${s.user.email} signed in`, actor: s.user.email, orgId: s.orgId, orgName: s.orgId ? (orgName.get(s.orgId) ?? null) : null, ip: s.ipAddress, createdAt: s.createdAt.toISOString() });
+    }
+    for (const a of adminSessions) {
+      entries.push({ id: `a_${a.id}`, category: "login", type: "auth.platform_login", summary: `${a.admin.email} (super-admin) signed in`, actor: a.admin.email, orgId: null, orgName: null, ip: a.ipAddress, createdAt: a.createdAt.toISOString() });
+    }
+    for (const e of orgEvents) {
+      entries.push({ id: `o_${e.id}`, category: "organization", type: e.type, summary: e.summary, actor: e.actorUserId ? (actorEmail.get(e.actorUserId) ?? null) : null, orgId: e.orgId, orgName: e.orgId ? (orgName.get(e.orgId) ?? null) : null, ip: null, createdAt: e.createdAt.toISOString() });
+    }
+    for (const e of billingEvents) {
+      const cat: AuditCategory = e.type === "subscription.plan_changed" ? "plan" : "subscription";
+      if (!want(cat)) continue; // billing fetched for either; keep only the wanted slice
+      entries.push({ id: `b_${e.id}`, category: cat, type: e.type, summary: e.summary, actor: null, orgId: e.orgId, orgName: orgName.get(e.orgId) ?? null, ip: null, createdAt: e.createdAt.toISOString() });
+    }
+
+    entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const start = (page - 1) * pageSize;
+    return { items: entries.slice(start, start + pageSize), total: sCount + aCount + oCount + bSubCount + bPlanCount, page, pageSize };
   }
 
   // ---- Platform health ----
