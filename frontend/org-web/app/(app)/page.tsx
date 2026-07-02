@@ -1,12 +1,11 @@
-import { CalendarCheck, CreditCard, UserCheck, Users } from "lucide-react";
+import Link from "next/link";
+import { Clock } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
-import { StatTile } from "@/components/ui/StatTile";
 import { AttendanceBadge } from "@/components/ui/badges";
-import { CheckInOut } from "@/components/attendance/CheckInOut";
-import { getAttendanceToday, getBilling, getMyAttendance } from "@/lib/api";
-import { formatCompact } from "@/lib/format";
+import { DashboardTabs } from "@/components/dashboard/DashboardTabs";
+import { getAttendanceRoster, getExecutiveOverview, getMyAttendance, getSession } from "@/lib/api";
 
 function clock(iso: string | null): string {
   if (!iso) return "—";
@@ -14,60 +13,47 @@ function clock(iso: string | null): string {
 }
 
 export default async function DashboardPage() {
-  const [today, billing, mine] = await Promise.all([
-    getAttendanceToday().catch(() => null),
-    getBilling().catch(() => null),
-    getMyAttendance().catch(() => null),
-  ]);
+  const session = await getSession().catch(() => null);
+  // Admin/manager view (needs employee.read) gets the org tabs; everyone else a
+  // read-only personal summary (check-in/out lives in My Time).
+  const isAdmin = Boolean(session && (session.role.permissions.includes("employee.read") || session.role.name === "Owner"));
 
+  if (isAdmin) {
+    const [exec, roster] = await Promise.all([
+      getExecutiveOverview().catch(() => null),
+      getAttendanceRoster().catch(() => null),
+    ]);
+    return (
+      <>
+        <Topbar title="Dashboard" subtitle="Your organization at a glance" />
+        <PageBody>{exec ? <DashboardTabs exec={exec} roster={roster} /> : <Empty />}</PageBody>
+      </>
+    );
+  }
+
+  const mine = await getMyAttendance().catch(() => null);
   const myToday = mine?.today ?? null;
-  const checkedIn = Boolean(myToday?.checkInAt);
-  const checkedOut = Boolean(myToday?.checkOutAt);
-  const planName = billing?.subscription?.planName ?? "Free";
-
   return (
     <>
-      <Topbar title="Dashboard" subtitle="Your organization at a glance" />
+      <Topbar title="Dashboard" subtitle="Your day at a glance" />
       <PageBody>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatTile label="Employees" value={formatCompact(today?.totalEmployees ?? 0)} icon={Users} accent="#1f883d" />
-          <StatTile label="Present today" value={formatCompact(today?.checkedIn ?? 0)} icon={UserCheck} accent="#16a34a" />
-          <StatTile label="Attendance rate" value={`${today?.attendanceRate ?? 0}%`} icon={CalendarCheck} accent="#0d9488" />
-          <StatTile label="Current plan" value={planName} icon={CreditCard} accent="#166534" />
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-          <Card className="xl:col-span-1">
-            <CardHeader title="Your attendance" subtitle="Today" />
-            <CardBody className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-slate-600">Status</span>
-                <AttendanceBadge status={myToday?.status ?? null} />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-slate-600">Checked in</span>
-                <span className="tabular-nums text-sm font-medium text-slate-900">{clock(myToday?.checkInAt ?? null)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-slate-600">Checked out</span>
-                <span className="tabular-nums text-sm font-medium text-slate-900">{clock(myToday?.checkOutAt ?? null)}</span>
-              </div>
-              <div className="pt-1">
-                <CheckInOut checkedIn={checkedIn} checkedOut={checkedOut} />
-              </div>
-            </CardBody>
-          </Card>
-
-          <Card className="xl:col-span-2">
-            <CardHeader title="Team attendance" subtitle="Today across your organization" />
-            <div className="grid grid-cols-2 divide-x divide-y divide-hairline/70 sm:grid-cols-4 sm:divide-y-0">
-              <TeamStat label="Present" value={today?.present ?? 0} tone="text-emerald-700" />
-              <TeamStat label="Late" value={today?.late ?? 0} tone="text-amber-700" />
-              <TeamStat label="Absent" value={today?.absent ?? 0} tone="text-rose-700" />
-              <TeamStat label="On leave" value={today?.onLeave ?? 0} tone="text-sky-700" />
-            </div>
-          </Card>
-        </div>
+        <Card>
+          <CardHeader
+            title="Your attendance"
+            subtitle="Today"
+            action={
+              <Link href="/time" className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                <Clock className="size-4 text-slate-500" /> My Time
+              </Link>
+            }
+          />
+          <CardBody className="space-y-4">
+            <Row label="Status"><AttendanceBadge status={myToday?.status ?? null} /></Row>
+            <Row label="Checked in"><span className="tabular-nums text-sm font-medium text-slate-900">{clock(myToday?.checkInAt ?? null)}</span></Row>
+            <Row label="Checked out"><span className="tabular-nums text-sm font-medium text-slate-900">{clock(myToday?.checkOutAt ?? null)}</span></Row>
+            <p className="text-xs text-slate-400">Check in and out from the My Time page.</p>
+          </CardBody>
+        </Card>
 
         <Card>
           <CardHeader title="Your recent attendance" subtitle="Last 14 days" />
@@ -89,9 +75,7 @@ export default async function DashboardPage() {
                     <td className="px-5 py-3"><AttendanceBadge status={r.status} /></td>
                     <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkInAt)}</td>
                     <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkOutAt)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">
-                      {r.workMinutes > 0 ? `${Math.floor(r.workMinutes / 60)}h ${r.workMinutes % 60}m` : "—"}
-                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.workMinutes > 0 ? `${Math.floor(r.workMinutes / 60)}h ${r.workMinutes % 60}m` : "—"}</td>
                   </tr>
                 ))}
                 {(mine?.history ?? []).length === 0 ? (
@@ -108,11 +92,19 @@ export default async function DashboardPage() {
   );
 }
 
-function TeamStat({ label, value, tone }: { label: string; value: number; tone: string }) {
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="px-5 py-5">
-      <p className={`text-2xl font-semibold tabular-nums ${tone}`}>{value}</p>
-      <p className="mt-1 text-xs text-slate-500">{label}</p>
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-slate-600">{label}</span>
+      {children}
     </div>
+  );
+}
+
+function Empty() {
+  return (
+    <Card>
+      <CardBody className="py-12 text-center text-sm text-slate-500">Analytics are warming up — check back once activity data is available.</CardBody>
+    </Card>
   );
 }

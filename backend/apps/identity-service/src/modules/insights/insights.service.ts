@@ -123,6 +123,120 @@ export class InsightsService {
       people: [...people].sort((a, b) => b.productivity - a.productivity),
     };
   }
+
+  /**
+   * Executive Overview: workforce headcount + health score + attrition risk +
+   * productivity, org-wide. Headcount/attendance/productivity are REAL (Employee
+   * status, AttendanceRecord, EmployeeDayFact). Risk/attrition/burnout are DERIVED
+   * heuristics (documented — not an ML model). openPositions is 0 until a
+   * requisition entity exists.
+   */
+  async executiveOverview() {
+    const ctx = requireTenantContext();
+    const since = this.windowStart();
+    const half = new Date(Date.now() - 15 * DAY_MS);
+
+    // Owner/admin accounts are provisioned as Employee records but are NOT part of
+    // the workforce — exclude them from the headcount metrics.
+    const admins = await this.prisma.organizationMembership.findMany({
+      where: { orgId: ctx.orgId, status: "ACTIVE", role: { name: "Owner" }, employeeId: { not: null } },
+      select: { employeeId: true },
+    });
+    const excludeIds = admins.map((a) => a.employeeId).filter((x): x is string => Boolean(x));
+    const empWhere = excludeIds.length > 0 ? { orgId: ctx.orgId, id: { notIn: excludeIds } } : { orgId: ctx.orgId };
+
+    const [statusGroups, newJoinees, byEmployee, attendanceGroups, recentAgg, priorAgg, openReqs] = await Promise.all([
+      this.prisma.employee.groupBy({ by: ["status"], where: empWhere, _count: { _all: true } }),
+      this.prisma.employee.count({ where: { ...empWhere, createdAt: { gte: since } } }),
+      this.analytics.employeeDayFact.groupBy({
+        by: ["employeeId"],
+        where: { orgId: ctx.orgId, day: { gte: since } },
+        _avg: { productivityScore: true, focusScore: true },
+        _sum: { activeSeconds: true, productiveSeconds: true },
+        _count: { _all: true },
+      }),
+      this.prisma.attendanceRecord.groupBy({ by: ["status"], where: { orgId: ctx.orgId, day: { gte: since } }, _count: { _all: true } }),
+      this.analytics.employeeDayFact.aggregate({ _avg: { productivityScore: true }, where: { orgId: ctx.orgId, day: { gte: half } } }),
+      this.analytics.employeeDayFact.aggregate({ _avg: { productivityScore: true }, where: { orgId: ctx.orgId, day: { gte: since, lt: half } } }),
+      this.prisma.requisition.aggregate({ _sum: { openings: true }, where: { orgId: ctx.orgId, status: "OPEN" } }),
+    ]);
+
+    // --- Workforce Overview (real headcount) ---
+    const st = (s: string) => statusGroups.find((g) => g.status === s)?._count._all ?? 0;
+    const total = statusGroups.reduce((a, g) => a + g._count._all, 0);
+    const workforce = {
+      total,
+      active: st("ACTIVE"),
+      newJoinees,
+      onLeave: st("ON_LEAVE"),
+      noticePeriod: st("NOTICE_PERIOD"),
+      openPositions: openReqs._sum.openings ?? 0, // sum of OPEN requisition openings
+    };
+
+    // --- Productivity Overview (real) ---
+    const per = byEmployee.map((f) => ({
+      productivity: score(f._avg.productivityScore),
+      focus: score(f._avg.focusScore),
+      active: f._sum.activeSeconds ?? 0,
+      productive: f._sum.productiveSeconds ?? 0,
+      days: f._count._all,
+    }));
+    const n = per.length || 1;
+    const companyProductivity = Math.round(per.reduce((s, p) => s + p.productivity, 0) / n);
+    const focusScore = Math.round(per.reduce((s, p) => s + p.focus, 0) / n);
+    const totActive = per.reduce((s, p) => s + p.active, 0);
+    const totProductive = per.reduce((s, p) => s + p.productive, 0);
+    const productivity = {
+      companyProductivity,
+      focusScore,
+      activeHours: hours(totActive),
+      utilization: totActive > 0 ? Math.round((totProductive / totActive) * 100) : 0,
+    };
+
+    // Attendance rate (30d) — for the health pillar.
+    const attTotal = attendanceGroups.reduce((a, g) => a + g._count._all, 0);
+    const attPresent = (attendanceGroups.find((g) => g.status === "PRESENT")?._count._all ?? 0) + (attendanceGroups.find((g) => g.status === "LATE")?._count._all ?? 0);
+    const attendanceRate = attTotal > 0 ? Math.round((attPresent / attTotal) * 100) : 0;
+
+    // --- Attrition Overview (derived risk buckets) ---
+    let high = 0;
+    let medium = 0;
+    let critical = 0;
+    let burnoutCount = 0;
+    for (const p of per) {
+      const avgDaily = p.days ? p.active / 3600 / p.days : 0;
+      let r = 0;
+      if (p.productivity < 60) r += 30;
+      else if (p.productivity < 75) r += 15;
+      if (p.focus < 60) r += 20;
+      else if (p.focus < 75) r += 10;
+      if (avgDaily > 9.5) r += 30;
+      else if (avgDaily > 8.5) r += 15; // overwork → burnout
+      if (avgDaily < 3) r += 25; // disengagement
+      if (avgDaily > 8.5 && p.focus < 70) burnoutCount++;
+      if (r >= 60) critical += 1;
+      else if (r >= 40) high += 1;
+      else if (r >= 25) medium += 1;
+    }
+    const trendDelta = score(recentAgg._avg.productivityScore) - score(priorAgg._avg.productivityScore);
+    const attrition = {
+      high,
+      medium,
+      critical,
+      atRiskPct: per.length ? Math.round(((high + critical) / per.length) * 100) : 0,
+      trend: trendDelta < -3 ? "worsening" : trendDelta > 3 ? "improving" : "stable",
+      trendDelta,
+    };
+
+    // --- Workforce Health Score (0-100 composite) ---
+    const engagement = focusScore; // proxy for engagement
+    const riskPillar = per.length ? Math.round(100 - ((high + critical) / per.length) * 100) : 100;
+    const burnoutPillar = per.length ? Math.round(100 - (burnoutCount / per.length) * 100) : 100;
+    const pillars = { productivity: companyProductivity, attendance: attendanceRate, engagement, risk: riskPillar, burnout: burnoutPillar };
+    const healthScore = Math.round(0.3 * pillars.productivity + 0.2 * pillars.attendance + 0.2 * pillars.engagement + 0.15 * pillars.risk + 0.15 * pillars.burnout);
+
+    return { workforce, health: { score: healthScore, pillars }, attrition, productivity };
+  }
 }
 
 function avg(nums: number[]): number {
