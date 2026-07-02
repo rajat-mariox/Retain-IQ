@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "RetainIQ Activity Reporter",
+  "version": "0.1.0",
+  "description": "Reports the active browser tab's URL to the local RetainIQ desktop agent so website activity is tracked on Windows/Linux/macOS.",
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" }
+}

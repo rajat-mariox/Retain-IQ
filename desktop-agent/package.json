@@ -1,0 +1,30 @@
+{
+  "name": "retainiq-desktop-agent",
+  "productName": "RetainIQ Agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RetainIQ workforce-monitoring desktop agent (Electron). Fully independent of the backend/web monorepo.",
+  "main": "dist/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "package": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "active-win": "^8.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.retainiq.agent",
+    "productName": "RetainIQ Agent",
+    "files": ["dist/**/*", "src/renderer/**/*"],
+    "directories": { "output": "release" }
+  }
+}

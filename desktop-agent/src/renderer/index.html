@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RetainIQ Agent</title>
+    <style>
+      :root { --brand: #1f883d; --ink: #0f172a; --muted: #64748b; --line: #e2e8f0; --panel: #ffffff; --bg: #f8fafc; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+      .wrap { padding: 24px; }
+      h1 { font-size: 18px; margin: 0 0 2px; }
+      .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+      label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
+      input { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; }
+      button { width: 100%; padding: 11px; border: 0; border-radius: 10px; background: var(--brand); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 16px; }
+      button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+      .err { color: #dc2626; font-size: 13px; margin-top: 12px; min-height: 16px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+      .row { display: flex; justify-content: space-between; font-size: 13px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+      .row:last-child { border-bottom: 0; }
+      .row span:last-child { font-weight: 600; }
+      .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+      .on { background: var(--brand); } .off { background: #94a3b8; } .idle { background: #d97706; }
+      .hide { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>RetainIQ Agent</h1>
+      <div class="sub" id="sub">Sign in to start activity tracking.</div>
+
+      <div id="loginView" class="card">
+        <label>Work email</label>
+        <input id="email" type="email" placeholder="you@company.com" />
+        <label>Password</label>
+        <input id="password" type="password" placeholder="••••••••" />
+        <button id="loginBtn">Sign in &amp; start</button>
+        <div class="err" id="err"></div>
+      </div>
+
+      <div id="statusView" class="card hide">
+        <div class="row"><span>Signed in</span><span id="who">—</span></div>
+        <div class="row"><span>Organization</span><span id="org">—</span></div>
+        <div class="row"><span>Status</span><span id="state">—</span></div>
+        <div class="row"><span>Current app</span><span id="app">—</span></div>
+        <div class="row"><span>Current site</span><span id="site">—</span></div>
+        <div class="row"><span>Queued events</span><span id="queued">0</span></div>
+        <div class="row"><span>Uploaded</span><span id="uploaded">0</span></div>
+        <div class="row"><span>Last upload</span><span id="flush">—</span></div>
+        <button id="toggleBtn">Pause tracking</button>
+        <button id="logoutBtn" class="secondary">Sign out</button>
+      </div>
+    </div>
+    <script src="renderer.js"></script>
+  </body>
+</html>
