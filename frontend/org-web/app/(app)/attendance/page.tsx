@@ -1,4 +1,4 @@
-import { CalendarCheck, Timer, UserCheck, UserX } from "lucide-react";
+import { CalendarCheck, DoorOpen, Timer, UserCheck, UserX } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -6,7 +6,8 @@ import { StatTile } from "@/components/ui/StatTile";
 import { AttendanceBadge } from "@/components/ui/badges";
 import { PaginatedTable } from "@/components/ui/Pagination";
 import { CheckInOut } from "@/components/attendance/CheckInOut";
-import { getAttendanceToday, getMyAttendance } from "@/lib/api";
+import { AttendanceReports } from "@/components/attendance/AttendanceReports";
+import { getAttendanceToday, getMyAttendance, getSession } from "@/lib/api";
 
 function clock(iso: string | null): string {
   if (!iso) return "—";
@@ -14,9 +15,33 @@ function clock(iso: string | null): string {
 }
 
 export default async function AttendancePage() {
-  const [today, mine] = await Promise.all([getAttendanceToday().catch(() => null), getMyAttendance().catch(() => null)]);
-  const myToday = mine?.today ?? null;
+  const session = await getSession().catch(() => null);
+  const isAdmin = Boolean(session && (session.role.permissions.includes("attendance.read") || session.role.name === "Owner"));
 
+  if (isAdmin) {
+    const today = await getAttendanceToday().catch(() => null);
+    const now = new Date();
+    const dayStr = now.toISOString().slice(0, 10);
+    const monthStr = now.toISOString().slice(0, 7);
+    return (
+      <>
+        <Topbar title="Attendance" subtitle="Attendance dashboard & reports" />
+        <PageBody>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
+            <StatTile label="Present today" value={String(today?.present ?? 0)} icon={UserCheck} accent="#16a34a" />
+            <StatTile label="Absent today" value={String(today?.absent ?? 0)} icon={UserX} accent="#e5484d" />
+            <StatTile label="Late arrivals" value={String(today?.late ?? 0)} icon={Timer} accent="#d97706" />
+            <StatTile label="Early exits" value={String(today?.earlyExits ?? 0)} icon={DoorOpen} accent="#ea580c" />
+            <StatTile label="Attendance %" value={`${today?.attendanceRate ?? 0}%`} icon={CalendarCheck} accent="#0d9488" />
+          </div>
+          <AttendanceReports today={dayStr} month={monthStr} />
+        </PageBody>
+      </>
+    );
+  }
+
+  const mine = await getMyAttendance().catch(() => null);
+  const myToday = mine?.today ?? null;
   return (
     <>
       <Topbar title="Attendance" subtitle="Check in/out and your history" />
@@ -27,13 +52,6 @@ export default async function AttendancePage() {
             <CheckInOut checkedIn={Boolean(myToday?.checkInAt)} checkedOut={Boolean(myToday?.checkOutAt)} />
           </CardBody>
         </Card>
-
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatTile label="Present" value={String(today?.present ?? 0)} icon={UserCheck} accent="#16a34a" />
-          <StatTile label="Late" value={String(today?.late ?? 0)} icon={Timer} accent="#d97706" />
-          <StatTile label="Absent" value={String(today?.absent ?? 0)} icon={UserX} accent="#e5484d" />
-          <StatTile label="Attendance rate" value={`${today?.attendanceRate ?? 0}%`} icon={CalendarCheck} accent="#0d9488" />
-        </div>
 
         <Card>
           <CardHeader title="Your attendance history" subtitle="Recent attendance" />
