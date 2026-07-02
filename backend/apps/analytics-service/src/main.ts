@@ -9,6 +9,7 @@ import { createLogger, createMetrics, installProcessErrorHandlers, startOpsServe
 import { Piscina } from "piscina";
 import { loadAnalyticsConfig } from "./config.js";
 import { deriveDelta, type ScoreInput, type ScoreOutput } from "./scoring.js";
+import { persistDetail } from "./readmodel.js";
 
 const config = loadAnalyticsConfig();
 const logger = createLogger("analytics-worker", config.LOG_LEVEL);
@@ -67,7 +68,7 @@ async function handle(message: StreamMessage): Promise<void> {
           payload: event as Prisma.InputJsonValue,
         },
       });
-      return tx.employeeDayFact.upsert({
+      const fact = await tx.employeeDayFact.upsert({
         where: { orgId_employeeId_day: { orgId, employeeId, day } },
         create: { orgId, employeeId, day, ...delta },
         update: {
@@ -77,6 +78,22 @@ async function handle(message: StreamMessage): Promise<void> {
           eventCount: { increment: delta.eventCount },
         },
       });
+
+      // Persist the monitoring detail (sessions, app/site usage, timeline) in the
+      // same idempotent transaction so it can't diverge from the day-fact.
+      if (eventType.startsWith("activity.")) {
+        await persistDetail(tx, {
+          orgId,
+          employeeId,
+          day,
+          occurredAt: new Date(occurredAt),
+          eventType,
+          sourceEventId: asString(event.sourceEventId),
+          payload,
+        });
+      }
+
+      return fact;
     });
   } catch (error) {
     if (isUniqueViolation(error)) {

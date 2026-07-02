@@ -46,3 +46,78 @@ model EmployeeDayFact {
   @@index([orgId, day])
   @@index([orgId, employeeId, day])
 }
+
+// ---------------------------------------------------------------------------
+// Employee-monitoring read models (built from the activity stream by the
+// analytics-worker, alongside EmployeeDayFact). These keep the DETAIL that the
+// day-fact rollup discards: sessions, per-app/site usage, and the timeline.
+// ---------------------------------------------------------------------------
+
+model WorkSession {
+  id            String    @id @default(uuid()) @db.Uuid
+  orgId         String    @db.Uuid
+  employeeId    String    @db.Uuid
+  sessionKey    String // agent-provided session id
+  day           DateTime  @db.Date
+  startedAt     DateTime
+  endedAt       DateTime?
+  activeSeconds Int       @default(0)
+  idleSeconds   Int       @default(0)
+  breakSeconds  Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([orgId, employeeId, sessionKey])
+  @@index([orgId, employeeId, day])
+  @@index([orgId, day])
+}
+
+model AppUsageDaily {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  day        DateTime @db.Date
+  appName    String
+  category   String   @default("NEUTRAL") // PRODUCTIVE | NEUTRAL | DISTRACTING
+  seconds    Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([orgId, employeeId, day, appName])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+}
+
+model WebsiteUsageDaily {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  day        DateTime @db.Date
+  domain     String
+  category   String   @default("NEUTRAL")
+  seconds    Int      @default(0)
+  visits     Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([orgId, employeeId, day, domain])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+}
+
+model ActivityEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  day        DateTime @db.Date
+  occurredAt DateTime
+  type       String // app | website | idle | break | session | screenshot | focus | context_switch
+  title      String?
+  detail     String?
+  category   String?
+  seconds    Int      @default(0)
+
+  @@index([orgId, employeeId, day, occurredAt])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, occurredAt])
+}
