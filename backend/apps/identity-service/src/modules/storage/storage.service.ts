@@ -9,6 +9,9 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { permissions } from "@retainiq/authz";
+import type { Prisma } from "@retainiq/database/identity";
+import { AccessScopeService } from "../../common/access-scope/access-scope.service.js";
 import { BillingReadPrismaService } from "../../common/database/billing-prisma.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 
@@ -40,6 +43,7 @@ export class StorageService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly billing: BillingReadPrismaService,
+    private readonly accessScope: AccessScopeService,
   ) {
     const endpoint = process.env.S3_ENDPOINT?.trim() || undefined; // unset → real AWS
     const forcePathStyle = (process.env.S3_FORCE_PATH_STYLE ?? (endpoint ? "true" : "false")) === "true";
@@ -143,23 +147,16 @@ export class StorageService implements OnModuleInit {
     return { key, uploadUrl, expiresInSeconds: UPLOAD_URL_TTL_SECONDS };
   }
 
-  /** The caller's own employee id (or a sentinel if they have no employee record). */
-  private async ownEmployeeId(membershipId: string): Promise<string> {
-    const m = await this.prisma.organizationMembership.findUnique({ where: { id: membershipId }, select: { employeeId: true } });
-    return m?.employeeId ?? "00000000-0000-0000-0000-000000000000";
-  }
-
-  private canSeeAll(role: string): boolean {
-    return role === "Owner" || role === "Manager";
-  }
-
   /**
-   * Screenshots grouped by employee (gallery folders). Owners/Managers see every
-   * employee in the org; everyone else sees only their own. RBAC enforced upstream.
+   * Screenshots grouped by employee (gallery folders). Visibility is DYNAMIC,
+   * driven by the caller's role grants + scope (AccessScopeService): org-wide,
+   * a set of departments/teams, or just their own — no hardcoded role names.
    */
-  async screenshotsByEmployee(input: { orgId: string; role: string; membershipId: string }) {
-    const where: { orgId: string; employeeId?: string } = { orgId: input.orgId };
-    if (!this.canSeeAll(input.role)) where.employeeId = await this.ownEmployeeId(input.membershipId);
+  async screenshotsByEmployee(input: { orgId: string; userId: string }) {
+    const scope = await this.accessScope.resolveScope(input.orgId, input.userId, permissions.screenshotsRead);
+    const visible = await this.accessScope.visibleEmployeeIds(input.orgId, scope);
+    const where: Prisma.ScreenshotObjectWhereInput = { orgId: input.orgId };
+    if (visible !== null) where.employeeId = { in: visible };
 
     const groups = await this.prisma.screenshotObject.groupBy({
       by: ["employeeId"],
@@ -193,12 +190,17 @@ export class StorageService implements OnModuleInit {
    * and Managers see the whole org (optionally filtered to one employee); everyone
    * else sees only their own. RBAC enforced upstream.
    */
-  async listScreenshots(input: { orgId: string; role: string; membershipId: string; employeeId?: string; page: number; pageSize: number }) {
-    const where: { orgId: string; employeeId?: string } = { orgId: input.orgId };
-    if (this.canSeeAll(input.role)) {
+  async listScreenshots(input: { orgId: string; userId: string; employeeId?: string; page: number; pageSize: number }) {
+    const scope = await this.accessScope.resolveScope(input.orgId, input.userId, permissions.screenshotsRead);
+    const visible = await this.accessScope.visibleEmployeeIds(input.orgId, scope);
+    const where: Prisma.ScreenshotObjectWhereInput = { orgId: input.orgId };
+    if (visible === null) {
+      // org tier: optionally narrow to a requested employee.
       if (input.employeeId) where.employeeId = input.employeeId;
     } else {
-      where.employeeId = await this.ownEmployeeId(input.membershipId);
+      // scoped/self: restrict to visible ids, honouring a requested employee if allowed.
+      const allowed = input.employeeId && visible.includes(input.employeeId) ? [input.employeeId] : visible;
+      where.employeeId = { in: allowed };
     }
 
     const [rows, total] = await this.prisma.$transaction([

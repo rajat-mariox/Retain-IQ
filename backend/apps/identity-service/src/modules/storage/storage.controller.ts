@@ -59,7 +59,7 @@ export class StorageController {
   @RequirePermissions(permissions.screenshotsRead)
   screenshotsByEmployee() {
     const ctx = requireTenantContext();
-    return this.storage.screenshotsByEmployee({ orgId: ctx.orgId, role: ctx.role, membershipId: ctx.membershipId });
+    return this.storage.screenshotsByEmployee({ orgId: ctx.orgId, userId: ctx.userId });
   }
 
   @Get("screenshots")
@@ -68,8 +68,7 @@ export class StorageController {
     const ctx = requireTenantContext();
     return this.storage.listScreenshots({
       orgId: ctx.orgId,
-      role: ctx.role,
-      membershipId: ctx.membershipId,
+      userId: ctx.userId,
       employeeId: query.employeeId,
       page: query.page,
       pageSize: query.pageSize,

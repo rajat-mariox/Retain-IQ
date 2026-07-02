@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
@@ -26,22 +26,49 @@ export class MembersService {
       throw new ConflictException("A user with this email already exists.");
     }
 
+    // Validate department (if given) belongs to the org.
+    if (input.departmentId) {
+      const dept = await this.prisma.department.findFirst({ where: { id: input.departmentId, orgId: ctx.orgId } });
+      if (!dept) throw new NotFoundException("Department not found.");
+    }
+
+    // Resolve the base-role grant scope. DEPARTMENT defaults to the member's department.
+    const scopeType = input.scopeType ?? "ORG";
+    let scopeId: string | null = null;
+    if (scopeType === "DEPARTMENT") {
+      scopeId = input.scopeId ?? input.departmentId ?? null;
+      if (!scopeId) throw new BadRequestException("A department is required for department scope.");
+      const dept = await this.prisma.department.findFirst({ where: { id: scopeId, orgId: ctx.orgId } });
+      if (!dept) throw new NotFoundException("Scope department not found.");
+    } else if (scopeType === "TEAM") {
+      scopeId = input.scopeId ?? null;
+      if (!scopeId) throw new BadRequestException("A team is required for team scope.");
+      const team = await this.prisma.team.findFirst({ where: { id: scopeId, orgId: ctx.orgId } });
+      if (!team) throw new NotFoundException("Scope team not found.");
+    }
+
     const tempPassword = generateTempPassword();
     const passwordHash = await hashPassword(tempPassword);
 
-    const employee = await this.prisma.$transaction(async (tx) => {
-      const roles = await ensureSystemRoles(tx, ctx.orgId);
-      const roleId = roles.get(input.role);
-      if (!roleId) {
-        throw new BadRequestException("Unknown role.");
+    const created = await this.prisma.$transaction(async (tx) => {
+      const systemRoles = await ensureSystemRoles(tx, ctx.orgId);
+      // Prefer an explicit roleId (any org role); fall back to the legacy role name.
+      let roleId = input.roleId ?? null;
+      if (roleId) {
+        const role = await tx.role.findFirst({ where: { id: roleId, orgId: ctx.orgId } });
+        if (!role) throw new BadRequestException("Unknown role.");
+      } else {
+        roleId = systemRoles.get(input.role ?? "Employee") ?? null;
       }
+      if (!roleId) throw new BadRequestException("Unknown role.");
+
       const emp = await tx.employee.create({
         data: {
           orgId: ctx.orgId,
           email,
           firstName: input.firstName,
           lastName: input.lastName,
-          department: input.department,
+          departmentId: input.departmentId ?? null,
           title: input.title,
           createdBy: ctx.userId,
         },
@@ -50,18 +77,23 @@ export class MembersService {
       await tx.organizationMembership.create({
         data: { orgId: ctx.orgId, userId: user.id, employeeId: emp.id, roleId, status: "ACTIVE" },
       });
-      return emp;
+      // Base-role grant at the chosen scope (multi-grant RBAC).
+      await tx.roleAssignment.create({
+        data: { orgId: ctx.orgId, userId: user.id, employeeId: emp.id, roleId, scopeType, scopeId, status: "ACTIVE", createdBy: ctx.userId },
+      });
+      const role = await tx.role.findUnique({ where: { id: roleId }, select: { name: true } });
+      return { emp, roleName: role?.name ?? "Member" };
     });
 
     return {
       employee: {
-        id: employee.id,
-        firstName: employee.firstName,
-        lastName: employee.lastName,
+        id: created.emp.id,
+        firstName: created.emp.firstName,
+        lastName: created.emp.lastName,
         email,
-        role: input.role,
-        department: input.department ?? null,
-        title: input.title ?? null,
+        role: created.roleName,
+        departmentId: created.emp.departmentId,
+        title: created.emp.title ?? null,
       },
       // Returned ONCE for the admin to share with the new member.
       tempPassword,

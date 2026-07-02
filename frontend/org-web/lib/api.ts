@@ -40,13 +40,60 @@ export interface AttendanceToday {
   totalEmployees: number;
   present: number;
   late: number;
+  earlyExits: number;
   absent: number;
   onLeave: number;
   checkedIn: number;
   attendanceRate: number;
-  records: { employeeId: string; status: string; checkInAt: string | null; checkOutAt: string | null; workMinutes: number }[];
 }
 export const getAttendanceToday = cache(() => apiFetch<AttendanceToday>("attendance/today"));
+
+export interface AttendanceSummary {
+  total: number;
+  present: number;
+  late: number;
+  earlyExits: number;
+  absent: number;
+  onLeave: number;
+  weeklyOff: number;
+  checkedIn: number;
+  attendanceRate: number;
+}
+export interface DailyReportRow {
+  employeeId: string;
+  name: string;
+  department: string | null;
+  status: string;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  workMinutes: number;
+  earlyExit: boolean;
+}
+export interface DailyReport {
+  day: string;
+  summary: AttendanceSummary;
+  rows: DailyReportRow[];
+}
+export interface DepartmentReport {
+  day: string;
+  departments: (AttendanceSummary & { departmentId: string | null; name: string })[];
+}
+export interface MonthlyReportRow {
+  employeeId: string;
+  name: string;
+  department: string | null;
+  present: number;
+  late: number;
+  onLeave: number;
+  absent: number;
+  workingDays: number;
+  attendanceRate: number;
+}
+export interface MonthlyReport {
+  month: string;
+  workingDays: number;
+  rows: MonthlyReportRow[];
+}
 
 export interface AttendanceRecord {
   id: string;
@@ -57,6 +104,22 @@ export interface AttendanceRecord {
   workMinutes: number;
 }
 export const getMyAttendance = cache(() => apiFetch<{ today: AttendanceRecord | null; history: AttendanceRecord[] }>("attendance/me"));
+
+export interface RosterRow {
+  employeeId: string;
+  name: string;
+  department: string | null;
+  status: string;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  workMinutes: number;
+}
+export interface AttendanceRoster {
+  day: string;
+  summary: { total: number; present: number; late: number; absent: number; onLeave: number; checkedIn: number; attendanceRate: number };
+  rows: RosterRow[];
+}
+export const getAttendanceRoster = cache(() => apiFetch<AttendanceRoster>("attendance/roster"));
 
 export interface OrgBilling {
   subscription: {
@@ -131,6 +194,14 @@ export interface InsightsTeam {
 }
 export const getInsightsTeam = cache(() => apiFetch<InsightsTeam>("insights/team"));
 
+export interface ExecutiveOverview {
+  workforce: { total: number; active: number; newJoinees: number; onLeave: number; noticePeriod: number; openPositions: number };
+  health: { score: number; pillars: { productivity: number; attendance: number; engagement: number; risk: number; burnout: number } };
+  attrition: { high: number; medium: number; critical: number; atRiskPct: number; trend: string; trendDelta: number };
+  productivity: { companyProductivity: number; focusScore: number; activeHours: number; utilization: number };
+}
+export const getExecutiveOverview = cache(() => apiFetch<ExecutiveOverview>("insights/executive"));
+
 export interface OrgMember {
   id: string;
   email: string;
@@ -153,6 +224,220 @@ export interface OrgProfile {
   createdAt: string;
 }
 export const getOrg = cache(() => apiFetch<OrgProfile>("org"));
+
+export interface OrgDepartment {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  leadEmployeeId: string | null;
+  status: string;
+  employeeCount: number;
+  teamCount: number;
+  createdAt: string;
+}
+export const getDepartments = cache(() => apiFetch<OrgDepartment[]>("departments"));
+
+export interface OrgTeam {
+  id: string;
+  name: string;
+  description: string | null;
+  departmentId: string | null;
+  departmentName: string | null;
+  leadEmployeeId: string | null;
+  memberCount: number;
+  createdAt: string;
+}
+export const getTeams = cache(() => apiFetch<OrgTeam[]>("teams"));
+
+export interface OrgRequisition {
+  id: string;
+  title: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  openings: number;
+  status: string;
+  createdAt: string;
+}
+export const getRequisitions = cache(() => apiFetch<OrgRequisition[]>("requisitions"));
+
+export interface OrgDesignation {
+  id: string;
+  title: string;
+  level: string | null;
+  status: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  employeeCount: number;
+}
+export const getDesignations = cache(() => apiFetch<OrgDesignation[]>("designations"));
+
+export interface OrgShift {
+  id: string;
+  name: string;
+  startMinute: number;
+  endMinute: number;
+  graceMinutes: number;
+  workingDays: number[];
+  isDefault: boolean;
+  status: string;
+  employeeCount: number;
+}
+export const getShifts = cache(() => apiFetch<OrgShift[]>("shifts"));
+
+export interface EmployeeRow {
+  id: string;
+  employeeCode: string | null;
+  email: string | null;
+  firstName: string;
+  lastName: string;
+  title: string | null;
+  status: string;
+  lifecycleStage: string;
+  departmentId: string | null;
+  teamId: string | null;
+  designationId: string | null;
+  shiftId: string | null;
+  managerId: string | null;
+  joinedAt: string | null;
+  probationEndsAt: string | null;
+  confirmedAt: string | null;
+  exitedAt: string | null;
+  createdAt: string;
+  departmentRef: { id: string; name: string } | null;
+  designationRef: { id: string; title: string; level: string | null } | null;
+  shiftRef: { id: string; name: string } | null;
+}
+export type EmployeePage = OffsetPage<EmployeeRow>;
+export const getEmployees = cache((page = 1, pageSize = 10, extra = "") =>
+  apiFetch<EmployeePage>(`employees?page=${page}&pageSize=${pageSize}${extra}`),
+);
+
+export interface LifecycleSummary {
+  onboarding: number;
+  probation: number;
+  confirmed: number;
+  exited: number;
+}
+export const getLifecycleSummary = cache(() => apiFetch<LifecycleSummary>("employees/lifecycle-summary"));
+
+// ---- Leave & Holidays ----
+export interface LeaveType {
+  id: string;
+  name: string;
+  code: string;
+  annualQuota: number;
+  paid: boolean;
+  color: string | null;
+  status: string;
+}
+export const getLeaveTypes = cache(() => apiFetch<LeaveType[]>("leave/types"));
+
+export interface LeaveBalance {
+  leaveTypeId: string;
+  name: string;
+  code: string;
+  color: string | null;
+  paid: boolean;
+  allocated: number;
+  used: number;
+  pending: number;
+  remaining: number | null;
+}
+export interface LeaveBalances {
+  year: number;
+  employeeId: string;
+  balances: LeaveBalance[];
+}
+export const getMyLeaveBalances = cache(() => apiFetch<LeaveBalances>("leave/me/balances"));
+
+export interface LeaveRequest {
+  id: string;
+  employeeId: string;
+  employeeName: string | null;
+  leaveType: { id: string; name: string; code: string; color: string | null };
+  startDate: string;
+  endDate: string;
+  days: number;
+  reason: string | null;
+  status: string;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string;
+}
+export const getMyLeaveRequests = cache(() => apiFetch<LeaveRequest[]>("leave/requests"));
+export const getAllLeaveRequests = cache((status = "") => apiFetch<LeaveRequest[]>(`leave/requests/all${status ? `?status=${status}` : ""}`));
+
+export interface Holiday {
+  id: string;
+  name: string;
+  date: string;
+  type: string;
+  departmentId: string | null;
+  departmentName: string | null;
+}
+export const getHolidays = cache((year?: number) => apiFetch<Holiday[]>(`holidays${year ? `?year=${year}` : ""}`));
+
+// ---- Employee Monitoring ----
+export interface AppUsage { appName: string; category: string; seconds: number; hours: number }
+export interface WebsiteUsage { domain: string; category: string; seconds: number; visits: number; hours: number }
+export interface MonitoringSummary {
+  day: string;
+  trackedEmployees: number;
+  online: number;
+  idle: number;
+  offline: number;
+  avgProductivity: number;
+  avgFocus: number;
+  activeHours: number;
+  idleHours: number;
+  utilization: number;
+  topApps: AppUsage[];
+  topWebsites: WebsiteUsage[];
+}
+export const getMonitoringSummary = cache((day?: string) => apiFetch<MonitoringSummary>(`monitoring/summary${day ? `?day=${day}` : ""}`));
+
+export interface PresenceRow { employeeId: string; name: string; status: string; lastActivity: string; lastTitle: string | null; lastSeen: string }
+export interface MonitoringSession {
+  id: string;
+  employeeId: string;
+  name: string;
+  startedAt: string;
+  endedAt: string | null;
+  activeHours: number;
+  idleHours: number;
+  breakHours: number;
+  durationHours: number;
+  open: boolean;
+}
+export interface TimelineSegment { id: string; type: string; title: string | null; detail: string | null; category: string | null; startAt: string; endAt: string; seconds: number }
+
+export interface OrgRole {
+  id: string;
+  name: string;
+  description: string | null;
+  isSystem: boolean;
+  permissionCount: number;
+}
+export const getRoles = cache(() => apiFetch<OrgRole[]>("rbac/roles"));
+
+export interface AccessGrant {
+  id: string;
+  roleId: string;
+  roleName: string;
+  scopeType: string;
+  scopeLabel: string;
+}
+export interface AccessMember {
+  userId: string;
+  email: string;
+  name: string | null;
+  grants: AccessGrant[];
+}
+export type AccessPage = OffsetPage<AccessMember>;
+export const getAccess = cache((page = 1, pageSize = 10, q = "") =>
+  apiFetch<AccessPage>(`rbac/access?page=${page}&pageSize=${pageSize}${q ? `&q=${encodeURIComponent(q)}` : ""}`),
+);
 
 export interface InboxNotification {
   id: string;

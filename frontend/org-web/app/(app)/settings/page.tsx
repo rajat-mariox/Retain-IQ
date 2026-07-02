@@ -2,16 +2,23 @@ import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { PageNav } from "@/components/ui/PageNav";
-import { getMembers, getOrg } from "@/lib/api";
+import { OrgStructurePanel } from "@/components/settings/OrgStructurePanel";
+import { AccessRolesPanel } from "@/components/settings/AccessRolesPanel";
+import { getAccess, getDepartments, getMembers, getOrg, getRequisitions, getRoles, getTeams } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 const PAGE_SIZE = 10;
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
   const page = Math.max(1, Number((await searchParams).page) || 1);
-  const [org, members] = await Promise.all([
+  const [org, members, departments, teams, roles, access, requisitions] = await Promise.all([
     getOrg().catch(() => null),
     getMembers(page, PAGE_SIZE).catch(() => ({ items: [], total: 0, page, pageSize: PAGE_SIZE })),
+    getDepartments().catch(() => []),
+    getTeams().catch(() => []),
+    getRoles().catch(() => []),
+    getAccess(1, 10).catch(() => ({ items: [], total: 0, page: 1, pageSize: 10 })),
+    getRequisitions().catch(() => []),
   ]);
 
   return (
@@ -31,6 +38,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </dl>
           </CardBody>
         </Card>
+
+        <OrgStructurePanel departments={departments} teams={teams} requisitions={requisitions} />
+
+        <AccessRolesPanel initial={access} roles={roles} departments={departments} teams={teams} />
 
         <Card>
           <CardHeader title="Members" subtitle={`${members.total} people with access`} />

@@ -29,11 +29,11 @@ export class PermissionGuard implements CanActivate {
     }
 
     const ctx = getRequestContext();
-    if (!ctx.orgId || !ctx.membershipId) {
+    if (!ctx.orgId || !ctx.userId) {
       throw new ForbiddenException("Authorization context is missing.");
     }
 
-    const bundle = await this.permissionBundleService.resolve(ctx.orgId, ctx.membershipId);
+    const bundle = await this.permissionBundleService.resolve(ctx.orgId, ctx.userId);
     if (!bundle) {
       throw new ForbiddenException("Membership is not active.");
     }

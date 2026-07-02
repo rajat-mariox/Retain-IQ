@@ -40,6 +40,39 @@ enum EmployeeStatus {
   SUSPENDED
 }
 
+// Where an employee sits in their employment journey. Distinct from EmployeeStatus
+// (day-to-day state): a CONFIRMED employee can still be ON_LEAVE. New hires begin
+// at ONBOARDING; EXITED is terminal.
+enum LifecycleStage {
+  ONBOARDING
+  PROBATION
+  CONFIRMED
+  EXITED
+}
+
+// Breadth a role grant applies to. ORG = whole org; DEPARTMENT/TEAM = scopeId
+// points at that unit; SELF = only the grantee's own data.
+enum ScopeType {
+  ORG
+  DEPARTMENT
+  TEAM
+  SELF
+}
+
+enum RequisitionStatus {
+  OPEN
+  ON_HOLD
+  FILLED
+  CLOSED
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 enum IdempotencyStatus {
   STARTED
   COMPLETED
@@ -69,12 +102,20 @@ model Organization {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  memberships OrganizationMembership[]
-  employees   Employee[]
-  roles       Role[]
-  auditEvents AuditEvent[]
-  teams       Team[]
-  projects    Project[]
+  memberships     OrganizationMembership[]
+  employees       Employee[]
+  roles           Role[]
+  roleAssignments RoleAssignment[]
+  auditEvents     AuditEvent[]
+  departments     Department[]
+  teams           Team[]
+  projects        Project[]
+  requisitions    Requisition[]
+  designations    Designation[]
+  shifts          Shift[]
+  leaveTypes      LeaveType[]
+  leaveRequests   LeaveRequest[]
+  holidays        Holiday[]
   // Billing (Plan/Subscription/Invoice) lives in billing-service / billing-db.
 
   @@index([status])
@@ -93,8 +134,9 @@ model User {
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 
-  memberships OrganizationMembership[]
-  sessions    Session[]
+  memberships     OrganizationMembership[]
+  sessions        Session[]
+  roleAssignments RoleAssignment[]
 }
 
 model Session {
@@ -156,9 +198,35 @@ model Role {
 
   org         Organization             @relation(fields: [orgId], references: [id])
   memberships OrganizationMembership[]
+  assignments RoleAssignment[]
 
   @@unique([orgId, name])
   @@index([orgId, isSystem])
+}
+
+// Multi-grant RBAC: a user can hold several (role @ scope) grants — e.g.
+// Manager@department:Sales AND Lead@team:Launch. Effective permissions = union
+// across active grants; the scope drives ABAC query filtering (Phase 3).
+model RoleAssignment {
+  id         String    @id @default(uuid()) @db.Uuid
+  orgId      String    @db.Uuid
+  userId     String    @db.Uuid
+  employeeId String?   @db.Uuid
+  roleId     String    @db.Uuid
+  scopeType  ScopeType @default(ORG)
+  scopeId    String?   @db.Uuid // departmentId | teamId; null for ORG/SELF
+  status     String    @default("ACTIVE") // ACTIVE | REVOKED
+  createdAt  DateTime  @default(now())
+  createdBy  String?   @db.Uuid
+
+  org  Organization @relation(fields: [orgId], references: [id])
+  user User         @relation(fields: [userId], references: [id])
+  role Role         @relation(fields: [roleId], references: [id])
+
+  @@unique([orgId, userId, roleId, scopeType, scopeId])
+  @@index([orgId, userId, status])
+  @@index([orgId, roleId])
+  @@index([scopeType, scopeId])
 }
 
 model Employee {
@@ -168,22 +236,31 @@ model Employee {
   email        String?
   firstName    String
   lastName     String
-  department   String?
-  title        String?
-  departmentId String?        @db.Uuid
-  teamId       String?        @db.Uuid
-  managerId    String?        @db.Uuid
-  status       EmployeeStatus @default(ACTIVE)
-  joinedAt     DateTime?
-  exitedAt     DateTime?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  createdBy    String?        @db.Uuid
-  updatedBy    String?        @db.Uuid
+  department     String?
+  title          String?
+  departmentId   String?        @db.Uuid
+  teamId         String?        @db.Uuid
+  designationId  String?        @db.Uuid
+  shiftId        String?        @db.Uuid
+  managerId      String?        @db.Uuid
+  status         EmployeeStatus @default(ACTIVE)
+  lifecycleStage LifecycleStage @default(ONBOARDING)
+  joinedAt       DateTime?
+  probationEndsAt DateTime?
+  confirmedAt    DateTime?
+  exitedAt       DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  createdBy      String?        @db.Uuid
+  updatedBy      String?        @db.Uuid
 
-  org         Organization             @relation(fields: [orgId], references: [id])
-  memberships OrganizationMembership[]
-  attendance  AttendanceRecord[]
+  org             Organization             @relation(fields: [orgId], references: [id])
+  departmentRef   Department?              @relation(fields: [departmentId], references: [id])
+  designationRef  Designation?             @relation(fields: [designationId], references: [id])
+  shiftRef        Shift?                   @relation(fields: [shiftId], references: [id])
+  memberships     OrganizationMembership[]
+  attendance      AttendanceRecord[]
+  leaveRequests   LeaveRequest[]
 
   @@unique([orgId, employeeCode])
   @@index([orgId, email])
@@ -191,6 +268,8 @@ model Employee {
   @@index([orgId, departmentId, status])
   @@index([orgId, teamId, status])
   @@index([orgId, managerId, status])
+  @@index([orgId, designationId])
+  @@index([orgId, lifecycleStage])
   @@index([orgId, createdAt])
 }
 
@@ -357,19 +436,166 @@ enum TaskPriority {
   URGENT
 }
 
+// First-class org unit (HR, Sales, Engineering, DevOps, Operations, …). Flat:
+// departments hold teams hold employees. leadEmployeeId is a plain ref (no FK,
+// like Team.leadEmployeeId) to avoid a relation cycle through Employee.
+model Department {
+  id             String   @id @default(uuid()) @db.Uuid
+  orgId          String   @db.Uuid
+  name           String
+  slug           String
+  description    String?
+  leadEmployeeId String?  @db.Uuid
+  status         String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id])
+  employees    Employee[]
+  teams        Team[]
+  designations Designation[]
+  holidays     Holiday[]
+
+  @@unique([orgId, slug])
+  @@index([orgId, status])
+}
+
+// Job opening / hiring requisition — drives the executive "Open positions" metric.
+model Requisition {
+  id           String            @id @default(uuid()) @db.Uuid
+  orgId        String            @db.Uuid
+  title        String
+  departmentId String?           @db.Uuid
+  openings     Int               @default(1)
+  status       RequisitionStatus @default(OPEN)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, status])
+}
+
 model Team {
   id             String   @id @default(uuid()) @db.Uuid
   orgId          String   @db.Uuid
+  departmentId   String?  @db.Uuid
   name           String
   description    String?
   leadEmployeeId String?  @db.Uuid
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  org      Organization @relation(fields: [orgId], references: [id])
-  projects Project[]
+  org        Organization @relation(fields: [orgId], references: [id])
+  department Department?  @relation(fields: [departmentId], references: [id])
+  projects   Project[]
 
   @@index([orgId])
+  @@index([orgId, departmentId])
+}
+
+// Leave policy: a type of leave (Annual, Sick, Casual…) with an annual quota.
+model LeaveType {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  name        String
+  code        String
+  annualQuota Int      @default(0) // days/year; 0 = uncapped
+  paid        Boolean  @default(true)
+  color       String? // hex for the calendar
+  status      String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org      Organization   @relation(fields: [orgId], references: [id])
+  requests LeaveRequest[]
+
+  @@unique([orgId, code])
+  @@index([orgId, status])
+}
+
+// A leave request moving through PENDING → APPROVED/REJECTED (or CANCELLED).
+model LeaveRequest {
+  id           String      @id @default(uuid()) @db.Uuid
+  orgId        String      @db.Uuid
+  employeeId   String      @db.Uuid
+  leaveTypeId  String      @db.Uuid
+  startDate    DateTime    @db.Date
+  endDate      DateTime    @db.Date
+  days         Int // working days deducted (excludes weekly-offs & holidays)
+  reason       String?
+  status       LeaveStatus @default(PENDING)
+  decidedBy    String?     @db.Uuid
+  decidedAt    DateTime?
+  decisionNote String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id])
+  employee  Employee     @relation(fields: [employeeId], references: [id])
+  leaveType LeaveType    @relation(fields: [leaveTypeId], references: [id])
+
+  @@index([orgId, status])
+  @@index([orgId, employeeId, status])
+  @@index([orgId, startDate, endDate])
+}
+
+// Company / regional / department holiday.
+model Holiday {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  name         String
+  date         DateTime @db.Date
+  type         String   @default("COMPANY") // COMPANY | REGIONAL | DEPARTMENT
+  departmentId String?  @db.Uuid
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id])
+  department Department?  @relation(fields: [departmentId], references: [id])
+
+  @@index([orgId, date])
+}
+
+// Work shift / schedule. Times are minutes from midnight in the org's timezone
+// (e.g. 540 = 09:00, 1050 = 17:30). Drives shift-relative late & early-exit.
+model Shift {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  name         String
+  startMinute  Int
+  endMinute    Int
+  graceMinutes Int      @default(10)
+  workingDays  Int[]    @default([1, 2, 3, 4, 5]) // 0=Sun … 6=Sat (Mon–Fri default)
+  isDefault    Boolean  @default(false)
+  status       String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id])
+  employees Employee[]
+
+  @@index([orgId, status])
+}
+
+// Job title / designation catalog (e.g. "Software Engineer", "Senior Manager").
+// Optionally scoped to a department; employees reference one designation.
+model Designation {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  title        String
+  level        String? // e.g. "L3", "Senior", "Band 4"
+  departmentId String?  @db.Uuid
+  status       String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id])
+  department Department?  @relation(fields: [departmentId], references: [id])
+  employees  Employee[]
+
+  @@index([orgId, status])
+  @@index([orgId, departmentId])
 }
 
 model Project {

@@ -9,17 +9,61 @@ const LIST_SELECT = {
   email: true,
   firstName: true,
   lastName: true,
+  title: true,
   status: true,
+  lifecycleStage: true,
+  departmentId: true,
+  teamId: true,
+  designationId: true,
+  shiftId: true,
+  managerId: true,
+  joinedAt: true,
+  probationEndsAt: true,
+  confirmedAt: true,
+  exitedAt: true,
   createdAt: true,
+  departmentRef: { select: { id: true, name: true } },
+  designationRef: { select: { id: true, title: true, level: true } },
+  shiftRef: { select: { id: true, name: true } },
 } as const;
+
+export interface EmployeeListFilters {
+  page: number;
+  pageSize: number;
+  q?: string;
+  lifecycleStage?: string;
+  departmentId?: string;
+  status?: string;
+}
 
 @Injectable()
 export class EmployeeRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Offset-paginated list scoped to the tenant, with a total for page-number UIs. */
-  async list(context: RequestContext, options: { page: number; pageSize: number }) {
-    const where = { orgId: context.orgId };
+  private buildWhere(context: RequestContext, filters: Partial<EmployeeListFilters>, scopeWhere: Prisma.EmployeeWhereInput): Prisma.EmployeeWhereInput {
+    const q = filters.q?.trim();
+    return {
+      orgId: context.orgId,
+      ...scopeWhere,
+      ...(filters.lifecycleStage ? { lifecycleStage: filters.lifecycleStage as Prisma.EmployeeWhereInput["lifecycleStage"] } : {}),
+      ...(filters.departmentId ? { departmentId: filters.departmentId } : {}),
+      ...(filters.status ? { status: filters.status as Prisma.EmployeeWhereInput["status"] } : {}),
+      ...(q
+        ? {
+            OR: [
+              { firstName: { contains: q, mode: "insensitive" } },
+              { lastName: { contains: q, mode: "insensitive" } },
+              { email: { contains: q, mode: "insensitive" } },
+              { employeeCode: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+  }
+
+  /** Offset-paginated list scoped to the tenant + the caller's ABAC scope + filters. */
+  async list(context: RequestContext, options: EmployeeListFilters, scopeWhere: Prisma.EmployeeWhereInput = {}) {
+    const where = this.buildWhere(context, options, scopeWhere);
     const [items, total] = await this.prisma.$transaction([
       this.prisma.employee.findMany({
         where,
@@ -32,6 +76,22 @@ export class EmployeeRepository {
     ]);
 
     return { items, total, page: options.page, pageSize: options.pageSize };
+  }
+
+  /** Headcount per lifecycle stage, within the caller's scope. */
+  async lifecycleCounts(context: RequestContext, scopeWhere: Prisma.EmployeeWhereInput = {}) {
+    const groups = await this.prisma.employee.groupBy({
+      by: ["lifecycleStage"],
+      where: { orgId: context.orgId, ...scopeWhere },
+      _count: { _all: true },
+    });
+    const get = (stage: string) => groups.find((g) => g.lifecycleStage === stage)?._count._all ?? 0;
+    return {
+      onboarding: get("ONBOARDING"),
+      probation: get("PROBATION"),
+      confirmed: get("CONFIRMED"),
+      exited: get("EXITED"),
+    };
   }
 
   findById(context: RequestContext, employeeId: string) {
@@ -52,6 +112,14 @@ export class EmployeeRepository {
         createdBy: context.userId,
         updatedBy: context.userId,
       },
+      select: { ...LIST_SELECT, updatedAt: true },
+    });
+  }
+
+  update(context: RequestContext, employeeId: string, data: Prisma.EmployeeUpdateInput) {
+    return this.prisma.employee.update({
+      where: { id: employeeId },
+      data: { ...data, updatedBy: context.userId },
       select: { ...LIST_SELECT, updatedAt: true },
     });
   }
