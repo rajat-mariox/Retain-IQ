@@ -35,6 +35,10 @@
         <input id="email" type="email" placeholder="you@company.com" />
         <label>Password</label>
         <input id="password" type="password" placeholder="••••••••" />
+        <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-top:14px; cursor:pointer;">
+          <input id="remember" type="checkbox" checked style="width:auto; margin:0;" />
+          Remember me on this device
+        </label>
         <button id="loginBtn">Sign in &amp; start</button>
         <div class="err" id="err"></div>
       </div>
@@ -45,6 +49,7 @@
         <div class="row"><span>Status</span><span id="state">—</span></div>
         <div class="row"><span>Current app</span><span id="app">—</span></div>
         <div class="row"><span>Current site</span><span id="site">—</span></div>
+        <div class="row"><span>Screenshots</span><span id="shots">—</span></div>
         <div class="row"><span>Queued events</span><span id="queued">0</span></div>
         <div class="row"><span>Uploaded</span><span id="uploaded">0</span></div>
         <div class="row"><span>Last upload</span><span id="flush">—</span></div>

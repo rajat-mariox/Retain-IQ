@@ -4,7 +4,7 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("agent", {
   session: () => ipcRenderer.invoke("agent:session"),
   status: () => ipcRenderer.invoke("agent:status"),
-  login: (email: string, password: string) => ipcRenderer.invoke("agent:login", email, password),
+  login: (email: string, password: string, remember: boolean) => ipcRenderer.invoke("agent:login", email, password, remember),
   start: () => ipcRenderer.invoke("agent:start"),
   stop: () => ipcRenderer.invoke("agent:stop"),
   logout: () => ipcRenderer.invoke("agent:logout"),

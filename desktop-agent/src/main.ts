@@ -68,8 +68,8 @@ function buildTray(): void {
 // ---- IPC ----
 ipcMain.handle("agent:session", () => getSession());
 ipcMain.handle("agent:status", () => collector.status());
-ipcMain.handle("agent:login", async (_e, email: string, password: string) => {
-  const session = await login(email, password);
+ipcMain.handle("agent:login", async (_e, email: string, password: string, remember: boolean) => {
+  const session = await login(email, password, remember !== false);
   void collector.replayPending(); // send anything buffered before this login
   collector.start(); // auto-start tracking after login
   return session;

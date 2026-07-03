@@ -4,7 +4,8 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { PageNav } from "@/components/ui/PageNav";
 import { OrgStructurePanel } from "@/components/settings/OrgStructurePanel";
 import { AccessRolesPanel } from "@/components/settings/AccessRolesPanel";
-import { getAccess, getDepartments, getMembers, getOrg, getRequisitions, getRoles, getTeams } from "@/lib/api";
+import { MonitoringSettingsPanel } from "@/components/settings/MonitoringSettingsPanel";
+import { getAccess, getDepartments, getMembers, getMonitoringPolicy, getOrg, getRequisitions, getRoles, getTeams } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 const PAGE_SIZE = 10;
@@ -20,6 +21,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     getAccess(1, 10).catch(() => ({ items: [], total: 0, page: 1, pageSize: 10 })),
     getRequisitions().catch(() => []),
   ]);
+  const monitoringPolicy = await getMonitoringPolicy().catch(() => ({ screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280 }));
 
   return (
     <>
@@ -42,6 +44,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <OrgStructurePanel departments={departments} teams={teams} requisitions={requisitions} />
 
         <AccessRolesPanel initial={access} roles={roles} departments={departments} teams={teams} />
+
+        <MonitoringSettingsPanel initial={monitoringPolicy} />
 
         <Card>
           <CardHeader title="Members" subtitle={`${members.total} people with access`} />

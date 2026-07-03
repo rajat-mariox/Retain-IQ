@@ -69,15 +69,29 @@ export function getConfig(): AgentConfig {
   return { ...DEFAULT_CONFIG, ...(read().config ?? {}) };
 }
 
+// A memory-only session (used when "Remember me" is off) — never written to disk,
+// so it's gone on next launch.
+let memorySession: Session | null = null;
+
 export function getSession(): Session | null {
-  return read().session ?? null;
+  return memorySession ?? read().session ?? null;
 }
 
-export function saveSession(session: Session): void {
-  write({ ...read(), session });
+/** Persist the session to disk (remembered) or keep it in memory only for this run. */
+export function saveSession(session: Session, persist = true): void {
+  memorySession = session;
+  if (persist) {
+    write({ ...read(), session });
+  } else {
+    // Memory-only: make sure no previously-remembered session lingers on disk.
+    const data = read();
+    delete data.session;
+    write(data);
+  }
 }
 
 export function clearSession(): void {
+  memorySession = null;
   const data = read();
   delete data.session;
   write(data);

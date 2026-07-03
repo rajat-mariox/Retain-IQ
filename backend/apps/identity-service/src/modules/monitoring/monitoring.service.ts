@@ -7,6 +7,9 @@ import { PrismaService } from "../../common/database/prisma.service.js";
 
 const ONLINE_WINDOW_MS = 10 * 60 * 1000; // active within 10 min → online
 
+const POLICY_DEFAULTS = { screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280 };
+export type MonitoringPolicyInput = Partial<typeof POLICY_DEFAULTS>;
+
 function startOfUtcDay(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
@@ -24,6 +27,25 @@ export class MonitoringService {
     private readonly analytics: AnalyticsReadPrismaService,
     private readonly accessScope: AccessScopeService,
   ) {}
+
+  /** The org's monitoring policy (agent reads this to pace screenshots). Falls back to defaults. */
+  async getPolicy() {
+    const ctx = requireTenantContext();
+    const row = await this.prisma.monitoringPolicy.findUnique({ where: { orgId: ctx.orgId } });
+    return {
+      screenshotsEnabled: row?.screenshotsEnabled ?? POLICY_DEFAULTS.screenshotsEnabled,
+      screenshotIntervalSeconds: row?.screenshotIntervalSeconds ?? POLICY_DEFAULTS.screenshotIntervalSeconds,
+      screenshotQuality: row?.screenshotQuality ?? POLICY_DEFAULTS.screenshotQuality,
+      screenshotMaxWidth: row?.screenshotMaxWidth ?? POLICY_DEFAULTS.screenshotMaxWidth,
+    };
+  }
+
+  async updatePolicy(input: MonitoringPolicyInput) {
+    const ctx = requireTenantContext();
+    const clean = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined));
+    await this.prisma.monitoringPolicy.upsert({ where: { orgId: ctx.orgId }, create: { orgId: ctx.orgId, ...clean }, update: clean });
+    return this.getPolicy();
+  }
 
   /** null = all employees visible (org tier); otherwise the scoped id list. */
   private async visibleEmployeeIds(): Promise<string[] | null> {

@@ -92,9 +92,21 @@ Environment variables (or a saved `agent-state.json` under Electron's userData):
 npm run package    # electron-builder → release/
 ```
 
+## Screenshots
+
+When `screenshotEnabled` is on (default), the agent captures the primary display
+every `screenshotIntervalSeconds` (10 min) while tracking (including idle time,
+so away-from-desk activity is still captured):
+`desktopCapturer` → downscaled JPEG → `POST /v1/storage/screenshots` reserves
+quota + returns a presigned URL → the bytes are PUT directly to object storage →
+an `activity.screenshot.captured` event is logged on the timeline. If the org
+has screenshots disabled or is over quota, the request is refused and the agent
+simply skips (no retries spam). macOS needs Screen-Recording permission.
+
+Config: `RETAINIQ_SCREENSHOTS` (true/false), `RETAINIQ_SCREENSHOT_SECONDS`,
+`RETAINIQ_SCREENSHOT_WIDTH`, `RETAINIQ_SCREENSHOT_QUALITY`.
+
 ## Not yet included (roadmap)
 
-- Screenshot capture (the platform already stores screenshots in S3/MinIO; the
-  agent would use `desktopCapturer` + a signed-upload endpoint).
 - Break start/stop and focus-block detection.
-- Firefox build of the browser extension (Chromium is packaged today).
+- Multi-monitor capture (primary display only today).

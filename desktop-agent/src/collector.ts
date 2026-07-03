@@ -6,8 +6,9 @@
 import { randomUUID } from "node:crypto";
 import { powerMonitor } from "electron";
 import { getConfig, getSession, loadQueue, saveQueue } from "./store.js";
-import { uploadBatch, type ActivityEvent } from "./api.js";
+import { uploadBatch, fetchPolicy, type ActivityEvent, type MonitoringPolicy } from "./api.js";
 import { getLatestTab } from "./tabserver.js";
+import { captureAndUpload } from "./screenshot.js";
 
 const BROWSERS = ["chrome", "chromium", "edge", "msedge", "firefox", "brave", "opera", "safari", "vivaldi", "arc"];
 const isBrowser = (app: string): boolean => BROWSERS.some((b) => app.toLowerCase().includes(b));
@@ -40,6 +41,8 @@ export interface AgentStatus {
   currentSite: string | null; // latest URL from the browser extension (confirms it's wired up)
   idle: boolean;
   uploadedTotal: number;
+  screenshotsEnabled: boolean;
+  lastScreenshotAt: string | null;
 }
 
 export class Collector {
@@ -48,11 +51,15 @@ export class Collector {
   private sessionId: string | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private flushTimer: NodeJS.Timeout | null = null;
+  private shotTimer: NodeJS.Timeout | null = null;
+  private policyTimer: NodeJS.Timeout | null = null;
+  private policy: MonitoringPolicy | null = null;
   private wasIdle = false;
   private idleStartedAt = 0;
   private lastApp: string | null = null;
   private lastFlushAt: string | null = null;
   private uploadedTotal = 0;
+  private lastScreenshotAt: string | null = null;
 
   isRunning(): boolean {
     return this.sessionId !== null;
@@ -70,7 +77,36 @@ export class Collector {
       currentSite,
       idle: this.wasIdle,
       uploadedTotal: this.uploadedTotal,
+      screenshotsEnabled: this.effShots().enabled,
+      lastScreenshotAt: this.lastScreenshotAt,
     };
+  }
+
+  /** Effective screenshot settings: server policy wins, else local config fallback. */
+  private effShots() {
+    const c = getConfig();
+    return {
+      enabled: this.policy?.screenshotsEnabled ?? c.screenshotEnabled,
+      interval: this.policy?.screenshotIntervalSeconds ?? c.screenshotIntervalSeconds,
+      quality: this.policy?.screenshotQuality ?? c.screenshotQuality,
+      width: this.policy?.screenshotMaxWidth ?? c.screenshotMaxWidth,
+    };
+  }
+
+  private restartShotTimer(): void {
+    if (this.shotTimer) clearInterval(this.shotTimer);
+    this.shotTimer = null;
+    const eff = this.effShots();
+    if (this.isRunning() && eff.enabled) this.shotTimer = setInterval(() => void this.captureScreenshot(), eff.interval * 1000);
+  }
+
+  /** Re-fetch the org policy; re-pace the screenshot timer if enabled/interval changed. */
+  private async refreshPolicy(): Promise<void> {
+    const before = this.effShots();
+    const p = await fetchPolicy();
+    if (p) this.policy = p;
+    const after = this.effShots();
+    if (before.enabled !== after.enabled || before.interval !== after.interval) this.restartShotTimer();
   }
 
   private enqueue(eventType: string, payload: Record<string, unknown>, sourceEventId?: string): void {
@@ -88,6 +124,18 @@ export class Collector {
     if (this.queue.length > 0) await this.flush();
   }
 
+  /** Capture + upload a screenshot (even while idle), then log it on the timeline. */
+  private async captureScreenshot(): Promise<void> {
+    if (!this.isRunning()) return;
+    const eff = this.effShots();
+    if (!eff.enabled) return;
+    const key = await captureAndUpload(eff.width, eff.quality);
+    if (key) {
+      this.lastScreenshotAt = new Date().toISOString();
+      this.enqueue("activity.screenshot.captured", { objectKey: key });
+    }
+  }
+
   start(): void {
     if (this.isRunning()) return;
     const cfg = getConfig();
@@ -95,6 +143,9 @@ export class Collector {
     this.enqueue("activity.session.started", {}, `${this.sessionId}-start`);
     this.pollTimer = setInterval(() => void this.poll(), cfg.pollSeconds * 1000);
     this.flushTimer = setInterval(() => void this.flush(), cfg.flushSeconds * 1000);
+    this.restartShotTimer(); // starts with the current (fallback) cadence
+    void this.refreshPolicy(); // then pull the org's policy, which may re-pace it
+    this.policyTimer = setInterval(() => void this.refreshPolicy(), cfg.policyRefreshSeconds * 1000);
   }
 
   async stop(): Promise<void> {
@@ -102,8 +153,12 @@ export class Collector {
     this.enqueue("activity.session.ended", {}, `${this.sessionId}-end`);
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.flushTimer) clearInterval(this.flushTimer);
+    if (this.shotTimer) clearInterval(this.shotTimer);
+    if (this.policyTimer) clearInterval(this.policyTimer);
     this.pollTimer = null;
     this.flushTimer = null;
+    this.shotTimer = null;
+    this.policyTimer = null;
     await this.flush();
     this.sessionId = null;
     this.wasIdle = false;

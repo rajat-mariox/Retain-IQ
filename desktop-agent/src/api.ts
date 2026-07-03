@@ -14,8 +14,8 @@ export interface ActivityEvent {
   payload: Record<string, unknown>;
 }
 
-/** Log in with org credentials; resolves employeeId via /auth/me and persists the session. */
-export async function login(email: string, password: string): Promise<Session> {
+/** Log in with org credentials; resolves employeeId via /auth/me. `remember` persists the session across restarts. */
+export async function login(email: string, password: string, remember = true): Promise<Session> {
   const { identityUrl } = getConfig();
   const res = await fetch(`${identityUrl}/v1/auth/login`, {
     method: "POST",
@@ -40,7 +40,7 @@ export async function login(email: string, password: string): Promise<Session> {
     email: membership.user?.email ?? email,
     orgName: membership.org?.name ?? "Organization",
   };
-  saveSession(session);
+  saveSession(session, remember);
   return session;
 }
 
@@ -60,6 +60,70 @@ async function refresh(): Promise<string | null> {
   const tokens = (await res.json()) as { accessToken: string; refreshToken: string };
   saveSession({ ...session, accessToken: tokens.accessToken, refreshToken: tokens.refreshToken });
   return tokens.accessToken;
+}
+
+/**
+ * Reserve screenshot storage quota and get a presigned PUT URL from identity.
+ * Returns null on 403 (screenshots disabled for the org), quota exceeded, or error.
+ */
+export async function requestScreenshotUpload(sizeBytes: number, contentType: string): Promise<{ key: string; uploadUrl: string } | null> {
+  const { identityUrl } = getConfig();
+  const session = getSession();
+  if (!session) return null;
+  const post = (token: string) =>
+    fetch(`${identityUrl}/v1/storage/screenshots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ contentType, sizeBytes, capturedAt: new Date().toISOString() }),
+    });
+  let res = await post(session.accessToken);
+  if (res.status === 401) {
+    const fresh = await refresh();
+    if (!fresh) return null;
+    res = await post(fresh);
+  }
+  if (!res.ok) return null;
+  const data = (await res.json()) as { key: string; uploadUrl: string };
+  return { key: data.key, uploadUrl: data.uploadUrl };
+}
+
+export interface MonitoringPolicy {
+  screenshotsEnabled: boolean;
+  screenshotIntervalSeconds: number;
+  screenshotQuality: number;
+  screenshotMaxWidth: number;
+}
+
+/** Fetch the org's monitoring policy (admin-configurable screenshot cadence). */
+export async function fetchPolicy(): Promise<MonitoringPolicy | null> {
+  const { identityUrl } = getConfig();
+  const session = getSession();
+  if (!session) return null;
+  const get = (token: string) => fetch(`${identityUrl}/v1/monitoring/policy`, { headers: { Authorization: `Bearer ${token}` } });
+  try {
+    let res = await get(session.accessToken);
+    if (res.status === 401) {
+      const fresh = await refresh();
+      if (!fresh) return null;
+      res = await get(fresh);
+    }
+    if (!res.ok) return null;
+    return (await res.json()) as MonitoringPolicy;
+  } catch {
+    return null;
+  }
+}
+
+/** Upload the screenshot bytes directly to the presigned URL (object storage). */
+export async function putBinary(url: string, body: Uint8Array, contentType: string): Promise<boolean> {
+  try {
+    // Electron's fetch accepts a Uint8Array/Buffer body at runtime; the DOM types
+    // are stricter than reality, so cast to BodyInit.
+    const res = await fetch(url, { method: "PUT", headers: { "Content-Type": contentType }, body: body as unknown as BodyInit });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /** Upload a batch of activity events; retries once after a token refresh on 401. */

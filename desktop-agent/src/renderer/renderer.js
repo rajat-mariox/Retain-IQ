@@ -23,6 +23,7 @@ async function render() {
   $("state").innerHTML = `<span class="dot ${dot}"></span>${label}`;
   $("app").textContent = s.lastApp || "—";
   $("site").textContent = s.currentSite || "— (extension not detected)";
+  $("shots").textContent = !s.screenshotsEnabled ? "off" : s.lastScreenshotAt ? `last ${new Date(s.lastScreenshotAt).toLocaleTimeString()}` : "on (pending)";
   $("queued").textContent = s.queued;
   $("uploaded").textContent = s.uploadedTotal;
   $("flush").textContent = s.lastFlushAt ? new Date(s.lastFlushAt).toLocaleTimeString() : "—";
@@ -33,7 +34,7 @@ $("loginBtn").addEventListener("click", async () => {
   $("err").textContent = "";
   $("loginBtn").disabled = true;
   try {
-    await window.agent.login($("email").value.trim(), $("password").value);
+    await window.agent.login($("email").value.trim(), $("password").value, $("remember").checked);
     await render();
   } catch (e) {
     $("err").textContent = e && e.message ? e.message : "Sign in failed.";

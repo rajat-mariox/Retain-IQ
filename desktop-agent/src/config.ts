@@ -13,6 +13,11 @@ export interface AgentConfig {
   maxQueue: number; // cap on locally-buffered events (oldest dropped beyond this)
   tabServerPort: number; // loopback port the browser extension reports active tabs to
   tabFreshnessMs: number; // how long a reported tab is considered "current"
+  screenshotEnabled: boolean; // fallback when the server policy is unreachable
+  screenshotIntervalSeconds: number; // fallback interval
+  screenshotMaxWidth: number; // downscale width (px) to keep uploads small
+  screenshotQuality: number; // JPEG quality 0-100
+  policyRefreshSeconds: number; // how often to re-fetch the org monitoring policy
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -25,4 +30,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
   maxQueue: Number(process.env.RETAINIQ_MAX_QUEUE ?? 10_000),
   tabServerPort: Number(process.env.RETAINIQ_TAB_PORT ?? 7317),
   tabFreshnessMs: 120_000,
+  screenshotEnabled: (process.env.RETAINIQ_SCREENSHOTS ?? "true") !== "false",
+  screenshotIntervalSeconds: Number(process.env.RETAINIQ_SCREENSHOT_SECONDS ?? 600), // every 10 min
+  screenshotMaxWidth: Number(process.env.RETAINIQ_SCREENSHOT_WIDTH ?? 1280),
+  screenshotQuality: Number(process.env.RETAINIQ_SCREENSHOT_QUALITY ?? 55),
+  policyRefreshSeconds: Number(process.env.RETAINIQ_POLICY_SECONDS ?? 300), // re-check policy every 5 min
 };
