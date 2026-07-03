@@ -114,7 +114,7 @@ function DailyTable({ data }: { data: DailyReport | null }) {
     <>
       {data ? <SummaryStrip s={data.summary} /> : null}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[680px] text-sm">
+        <table className="w-full min-w-[760px] text-sm">
           <thead>
             <tr className="border-b border-hairline text-xs text-slate-500">
               <th className="px-5 py-3 text-left font-medium">Employee</th>
@@ -122,7 +122,8 @@ function DailyTable({ data }: { data: DailyReport | null }) {
               <th className="px-5 py-3 text-left font-medium">Status</th>
               <th className="px-5 py-3 text-right font-medium">In</th>
               <th className="px-5 py-3 text-right font-medium">Out</th>
-              <th className="px-5 py-3 text-right font-medium">Worked</th>
+              <th className="px-5 py-3 text-right font-medium">Break</th>
+              <th className="px-5 py-3 text-right font-medium">Net</th>
             </tr>
           </thead>
           <tbody>
@@ -136,10 +137,11 @@ function DailyTable({ data }: { data: DailyReport | null }) {
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkInAt)}</td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkOutAt)}</td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{worked(r.workMinutes)}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-500">{r.breakMinutes > 0 ? worked(r.breakMinutes) : "—"}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-700" title={`Gross ${worked(r.workMinutes)}`}>{worked(r.netWorkMinutes)}</td>
               </tr>
             ))}
-            {data && data.rows.length === 0 ? <tr><td colSpan={6} className="px-5 py-8 text-center text-sm text-slate-500">No employees.</td></tr> : null}
+            {data && data.rows.length === 0 ? <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-slate-500">No employees.</td></tr> : null}
           </tbody>
         </table>
       </div>

@@ -52,12 +52,17 @@ const updateDesignationSchema = z
 
 const minute = z.coerce.number().int().min(0).max(1439);
 const workingDays = z.array(z.coerce.number().int().min(0).max(6)).min(1).max(7);
+const shiftBreak = z
+  .object({ name: z.string().min(1).max(30), startMinute: minute, endMinute: minute })
+  .refine((b) => b.endMinute > b.startMinute, { message: "Break end must be after its start." });
+const breaks = z.array(shiftBreak).max(6);
 const createShiftSchema = z.object({
   name: z.string().min(1).max(80),
   startMinute: minute,
   endMinute: minute,
   graceMinutes: z.coerce.number().int().min(0).max(240).optional(),
   workingDays: workingDays.optional(),
+  breaks: breaks.optional(),
   isDefault: z.boolean().optional(),
 });
 const updateShiftSchema = z
@@ -67,6 +72,7 @@ const updateShiftSchema = z
     endMinute: minute,
     graceMinutes: z.coerce.number().int().min(0).max(240),
     workingDays,
+    breaks,
     isDefault: z.boolean(),
     status: z.enum(["ACTIVE", "ARCHIVED"]),
   })

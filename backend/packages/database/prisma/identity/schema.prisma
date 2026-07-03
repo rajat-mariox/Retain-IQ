@@ -116,6 +116,7 @@ model Organization {
   leaveTypes      LeaveType[]
   leaveRequests   LeaveRequest[]
   holidays        Holiday[]
+  monitoringPolicy MonitoringPolicy?
   // Billing (Plan/Subscription/Invoice) lives in billing-service / billing-db.
 
   @@index([status])
@@ -494,6 +495,20 @@ model Team {
   @@index([orgId, departmentId])
 }
 
+// Per-org employee-monitoring policy (agent reads it live; admins change it anytime).
+model MonitoringPolicy {
+  id                        String   @id @default(uuid()) @db.Uuid
+  orgId                     String   @unique @db.Uuid
+  screenshotsEnabled        Boolean  @default(true)
+  screenshotIntervalSeconds Int      @default(600)
+  screenshotQuality         Int      @default(55)
+  screenshotMaxWidth        Int      @default(1280)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
 // Leave policy: a type of leave (Annual, Sick, Casual…) with an annual quota.
 model LeaveType {
   id          String   @id @default(uuid()) @db.Uuid
@@ -567,6 +582,7 @@ model Shift {
   endMinute    Int
   graceMinutes Int      @default(10)
   workingDays  Int[]    @default([1, 2, 3, 4, 5]) // 0=Sun … 6=Sat (Mon–Fri default)
+  breaks       Json     @default("[]") // [{ name, startMinute, endMinute }] — deducted from worked hours
   isDefault    Boolean  @default(false)
   status       String   @default("ACTIVE") // ACTIVE | ARCHIVED
   createdAt    DateTime @default(now())

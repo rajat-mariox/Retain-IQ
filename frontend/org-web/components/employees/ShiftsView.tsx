@@ -33,10 +33,14 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
   const [endT, setEndT] = useState("17:30");
   const [grace, setGrace] = useState("10");
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [breaks, setBreaks] = useState<{ name: string; start: string; end: string }[]>([]);
   const [isDefault, setIsDefault] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const toggleDay = (d: number) => setDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
+  const addBreak = () => setBreaks((prev) => [...prev, { name: prev.length === 0 ? "Lunch" : "Break", start: "13:00", end: "13:45" }]);
+  const setBreak = (i: number, patch: Partial<{ name: string; start: string; end: string }>) => setBreaks((prev) => prev.map((b, idx) => (idx === i ? { ...b, ...patch } : b)));
+  const removeBreak = (i: number) => setBreaks((prev) => prev.filter((_, idx) => idx !== i));
 
   function run(fn: () => Promise<Response>, onOk: () => void) {
     setError(null);
@@ -58,7 +62,15 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
         fetch("/api/shifts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, startMinute: timeToMin(startT), endMinute: timeToMin(endT), graceMinutes: Math.max(0, Number(grace) || 0), workingDays: [...days].sort((a, b) => a - b), isDefault }),
+          body: JSON.stringify({
+            name,
+            startMinute: timeToMin(startT),
+            endMinute: timeToMin(endT),
+            graceMinutes: Math.max(0, Number(grace) || 0),
+            workingDays: [...days].sort((a, b) => a - b),
+            breaks: breaks.map((b) => ({ name: b.name.trim() || "Break", startMinute: timeToMin(b.start), endMinute: timeToMin(b.end) })).filter((b) => b.endMinute > b.startMinute),
+            isDefault,
+          }),
         }),
       () => {
         setOpen(false);
@@ -67,6 +79,7 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
         setEndT("17:30");
         setGrace("10");
         setDays([1, 2, 3, 4, 5]);
+        setBreaks([]);
         setIsDefault(false);
       },
     );
@@ -90,7 +103,8 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
                   <span className="font-medium text-slate-900">{s.name}</span>
                   {s.isDefault ? <span className="ml-2 inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-[11px] font-medium text-brand"><Star className="size-3" /> default</span> : null}
                   {s.status === "ARCHIVED" ? <span className="ml-2 text-[11px] text-slate-400">archived</span> : null}
-                  <span className="block text-xs text-slate-500">{minToTime(s.startMinute)}–{minToTime(s.endMinute)}{s.endMinute <= s.startMinute ? " (+1d)" : ""} · {formatDays(s.workingDays)} · {s.graceMinutes}m grace · {s.employeeCount} assigned</span>
+                  <span className="block text-xs text-slate-500">{minToTime(s.startMinute)}–{minToTime(s.endMinute)}{s.endMinute <= s.startMinute ? " (+1d)" : ""} · {formatDays(s.workingDays)} · {s.graceMinutes}m grace{(s.breaks?.length ?? 0) > 0 ? ` · ${s.breaks.reduce((t, b) => t + (b.endMinute - b.startMinute), 0)}m break` : ""} · {s.employeeCount} assigned</span>
+                  {(s.breaks?.length ?? 0) > 0 ? <span className="mt-0.5 block text-[11px] text-slate-400">{s.breaks.map((b) => `${b.name} ${minToTime(b.startMinute)}–${minToTime(b.endMinute)}`).join(" · ")}</span> : null}
                 </span>
               </span>
               {s.status !== "ARCHIVED" ? (
@@ -128,6 +142,26 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
               ))}
             </div>
             <p className="mt-1 text-xs text-slate-400">Late/absent are measured only on these days. Overnight shifts (end ≤ start) are supported.</p>
+          </div>
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className={`${label} mb-0`}>Breaks</label>
+              <button type="button" onClick={addBreak} className="inline-flex items-center gap-1 rounded-lg border border-hairline bg-panel px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"><Plus className="size-3.5" /> Add break</button>
+            </div>
+            {breaks.length === 0 ? (
+              <p className="text-xs text-slate-400">No breaks — add lunch/dinner/tea. Break time is deducted from worked hours.</p>
+            ) : (
+              <div className="space-y-2">
+                {breaks.map((b, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input className={`${input} flex-1`} value={b.name} onChange={(e) => setBreak(i, { name: e.target.value })} placeholder="e.g. Lunch" />
+                    <input type="time" className={`${input} w-28`} value={b.start} onChange={(e) => setBreak(i, { start: e.target.value })} />
+                    <input type="time" className={`${input} w-28`} value={b.end} onChange={(e) => setBreak(i, { end: e.target.value })} />
+                    <button type="button" onClick={() => removeBreak(i)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-600" title="Remove"><Trash2 className="size-4" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <label className="flex items-center gap-2 text-sm text-slate-700">
             <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} className="size-4 rounded border-hairline text-brand focus:ring-brand" />

@@ -66,6 +66,35 @@ function worksOnDay(shift: ShiftLike | null, weekday: number): boolean {
   return days.includes(weekday);
 }
 
+interface ShiftBreakDef {
+  name: string;
+  startMinute: number;
+  endMinute: number;
+}
+
+function parseBreaks(raw: unknown): ShiftBreakDef[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (b): b is ShiftBreakDef => Boolean(b) && typeof b === "object" && typeof (b as ShiftBreakDef).startMinute === "number" && typeof (b as ShiftBreakDef).endMinute === "number",
+  );
+}
+
+/**
+ * Scheduled break minutes overlapping a worked window [inMin, outMin] in the org
+ * timezone. Overnight worked windows (out ≤ in) deduct the full scheduled break.
+ */
+function breakMinutesInWindow(breaks: ShiftBreakDef[], inMin: number, outMin: number): number {
+  if (breaks.length === 0) return 0;
+  if (outMin <= inMin) return breaks.reduce((s, b) => s + Math.max(0, b.endMinute - b.startMinute), 0);
+  let overlap = 0;
+  for (const b of breaks) {
+    const s = Math.max(inMin, b.startMinute);
+    const e = Math.min(outMin, b.endMinute);
+    if (e > s) overlap += e - s;
+  }
+  return overlap;
+}
+
 @Injectable()
 export class AttendanceService {
   constructor(private readonly prisma: PrismaService) {}
@@ -166,7 +195,7 @@ export class AttendanceService {
     const exclude = await this.ownerEmployeeIds(orgId);
     const [org, shifts, employees, records, holidays, leaves] = await Promise.all([
       this.prisma.organization.findUnique({ where: { id: orgId }, select: { timezone: true } }),
-      this.prisma.shift.findMany({ where: { orgId }, select: { id: true, startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, isDefault: true, status: true } }),
+      this.prisma.shift.findMany({ where: { orgId }, select: { id: true, startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, breaks: true, isDefault: true, status: true } }),
       this.prisma.employee.findMany({
         where: { orgId, status: { in: ["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD"] }, ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}) },
         select: { id: true, firstName: true, lastName: true, status: true, departmentId: true, shiftId: true, departmentRef: { select: { name: true } } },
@@ -205,6 +234,12 @@ export class AttendanceService {
             : worksOnDay(shift, weekday)
               ? "ABSENT"
               : "WEEKLY_OFF";
+      // Deduct scheduled shift breaks (lunch/dinner/…) from worked time → net.
+      const workMinutes = r?.workMinutes ?? 0;
+      let breakMinutes = 0;
+      if (r?.checkInAt && r?.checkOutAt && shift) {
+        breakMinutes = breakMinutesInWindow(parseBreaks(shift.breaks), minuteOfDayInTz(r.checkInAt, tz), minuteOfDayInTz(r.checkOutAt, tz));
+      }
       return {
         employeeId: e.id,
         name: `${e.firstName} ${e.lastName}`.trim(),
@@ -213,7 +248,9 @@ export class AttendanceService {
         status,
         checkInAt: r?.checkInAt ?? null,
         checkOutAt: r?.checkOutAt ?? null,
-        workMinutes: r?.workMinutes ?? 0,
+        workMinutes,
+        breakMinutes,
+        netWorkMinutes: Math.max(0, workMinutes - breakMinutes),
         earlyExit: earlyExitFor(r?.checkOutAt ?? null, tz, shift),
       };
     });

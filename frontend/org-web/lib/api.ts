@@ -67,6 +67,8 @@ export interface DailyReportRow {
   checkInAt: string | null;
   checkOutAt: string | null;
   workMinutes: number;
+  breakMinutes: number;
+  netWorkMinutes: number;
   earlyExit: boolean;
 }
 export interface DailyReport {
@@ -113,6 +115,8 @@ export interface RosterRow {
   checkInAt: string | null;
   checkOutAt: string | null;
   workMinutes: number;
+  breakMinutes: number;
+  netWorkMinutes: number;
 }
 export interface AttendanceRoster {
   day: string;
@@ -272,6 +276,11 @@ export interface OrgDesignation {
 }
 export const getDesignations = cache(() => apiFetch<OrgDesignation[]>("designations"));
 
+export interface ShiftBreak {
+  name: string;
+  startMinute: number;
+  endMinute: number;
+}
 export interface OrgShift {
   id: string;
   name: string;
@@ -279,6 +288,7 @@ export interface OrgShift {
   endMinute: number;
   graceMinutes: number;
   workingDays: number[];
+  breaks: ShiftBreak[];
   isDefault: boolean;
   status: string;
   employeeCount: number;
@@ -411,6 +421,14 @@ export interface MonitoringSession {
   open: boolean;
 }
 export interface TimelineSegment { id: string; type: string; title: string | null; detail: string | null; category: string | null; startAt: string; endAt: string; seconds: number }
+
+export interface MonitoringPolicy {
+  screenshotsEnabled: boolean;
+  screenshotIntervalSeconds: number;
+  screenshotQuality: number;
+  screenshotMaxWidth: number;
+}
+export const getMonitoringPolicy = cache(() => apiFetch<MonitoringPolicy>("monitoring/policy"));
 
 export interface OrgRole {
   id: string;
