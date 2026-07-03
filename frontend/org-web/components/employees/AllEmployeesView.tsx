@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
@@ -32,6 +33,7 @@ export function AllEmployeesView({
   shifts: OrgShift[];
   roles: OrgRole[];
 }) {
+  const router = useRouter();
   const [pending, start] = useTransition();
   const [data, setData] = useState<EmployeePage>(initial);
   const [q, setQ] = useState("");
@@ -100,7 +102,8 @@ export function AllEmployeesView({
         return;
       }
       setEdit(null);
-      refresh();
+      refresh(); // refresh the employee table
+      router.refresh(); // refresh server-fetched directory counts (department/designation/shift)
     });
   }
 

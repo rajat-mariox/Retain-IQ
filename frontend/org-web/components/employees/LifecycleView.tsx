@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import type { EmployeePage, EmployeeRow } from "@/lib/api";
@@ -19,6 +20,7 @@ function fmt(iso: string | null): string {
 }
 
 export function LifecycleView({ stage }: { stage: "ONBOARDING" | "PROBATION" | "CONFIRMED" | "EXITED" }) {
+  const router = useRouter();
   const [pending, start] = useTransition();
   const [data, setData] = useState<EmployeePage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -58,7 +60,8 @@ export function LifecycleView({ stage }: { stage: "ONBOARDING" | "PROBATION" | "
         return;
       }
       setProbFor(null);
-      load(data?.page ?? 1);
+      load(data?.page ?? 1); // refresh this stage's list
+      router.refresh(); // refresh the server-fetched lifecycle-stage count badges
     });
   }
 
