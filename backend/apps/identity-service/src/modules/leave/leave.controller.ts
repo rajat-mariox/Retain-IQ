@@ -64,6 +64,19 @@ export class LeaveController {
     return this.leave.balances(employeeId, year ? Number(year) : undefined);
   }
 
+  /** The caller's leave calendar for a month (week-offs from their shift + holidays + leaves). */
+  @Get("calendar")
+  calendar(@Query("month") month?: string) {
+    return this.leave.calendar(month);
+  }
+
+  /** Org-wide leave calendar for a month (all employees) — managers/admins. */
+  @Get("org-calendar")
+  @RequirePermissions(permissions.attendanceRead)
+  orgCalendar(@Query("month") month?: string) {
+    return this.leave.orgCalendar(month);
+  }
+
   /** The caller's own leave requests. */
   @Get("requests")
   myRequests(@Query("status") status?: string) {

@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { CalendarDays, CalendarPlus, Check, Plus, Trash2, X } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
-import type { Holiday, LeaveBalances, LeaveRequest, LeaveType, OrgDepartment } from "@/lib/api";
+import { LeaveCalendar } from "./LeaveCalendar";
+import { OrgLeaveCalendar } from "./OrgLeaveCalendar";
+import type { Holiday, LeaveBalances, LeaveRequest, LeaveType, OrgDepartment, OrgTeam } from "@/lib/api";
 
 const input = "w-full rounded-lg border border-hairline bg-panel px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none";
 const label = "mb-1.5 block text-sm font-medium text-slate-700";
@@ -28,6 +30,7 @@ export function LeaveWorkspace({
   allRequests,
   holidays,
   departments,
+  teams,
 }: {
   isAdmin: boolean;
   types: LeaveType[];
@@ -36,10 +39,11 @@ export function LeaveWorkspace({
   allRequests: LeaveRequest[];
   holidays: Holiday[];
   departments: OrgDepartment[];
+  teams: OrgTeam[];
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [tab, setTab] = useState<"mine" | "approvals" | "types" | "holidays">("mine");
+  const [tab, setTab] = useState<"mine" | "orgcal" | "approvals" | "types" | "holidays">("mine");
   const [error, setError] = useState<string | null>(null);
 
   // request modal
@@ -60,6 +64,7 @@ export function LeaveWorkspace({
   const [hDate, setHDate] = useState("");
   const [hType, setHType] = useState("COMPANY");
   const [hDept, setHDept] = useState("");
+  const [calVersion, setCalVersion] = useState(0); // bumps → the calendar re-fetches
 
   function run(fn: () => Promise<Response>, onOk: () => void) {
     setError(null);
@@ -71,6 +76,7 @@ export function LeaveWorkspace({
         return;
       }
       onOk();
+      setCalVersion((v) => v + 1); // reflect the change in the calendar without a manual refresh
       router.refresh();
     });
   }
@@ -96,6 +102,7 @@ export function LeaveWorkspace({
 
   const pendingCount = allRequests.filter((r) => r.status === "PENDING").length;
   const activeDepts = departments.filter((d) => d.status !== "ARCHIVED");
+  const today = new Date().toISOString().slice(0, 10); // leave can't be backdated
   const fmtRange = (r: LeaveRequest) => (r.startDate === r.endDate ? r.startDate : `${r.startDate} → ${r.endDate}`);
 
   const TabBtn = ({ k, labelText, count }: { k: typeof tab; labelText: string; count?: number }) => (
@@ -109,6 +116,7 @@ export function LeaveWorkspace({
     <div className="space-y-6">
       <div className="flex flex-wrap gap-1 rounded-xl border border-hairline bg-panel-2 p-1">
         <TabBtn k="mine" labelText="My Leave" />
+        {isAdmin ? <TabBtn k="orgcal" labelText="Org Calendar" /> : null}
         {isAdmin ? <TabBtn k="approvals" labelText="Approvals" count={pendingCount} /> : null}
         {isAdmin ? <TabBtn k="types" labelText="Leave Types" /> : null}
         <TabBtn k="holidays" labelText="Holidays" />
@@ -133,6 +141,8 @@ export function LeaveWorkspace({
               </Card>
             ))}
           </div>
+
+          <LeaveCalendar refreshSignal={calVersion} />
 
           <Card>
             <CardHeader title="My requests" subtitle={`${balances.year} leave requests`} action={<button onClick={() => { setReqType(types[0]?.id ?? ""); setReqOpen(true); }} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-soft"><CalendarPlus className="size-4" /> Request leave</button>} />
@@ -159,6 +169,9 @@ export function LeaveWorkspace({
           </Card>
         </div>
       ) : null}
+
+      {/* Org Calendar */}
+      {tab === "orgcal" && isAdmin ? <OrgLeaveCalendar departments={departments} teams={teams} /> : null}
 
       {/* Approvals */}
       {tab === "approvals" && isAdmin ? (
@@ -237,8 +250,8 @@ export function LeaveWorkspace({
         <div className="space-y-4">
           <div><label className={label}>Leave type</label><select className={input} value={reqType} onChange={(e) => setReqType(e.target.value)}>{types.filter((t) => t.status !== "ARCHIVED").map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className={label}>From</label><input type="date" className={input} value={reqStart} onChange={(e) => setReqStart(e.target.value)} /></div>
-            <div><label className={label}>To</label><input type="date" className={input} value={reqEnd} onChange={(e) => setReqEnd(e.target.value)} /></div>
+            <div><label className={label}>From</label><input type="date" min={today} className={input} value={reqStart} onChange={(e) => setReqStart(e.target.value)} /></div>
+            <div><label className={label}>To</label><input type="date" min={reqStart || today} className={input} value={reqEnd} onChange={(e) => setReqEnd(e.target.value)} /></div>
           </div>
           <div><label className={label}>Reason (optional)</label><input className={input} value={reqReason} onChange={(e) => setReqReason(e.target.value)} placeholder="e.g. Family vacation" /></div>
           {error ? <p className="text-sm text-rose-600">{error}</p> : null}
