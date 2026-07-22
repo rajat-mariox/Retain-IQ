@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { AttendanceBadge } from "@/components/ui/badges";
+import { LocalTime } from "@/components/ui/LocalTime";
 import type { DailyReport, DepartmentReport, MonthlyReport } from "@/lib/api";
 
 type Tab = "daily" | "monthly" | "department";
@@ -14,10 +15,6 @@ const TABS: { key: Tab; label: string }[] = [
 
 const inputCls = "rounded-lg border border-hairline bg-panel px-3 py-1.5 text-sm text-slate-900 focus:border-brand focus:outline-none";
 
-function clock(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
-}
 function worked(min: number): string {
   return min > 0 ? `${Math.floor(min / 60)}h ${min % 60}m` : "—";
 }
@@ -135,8 +132,8 @@ function DailyTable({ data }: { data: DailyReport | null }) {
                   <AttendanceBadge status={r.status} />
                   {r.earlyExit ? <span className="ml-1.5 rounded bg-orange-50 px-1.5 py-0.5 text-[11px] font-medium text-orange-700 ring-1 ring-inset ring-orange-200">early exit</span> : null}
                 </td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkInAt)}</td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkOutAt)}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-600"><LocalTime iso={r.checkInAt} /></td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-600"><LocalTime iso={r.checkOutAt} /></td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-500">{r.breakMinutes > 0 ? worked(r.breakMinutes) : "—"}</td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-700" title={`Gross ${worked(r.workMinutes)}`}>{worked(r.netWorkMinutes)}</td>
               </tr>

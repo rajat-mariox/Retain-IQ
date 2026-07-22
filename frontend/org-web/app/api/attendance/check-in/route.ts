@@ -7,13 +7,15 @@ export async function POST() {
   if (!token) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   }
-  const res = await fetch(`${IDENTITY_URL}/v1/attendance/check-in`, {
+  const res = await fetch(`${IDENTITY_URL}/v1/attendance/check-in?source=web`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
+  const data = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
   if (!res.ok) {
-    return NextResponse.json({ error: "Check-in failed." }, { status: res.status });
+    // Surface the real reason (e.g. owner accounts aren't tracked) instead of a generic string.
+    return NextResponse.json({ error: data.error?.message ?? "Check-in failed." }, { status: res.status });
   }
-  return NextResponse.json(await res.json());
+  return NextResponse.json(data);
 }

@@ -1,6 +1,41 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable } from "@nestjs/common";
+import { permissions } from "@retainiq/authz";
 import { getRequestContext, requireTenantContext } from "../../common/context/request-context.store.js";
+import { AccessScopeService } from "../../common/access-scope/access-scope.service.js";
+import { OrgRolesService } from "../../common/org-roles/org-roles.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { RealtimePublisher } from "../../common/realtime/realtime-publisher.service.js";
+import { AttendancePolicyService } from "./attendance-policy.service.js";
+import {
+  availableActions,
+  can,
+  computeTotals,
+  deriveState,
+  deriveStatus,
+  type AttendanceAction,
+  type AttendancePolicy as PolicyShape,
+  type AttendanceState as AttendanceStateName,
+  type DaySnapshot,
+} from "./attendance-state.js";
+
+/** Which client performed an attendance action. */
+export type AttendanceSource = "web" | "agent";
+
+const minutesBetween = (from: Date, to: Date): number => Math.max(0, Math.round((to.getTime() - from.getTime()) / 60000));
+
+/** Minutes late past the shift start + grace, in the org's timezone. */
+function lateBy(checkInAt: Date, tz: string, shift: ShiftLike | null, graceMinutes: number): number {
+  if (!shift) return 0;
+  const local = minuteOfDayInTz(checkInAt, tz);
+  const allowed = shift.startMinute + (shift.graceMinutes ?? graceMinutes);
+  return Math.max(0, local - allowed);
+}
+
+/** Minutes left before the shift ended, in the org's timezone. */
+function earlyExitBy(checkOutAt: Date, tz: string, shift: ShiftLike): number {
+  const local = minuteOfDayInTz(checkOutAt, tz);
+  return Math.max(0, shift.endMinute - local);
+}
 
 // Fallback thresholds when an employee has no shift and the org has no default:
 // checking in after 09:15 is LATE, checking out before 17:00 is an early exit.
@@ -97,7 +132,13 @@ function breakMinutesInWindow(breaks: ShiftBreakDef[], inMin: number, outMin: nu
 
 @Injectable()
 export class AttendanceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accessScope: AccessScopeService,
+    private readonly orgRoles: OrgRolesService,
+    private readonly realtime: RealtimePublisher,
+    private readonly policies: AttendancePolicyService,
+  ) {}
 
   /** Resolve the calling user's employee record via their org membership. */
   private async caller(): Promise<{ orgId: string; employeeId: string }> {
@@ -126,39 +167,416 @@ export class AttendanceService {
     return { tz, shift };
   }
 
-  async checkIn() {
-    const { orgId, employeeId } = await this.caller();
-    const day = startOfUtcDay();
-    const key = { orgId_employeeId_day: { orgId, employeeId, day } };
-
-    const existing = await this.prisma.attendanceRecord.findUnique({ where: key });
-    if (existing?.checkInAt) {
-      return existing; // already checked in today — idempotent
+  /**
+   * The Owner runs the organization rather than working shifts in it, so they
+   * are not rostered, chased for attendance, or counted in workforce reports.
+   * Blocking the write here keeps that rule true no matter which client calls —
+   * browser, desktop agent, or a direct API call.
+   */
+  private async assertTracksAttendance(orgId: string, employeeId: string): Promise<void> {
+    if (await this.orgRoles.isOwnerEmployee(orgId, employeeId)) {
+      throw new ForbiddenException("Attendance is tracked for staff only; owner accounts are excluded.");
     }
+  }
+
+  /**
+   * Load everything the state machine needs about a day, in one round trip.
+   * Sessions and breaks are the source of truth; the AttendanceRecord row is a
+   * roll-up we recompute from them.
+   */
+  private async loadDay(orgId: string, employeeId: string, day: Date) {
+    const [record, holiday, leave, employee] = await Promise.all([
+      this.prisma.attendanceRecord.findUnique({
+        where: { orgId_employeeId_day: { orgId, employeeId, day } },
+        include: { sessions: { orderBy: { sequence: "asc" } }, breaks: { orderBy: { startedAt: "asc" } } },
+      }),
+      this.prisma.holiday.findFirst({
+        where: { orgId, date: day, OR: [{ type: { not: "DEPARTMENT" } }, { departmentId: undefined }] },
+        select: { id: true },
+      }),
+      this.prisma.leaveRequest.findFirst({
+        where: { orgId, employeeId, status: "APPROVED", startDate: { lte: day }, endDate: { gte: day } },
+        select: { id: true },
+      }),
+      this.prisma.employee.findUnique({ where: { id: employeeId }, select: { departmentId: true } }),
+    ]);
+    void employee;
+
+    const sessions = record?.sessions ?? [];
+    const breaks = record?.breaks ?? [];
+    const openSession = sessions.find((s) => s.endedAt === null) ?? null;
+    const openBreak = breaks.find((b) => b.endedAt === null) ?? null;
+    const { tz, shift } = await this.resolveShift(orgId, employeeId);
+
+    const isWeekend = !(shift?.workingDays ?? DEFAULT_WORKING_DAYS).includes(day.getUTCDay());
+    const now = Date.now();
+    const snapshot: DaySnapshot = {
+      isWeekend,
+      isHoliday: Boolean(holiday),
+      isOnLeave: Boolean(leave),
+      sessionCount: sessions.length,
+      hasOpenSession: Boolean(openSession),
+      hasClosedSession: sessions.some((s) => s.endedAt !== null),
+      hasOpenBreak: Boolean(openBreak),
+      breakCount: breaks.length,
+      breakMinutesSoFar: breaks.reduce((a, b) => a + b.minutes, 0),
+      openBreakMinutes: openBreak ? Math.max(0, Math.round((now - openBreak.startedAt.getTime()) / 60000)) : 0,
+    };
+
+    return { record, sessions, breaks, openSession, openBreak, snapshot, tz, shift };
+  }
+
+  /** Guard an action through the state machine, raising the reason it gave. */
+  private assertAllowed(action: AttendanceAction, snapshot: DaySnapshot, policy: PolicyShape): void {
+    const decision = can(action, snapshot, policy);
+    if (!decision.allowed) throw new BadRequestException(decision.reason ?? "That action isn't available right now.");
+  }
+
+  /**
+   * Recompute the day roll-up from its sessions and breaks, then persist it.
+   * Everything user-visible (totals, state, status) is derived here so the
+   * summary can never drift from the underlying events.
+   */
+  private async recomputeDay(orgId: string, employeeId: string, day: Date, policy: PolicyShape) {
+    const { record, sessions, breaks, snapshot, tz, shift } = await this.loadDay(orgId, employeeId, day);
+    if (!record) return null;
 
     const now = new Date();
-    const ctx = getRequestContext();
-    const { tz, shift } = await this.resolveShift(orgId, employeeId);
-    const status = lateStatus(now, tz, shift);
-    return this.prisma.attendanceRecord.upsert({
-      where: key,
-      create: { orgId, employeeId, day, checkInAt: now, status, source: "web", ipAddress: ctx.ipAddress ?? null },
-      update: { checkInAt: now, status },
+    // Open sessions count up to "now" so live totals tick along with the day.
+    const grossMinutes = sessions.reduce((acc, s) => {
+      const end = s.endedAt ?? now;
+      return acc + Math.max(0, Math.round((end.getTime() - s.startedAt.getTime()) / 60000));
+    }, 0);
+    const breakMinutes = breaks.reduce((acc, b) => {
+      const end = b.endedAt ?? now;
+      return acc + (b.endedAt ? b.minutes : Math.max(0, Math.round((end.getTime() - b.startedAt.getTime()) / 60000)));
+    }, 0);
+
+    const shiftMinutes = shift ? Math.max(0, shift.endMinute - shift.startMinute) : 0;
+    const totals = computeTotals({ grossMinutes, breakMinutes, shiftMinutes, policy });
+
+    const first = sessions[0] ?? null;
+    const lastClosed = [...sessions].reverse().find((s) => s.endedAt !== null) ?? null;
+    const lateMinutes = first ? lateBy(first.startedAt, tz, shift, policy.graceMinutes) : 0;
+    const earlyExitMinutes = lastClosed && shift ? earlyExitBy(lastClosed.endedAt!, tz, shift) : 0;
+    const state = deriveState(snapshot, policy);
+    const status = deriveStatus({ workMinutes: totals.workMinutes, lateMinutes, policy, hasAnySession: sessions.length > 0 });
+
+    return this.prisma.attendanceRecord.update({
+      where: { id: record.id },
+      data: {
+        checkInAt: first?.startedAt ?? null,
+        checkOutAt: lastClosed?.endedAt ?? null,
+        source: first?.startSource ?? "web",
+        checkOutSource: lastClosed?.endSource ?? null,
+        workMinutes: totals.workMinutes,
+        breakMinutes: totals.breakMinutes,
+        unpaidBreakMinutes: totals.unpaidBreakMinutes,
+        overtimeMinutes: totals.overtimeMinutes,
+        lateMinutes,
+        earlyExitMinutes,
+        state,
+        status,
+      },
     });
   }
 
-  async checkOut() {
+  /** Append to the audit trail. Never blocks the action it describes. */
+  private async recordEvent(args: {
+    orgId: string;
+    employeeId: string;
+    attendanceId: string;
+    type: string;
+    fromState: AttendanceStateName;
+    toState: AttendanceStateName;
+    source: string;
+    workLocation?: string | null;
+    note?: string | null;
+  }): Promise<void> {
+    try {
+      const ctx = getRequestContext();
+      await this.prisma.attendanceEvent.create({
+        data: {
+          orgId: args.orgId,
+          employeeId: args.employeeId,
+          attendanceId: args.attendanceId,
+          type: args.type,
+          fromState: args.fromState,
+          toState: args.toState,
+          source: args.source,
+          actorUserId: ctx?.userId ?? null,
+          workLocation: args.workLocation ?? null,
+          ipAddress: ctx?.ipAddress ?? null,
+          note: args.note ?? null,
+        },
+      });
+    } catch {
+      // The audit trail is supporting evidence, not a gate on the action.
+    }
+  }
+
+  /**
+   * Open a work session. The first of the day creates the record; later ones are
+   * re-entry / split shifts, allowed only when org policy says so.
+   */
+  async checkIn(source: AttendanceSource = "web", workLocation?: string) {
+    const { orgId, employeeId } = await this.caller();
+    await this.assertTracksAttendance(orgId, employeeId);
+    const policy = await this.policies.get(orgId);
+    const day = startOfUtcDay();
+
+    const before = await this.loadDay(orgId, employeeId, day);
+    this.assertAllowed("CHECK_IN", before.snapshot, policy);
+    const location = this.resolveLocation(workLocation, policy);
+    const fromState = deriveState(before.snapshot, policy);
+    const ctx = getRequestContext();
+    const now = new Date();
+
+    // Ensure the day row exists, then append the session.
+    const record =
+      before.record ??
+      (await this.prisma.attendanceRecord.create({
+        data: { orgId, employeeId, day, status: "PRESENT", source, ipAddress: ctx?.ipAddress ?? null, workLocation: location },
+      }));
+
+    await this.prisma.attendanceSession.create({
+      data: {
+        orgId,
+        employeeId,
+        attendanceId: record.id,
+        sequence: before.sessions.length + 1,
+        startedAt: now,
+        startSource: source,
+        workLocation: location,
+        startIp: ctx?.ipAddress ?? null,
+      },
+    });
+
+    const updated = await this.recomputeDay(orgId, employeeId, day, policy);
+    await this.recordEvent({
+      orgId, employeeId, attendanceId: record.id, type: "CHECK_IN",
+      fromState, toState: "WORKING", source, workLocation: location,
+    });
+    await this.publish(orgId, employeeId, "checked-in", record);
+    return updated ?? record;
+  }
+
+  /** Close the open session (and any break still running inside it). */
+  async checkOut(source: AttendanceSource = "web") {
+    const { orgId, employeeId } = await this.caller();
+    await this.assertTracksAttendance(orgId, employeeId);
+    const policy = await this.policies.get(orgId);
+    const day = startOfUtcDay();
+
+    const before = await this.loadDay(orgId, employeeId, day);
+    this.assertAllowed("CHECK_OUT", before.snapshot, policy);
+    const fromState = deriveState(before.snapshot, policy);
+    const ctx = getRequestContext();
+    const now = new Date();
+
+    // Policy may permit checking out mid-break; close that break too so its
+    // time is accounted for rather than left running.
+    if (before.openBreak) {
+      await this.prisma.attendanceBreak.update({
+        where: { id: before.openBreak.id },
+        data: { endedAt: now, minutes: minutesBetween(before.openBreak.startedAt, now) },
+      });
+    }
+    if (before.openSession) {
+      await this.prisma.attendanceSession.update({
+        where: { id: before.openSession.id },
+        data: {
+          endedAt: now,
+          endSource: source,
+          endIp: ctx?.ipAddress ?? null,
+          minutes: minutesBetween(before.openSession.startedAt, now),
+        },
+      });
+    }
+
+    const updated = await this.recomputeDay(orgId, employeeId, day, policy);
+    const after = await this.loadDay(orgId, employeeId, day);
+    await this.recordEvent({
+      orgId, employeeId, attendanceId: before.record!.id, type: "CHECK_OUT",
+      fromState, toState: deriveState(after.snapshot, policy), source,
+    });
+    await this.publish(orgId, employeeId, "checked-out", before.record!);
+    return updated;
+  }
+
+  /** Start a break inside the open session. */
+  async startBreak(source: AttendanceSource = "web", kind = "BREAK") {
+    const { orgId, employeeId } = await this.caller();
+    await this.assertTracksAttendance(orgId, employeeId);
+    const policy = await this.policies.get(orgId);
+    const day = startOfUtcDay();
+
+    const before = await this.loadDay(orgId, employeeId, day);
+    this.assertAllowed("BREAK_START", before.snapshot, policy);
+    const fromState = deriveState(before.snapshot, policy);
+
+    // Paid vs unpaid is decided at day level (first N minutes are paid), so the
+    // flag here records intent; the roll-up does the actual split.
+    const br = await this.prisma.attendanceBreak.create({
+      data: {
+        orgId,
+        employeeId,
+        attendanceId: before.record!.id,
+        sessionId: before.openSession?.id ?? null,
+        kind,
+        source,
+        paid: policy.paidBreakMinutesPerDay > 0,
+      },
+    });
+
+    await this.recomputeDay(orgId, employeeId, day, policy);
+    await this.recordEvent({
+      orgId, employeeId, attendanceId: before.record!.id, type: "BREAK_START",
+      fromState, toState: "ON_BREAK", source, note: kind,
+    });
+    await this.publish(orgId, employeeId, "break-started", before.record!);
+    return br;
+  }
+
+  /** End the open break; its minutes flow into the day roll-up. */
+  async endBreak(source: AttendanceSource = "web") {
+    const { orgId, employeeId } = await this.caller();
+    await this.assertTracksAttendance(orgId, employeeId);
+    const policy = await this.policies.get(orgId);
+    const day = startOfUtcDay();
+
+    const before = await this.loadDay(orgId, employeeId, day);
+    this.assertAllowed("BREAK_END", before.snapshot, policy);
+    const fromState = deriveState(before.snapshot, policy);
+    const now = new Date();
+    const open = before.openBreak!;
+
+    const br = await this.prisma.attendanceBreak.update({
+      where: { id: open.id },
+      data: { endedAt: now, minutes: minutesBetween(open.startedAt, now), source },
+    });
+
+    await this.recomputeDay(orgId, employeeId, day, policy);
+    const after = await this.loadDay(orgId, employeeId, day);
+    await this.recordEvent({
+      orgId, employeeId, attendanceId: before.record!.id, type: "BREAK_END",
+      fromState, toState: deriveState(after.snapshot, policy), source,
+    });
+    await this.publish(orgId, employeeId, "break-ended", before.record!);
+    return br;
+  }
+
+  /** Only locations the org permits; ignored entirely when not required. */
+  private resolveLocation(requested: string | undefined, policy: PolicyShape): string | null {
+    if (!requested) {
+      if (policy.requireLocation) throw new BadRequestException("A work location is required to check in.");
+      return null;
+    }
+    const upper = requested.toUpperCase();
+    if (!policy.allowedLocations.includes(upper)) {
+      throw new BadRequestException(`"${requested}" is not an allowed work location for your organization.`);
+    }
+    return upper;
+  }
+
+  /**
+   * Live state for the caller — the single source both the web app and the
+   * desktop agent render from, including which actions are currently valid.
+   */
+  async liveStatus() {
     const { orgId, employeeId } = await this.caller();
     const day = startOfUtcDay();
-    const record = await this.prisma.attendanceRecord.findUnique({
-      where: { orgId_employeeId_day: { orgId, employeeId, day } },
-    });
-    if (!record?.checkInAt) {
-      throw new BadRequestException("You have not checked in today.");
-    }
+    const isOwner = await this.orgRoles.isOwnerEmployee(orgId, employeeId);
+    const policy = await this.policies.get(orgId);
+    const { record, sessions, breaks, openSession, openBreak, snapshot, shift } = await this.loadDay(orgId, employeeId, day);
+
+    const state = deriveState(snapshot, policy);
     const now = new Date();
-    const workMinutes = Math.max(0, Math.round((now.getTime() - record.checkInAt.getTime()) / 60000));
-    return this.prisma.attendanceRecord.update({ where: { id: record.id }, data: { checkOutAt: now, workMinutes } });
+    const grossMinutes = sessions.reduce((acc, s) => acc + minutesBetween(s.startedAt, s.endedAt ?? now), 0);
+    const breakMinutes = breaks.reduce((acc, b) => acc + (b.endedAt ? b.minutes : minutesBetween(b.startedAt, now)), 0);
+    const shiftMinutes = shift ? Math.max(0, shift.endMinute - shift.startMinute) : 0;
+    const totals = computeTotals({ grossMinutes, breakMinutes, shiftMinutes, policy });
+
+    return {
+      tracksAttendance: !isOwner,
+      day: day.toISOString().slice(0, 10),
+      state,
+      availableActions: isOwner ? [] : availableActions(snapshot, policy),
+      // Kept for existing clients that read booleans rather than the state.
+      checkedIn: snapshot.hasOpenSession || snapshot.hasOpenBreak,
+      checkedOut: Boolean(record?.checkOutAt) && !snapshot.hasOpenSession,
+      onBreak: snapshot.hasOpenBreak,
+      checkInAt: record?.checkInAt ? record.checkInAt.toISOString() : null,
+      checkOutAt: record?.checkOutAt ? record.checkOutAt.toISOString() : null,
+      source: record?.source ?? null,
+      checkOutSource: record?.checkOutSource ?? null,
+      workLocation: record?.workLocation ?? null,
+      openBreakStartedAt: openBreak ? openBreak.startedAt.toISOString() : null,
+      openSessionStartedAt: openSession ? openSession.startedAt.toISOString() : null,
+      // Live totals — tick along with an open session.
+      workMinutes: totals.workMinutes,
+      breakMinutes: totals.breakMinutes,
+      unpaidBreakMinutes: totals.unpaidBreakMinutes,
+      overtimeMinutes: totals.overtimeMinutes,
+      lateMinutes: record?.lateMinutes ?? 0,
+      earlyExitMinutes: record?.earlyExitMinutes ?? 0,
+      sessionCount: sessions.length,
+      breakCount: breaks.length,
+      status: record?.status ?? null,
+      policy: {
+        allowMultipleSessions: policy.allowMultipleSessions,
+        allowReEntry: policy.allowReEntry,
+        maxSessionsPerDay: policy.maxSessionsPerDay,
+        allowCheckOutOnBreak: policy.allowCheckOutOnBreak,
+        requireLocation: policy.requireLocation,
+        allowedLocations: policy.allowedLocations,
+        workModel: policy.workModel,
+      },
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        sequence: s.sequence,
+        startedAt: s.startedAt.toISOString(),
+        endedAt: s.endedAt ? s.endedAt.toISOString() : null,
+        minutes: s.endedAt ? s.minutes : minutesBetween(s.startedAt, now),
+        startSource: s.startSource,
+        endSource: s.endSource,
+        workLocation: s.workLocation,
+        autoClosed: s.autoClosed,
+      })),
+      breaks: breaks.map((b) => ({
+        id: b.id,
+        sessionId: b.sessionId,
+        startedAt: b.startedAt.toISOString(),
+        endedAt: b.endedAt ? b.endedAt.toISOString() : null,
+        minutes: b.endedAt ? b.minutes : minutesBetween(b.startedAt, now),
+        kind: b.kind,
+        paid: b.paid,
+        source: b.source,
+      })),
+    };
+  }
+
+  /**
+   * Push the new state to every live client of this user (browser tabs + the
+   * desktop agent) so a check-in on one surface reflects on the other at once.
+   * Best-effort: attendance is already persisted, this is only the nudge.
+   */
+  private async publish(orgId: string, employeeId: string, event: string, record: { id: string }): Promise<void> {
+    try {
+      const membership = await this.prisma.organizationMembership.findFirst({
+        where: { orgId, employeeId, status: "ACTIVE" },
+        select: { userId: true },
+      });
+      if (!membership?.userId) return;
+      await this.realtime.publishToUser(membership.userId, {
+        type: "attendance",
+        event,
+        attendanceId: record.id,
+        at: new Date().toISOString(),
+      });
+    } catch {
+      // never fail the attendance write because a live nudge couldn't be sent
+    }
   }
 
   async me() {
@@ -182,22 +600,18 @@ export class AttendanceService {
   }
 
   /** Owner accounts are provisioned as employees but excluded from workforce reports. */
-  private async ownerEmployeeIds(orgId: string): Promise<string[]> {
-    const admins = await this.prisma.organizationMembership.findMany({
-      where: { orgId, status: "ACTIVE", role: { name: "Owner" }, employeeId: { not: null } },
-      select: { employeeId: true },
-    });
-    return admins.map((a) => a.employeeId).filter((x): x is string => Boolean(x));
-  }
-
   /** Per-employee attendance rows for a single day; no-record employees are ABSENT (or ON_LEAVE). */
   private async dayRoster(orgId: string, day: Date) {
-    const exclude = await this.ownerEmployeeIds(orgId);
+    const ctx = requireTenantContext();
+    const exclude = await this.orgRoles.ownerEmployeeIds(orgId);
+    // A department/team-scoped reader only sees their own people's attendance.
+    const scope = await this.accessScope.resolveScope(orgId, ctx.userId, permissions.attendanceRead);
+    const scopeWhere = this.accessScope.employeeWhere(scope);
     const [org, shifts, employees, records, holidays, leaves] = await Promise.all([
       this.prisma.organization.findUnique({ where: { id: orgId }, select: { timezone: true } }),
       this.prisma.shift.findMany({ where: { orgId }, select: { id: true, startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, breaks: true, isDefault: true, status: true } }),
       this.prisma.employee.findMany({
-        where: { orgId, status: { in: ["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD"] }, ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}) },
+        where: { orgId, status: { in: ["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD"] }, ...scopeWhere, ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}) },
         select: { id: true, firstName: true, lastName: true, status: true, departmentId: true, shiftId: true, departmentRef: { select: { name: true } } },
         orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
       }),
@@ -346,7 +760,7 @@ export class AttendanceService {
     const today = startOfUtcDay();
 
     const rangeEnd = end.getTime() < today.getTime() + 86_400_000 ? end : new Date(today.getTime() + 86_400_000); // min(end, today+1)
-    const exclude = await this.ownerEmployeeIds(ctx.orgId);
+    const exclude = await this.orgRoles.ownerEmployeeIds(ctx.orgId);
     const [shifts, employees, records, holidays, approvedLeaves] = await Promise.all([
       this.prisma.shift.findMany({ where: { orgId: ctx.orgId }, select: { id: true, workingDays: true, isDefault: true, status: true } }),
       this.prisma.employee.findMany({
