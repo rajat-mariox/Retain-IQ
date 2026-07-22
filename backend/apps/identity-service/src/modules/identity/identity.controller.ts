@@ -2,15 +2,19 @@ import { Body, Controller, Get, HttpCode, Post, UseGuards } from "@nestjs/common
 import { ThrottlerGuard } from "@nestjs/throttler";
 import {
   changePasswordSchema,
+  forgotPasswordSchema,
   loginSchema,
   logoutSchema,
   refreshSchema,
   registerOrgSchema,
+  resetPasswordSchema,
   type ChangePasswordInput,
+  type ForgotPasswordInput,
   type LoginInput,
   type LogoutInput,
   type RefreshInput,
   type RegisterOrgInput,
+  type ResetPasswordInput,
 } from "@retainiq/contracts";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
@@ -68,5 +72,20 @@ export class IdentityController {
   @UseGuards(AuthGuard)
   async changePassword(@Body(new ZodValidationPipe(changePasswordSchema)) body: ChangePasswordInput) {
     await this.identityService.changePassword(requireTenantContext().userId, body);
+  }
+
+  @Post("forgot-password")
+  @HttpCode(200)
+  @UseGuards(ThrottlerGuard)
+  async forgotPassword(@Body(new ZodValidationPipe(forgotPasswordSchema)) body: ForgotPasswordInput) {
+    return this.identityService.requestPasswordReset(body);
+  }
+
+  @Post("reset-password")
+  @HttpCode(200)
+  @UseGuards(ThrottlerGuard)
+  async resetPassword(@Body(new ZodValidationPipe(resetPasswordSchema)) body: ResetPasswordInput) {
+    await this.identityService.resetPassword(body);
+    return { ok: true };
   }
 }

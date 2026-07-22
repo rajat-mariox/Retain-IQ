@@ -6,20 +6,26 @@ import {
 } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
 import { allPermissions, employeePermissions, managerPermissions } from "@retainiq/authz";
+import { loadConfig } from "@retainiq/config";
 import type {
   AccessTokenClaims,
   AuthTokens,
   ChangePasswordInput,
+  ForgotPasswordInput,
   LoginInput,
   LoginResult,
   MembershipSummary,
   RegisterOrgInput,
+  ResetPasswordInput,
 } from "@retainiq/contracts";
 import { AuditService } from "../../common/audit/audit.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { hashPassword, verifyPassword } from "../../common/crypto/password.util.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
+import { PlatformSettingsService } from "../../common/settings/platform-settings.service.js";
 import { TokenService } from "./token.service.js";
+
+const config = loadConfig();
 
 @Injectable()
 export class IdentityService {
@@ -28,6 +34,7 @@ export class IdentityService {
     private readonly tokenService: TokenService,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
+    private readonly settings: PlatformSettingsService,
   ) {}
 
   /**
@@ -115,7 +122,7 @@ export class IdentityService {
         aggregateId: membership.id,
         orgId: org.id,
         actorUserId: user.id,
-        payload: { orgId: org.id, userId: user.id, roleName: role.name, status: membership.status },
+        payload: { orgId: org.id, userId: user.id, roleName: role.name, status: membership.status, email },
       });
 
       const claims: AccessTokenClaims = {
@@ -261,6 +268,91 @@ export class IdentityService {
     await this.prisma.user.update({ where: { id: user.id }, data: { passwordHash, mustChangePassword: false } });
   }
 
+  /**
+   * Start a password reset.
+   *
+   * The response is deliberately IDENTICAL whether or not the account exists —
+   * same shape, same message, no token. Returning a real token for a known email
+   * and an empty one otherwise let anyone probe which addresses are registered,
+   * and handed them the reset itself.
+   *
+   * config.RESET_TOKEN_IN_RESPONSE returns the token inline for local development
+   * (there is no mail sender wired up yet). It cannot be enabled in production —
+   * the config schema refuses to boot.
+   */
+  async requestPasswordReset(input: ForgotPasswordInput): Promise<{ resetToken: string; expiresAt: string; message: string }> {
+    const email = input.email.toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    const opaque = {
+      resetToken: "",
+      expiresAt: "",
+      message: "If an account exists for that email, a reset link has been sent.",
+    };
+
+    if (!user || user.status !== "ACTIVE") {
+      return opaque;
+    }
+
+    const resetToken = randomBytes(24).toString("hex");
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    const passwordResetTokenHash = await hashPassword(resetToken);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetTokenHash,
+        passwordResetTokenExpiresAt: expiresAt,
+      },
+    });
+
+    // Dev only. In production this returns the same opaque body as an unknown
+    // email, so the response can't be used to enumerate accounts.
+    if (!config.RESET_TOKEN_IN_RESPONSE) return opaque;
+    return {
+      resetToken,
+      expiresAt: expiresAt.toISOString(),
+      message: "Development mode: the reset token is returned here instead of being emailed.",
+    };
+  }
+
+  /**
+   * Complete a password reset.
+   *
+   * Every failure — unknown email, no reset pending, expired, wrong token —
+   * answers with the SAME message. Saying "token is invalid" only for real
+   * accounts (and "request is invalid" otherwise) told an attacker which
+   * addresses are registered.
+   */
+  async resetPassword(input: ResetPasswordInput): Promise<void> {
+    const email = input.email.toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    const rejected = () => new BadRequestException("That reset link is invalid or has expired. Request a new one.");
+
+    if (!user || !user.passwordResetTokenHash || !user.passwordResetTokenExpiresAt) {
+      throw rejected();
+    }
+
+    if (user.passwordResetTokenExpiresAt <= new Date()) {
+      throw rejected();
+    }
+
+    const valid = await verifyPassword(input.token, user.passwordResetTokenHash);
+    if (!valid) {
+      throw rejected();
+    }
+
+    const passwordHash = await hashPassword(input.newPassword);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        mustChangePassword: false,
+        passwordResetTokenHash: null,
+        passwordResetTokenExpiresAt: null,
+      },
+    });
+  }
+
   /** Returns the current principal's identity, membership, and permissions. */
   async me(userId: string, membershipId: string) {
     const membership = await this.prisma.organizationMembership.findFirst({
@@ -279,7 +371,11 @@ export class IdentityService {
       throw new UnauthorizedException("Active membership not found.");
     }
 
-    return membership;
+    // Feature flags resolved for THIS org (global kill switch ∩ org override).
+    // They ride the session rather than /v1/config because that endpoint is
+    // public and must not leak per-org configuration.
+    const featureFlags = await this.settings.resolveFeatureFlagsFlat(membership.org.id);
+    return { ...membership, featureFlags };
   }
 
   private async resolveClaimsForMembership(membershipId: string): Promise<AccessTokenClaims> {

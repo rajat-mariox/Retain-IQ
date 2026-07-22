@@ -14,7 +14,10 @@ export async function POST(req: Request) {
   try {
     res = await fetch(`${IDENTITY_URL}/v1/platform/auth/login`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // Forward the caller's user-agent: without it every session records this
+      // Next.js server as the client, so the audit trail can't tell a person at
+      // a browser from a machine client.
+      headers: { "Content-Type": "application/json", "user-agent": req.headers.get("user-agent") ?? "unknown" },
       body: JSON.stringify({ email, password }),
       cache: "no-store",
     });
@@ -31,4 +34,8 @@ export async function POST(req: Request) {
   jar.set(ACCESS_COOKIE, data.accessToken, cookieOptions(req.url, data.expiresIn));
   jar.set(REFRESH_COOKIE, data.refreshToken, cookieOptions(req.url, REFRESH_MAX_AGE));
   return NextResponse.json({ admin: data.admin });
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: { "Allow": "POST, OPTIONS" } });
 }
