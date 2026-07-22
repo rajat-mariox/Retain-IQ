@@ -189,10 +189,18 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      # Public VAPID key, served to browsers so they can subscribe to push.
+      # The private half lives only in notifications-service.
+      VAPID_PUBLIC_KEY: BGI3RAHzbKg9tHyoiMXDTY-HR9m9xj3plnb9aWwsaG8WkyKKBUVZ98t1gyoV0sO-O8bI-vCdRK_7CMOIugEg0TI
       # Platform (super-admin) auth — distinct secret; seeds a super admin on boot.
       PLATFORM_JWT_SECRET: ${PLATFORM_JWT_SECRET:-dev-platform-secret-change-me}
       PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-admin@retainiq.com}
       PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-SuperAdmin123!}
+      # LOCAL ONLY: hands the password-reset token back in the API response since
+      # no mail sender is wired up yet. This leaks whether an account exists and
+      # lets anyone reset any address — never set it in a deployed environment.
+      # It defaults to off everywhere else.
+      RESET_TOKEN_IN_RESPONSE: ${RESET_TOKEN_IN_RESPONSE:-true}
       # scrypt password hashing runs on the libuv threadpool — give it room so
       # concurrent logins/invites don't serialize on the default 4 threads.
       UV_THREADPOOL_SIZE: "16"
@@ -292,6 +300,15 @@ services:
       DATABASE_URL: postgresql://notifications:notifications@postgres-notifications:5432/retainiq-notifications?schema=public
       REDIS_URL: redis://redis:6379
       HEALTH_PORT: "3005"
+      # Email: local Mailpit catcher in dev — swap SMTP_HOST for SES/SendGrid in prod.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      MAIL_FROM: RetainIQ <no-reply@retainiq.local>
+      APP_URL: http://localhost:3200
+      # Web Push (VAPID). Dev keypair; rotate for production.
+      VAPID_PUBLIC_KEY: BGI3RAHzbKg9tHyoiMXDTY-HR9m9xj3plnb9aWwsaG8WkyKKBUVZ98t1gyoV0sO-O8bI-vCdRK_7CMOIugEg0TI
+      VAPID_PRIVATE_KEY: XRckwx5a82MRtWJkqqpg-t4qaypUV2v0KlsjClQ0mtg
+      VAPID_SUBJECT: mailto:no-reply@retainiq.local
     ports:
       - "3005:3005"
     depends_on:
@@ -301,6 +318,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # Dev SMTP catcher: every outbound email lands in a web inbox at :8025
+  # instead of the internet. Not for production.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: retainiq-mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025" # web UI
+      - "1025:1025" # SMTP
 
   # Worker: owns billing-db. Seeds the plan catalog on boot and consumes
   # `organization.created` to provision subscriptions (event choreography).

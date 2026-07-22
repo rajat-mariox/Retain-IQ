@@ -21,3 +21,22 @@ variable "eks_node_pools" {
     observability = { instance_types = ["m6i.large"], min_size = 1, max_size = 3 }
   }
 }
+
+variable "private_subnet_ids" {
+  type        = list(string)
+  description = "Private subnet IDs for RDS and ElastiCache"
+  default     = []
+}
+
+variable "database_security_group_ids" {
+  type        = list(string)
+  description = "Security group IDs for RDS and ElastiCache"
+  default     = []
+}
+
+variable "database_password" {
+  type        = string
+  description = "Master password for the PostgreSQL database"
+  sensitive   = true
+  default     = "ChangeMe123!"
+}

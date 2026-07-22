@@ -1,64 +1,253 @@
-# Deploy pipeline (skeleton). Requires repo/org secrets and GitHub Environments
-# (`staging`, `production`) with protection rules + required reviewers.
-name: Deploy
+name: Deploy to AWS
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-${{ github.ref }}-${{ inputs.environment || 'staging' }}
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}/app
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  EKS_NAMESPACE: ${{ vars.EKS_NAMESPACE || 'retainiq' }}
+  ECR_PREFIX: ${{ vars.ECR_PREFIX || 'retainiq' }}
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
-    permissions: { contents: read, packages: write, id-token: write }
-    outputs:
-      tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-      - id: meta
-        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+        env:
+          DATABASE_URL: postgresql://retainiq:retainiq@localhost:5432/retainiq?schema=public
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+        env:
+          DATABASE_URL: postgresql://retainiq:retainiq@localhost:5432/retainiq?schema=public
+          REDIS_URL: redis://localhost:6379
+          JWT_ACCESS_SECRET: ci-access-secret-change-me
+          JWT_REFRESH_SECRET: ci-refresh-secret-change-me
+
+  build-and-push:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: identity-service
+            dockerfile: backend/apps/identity-service/Dockerfile
+            repository: identity-service
+          - service: activity-ingestion
+            dockerfile: backend/apps/activity-ingestion/Dockerfile
+            repository: activity-ingestion
+          - service: event-processor
+            dockerfile: backend/apps/event-processor/Dockerfile
+            repository: event-processor
+          - service: analytics-service
+            dockerfile: backend/apps/analytics-service/Dockerfile
+            repository: analytics-service
+          - service: notifications-service
+            dockerfile: backend/apps/notifications-service/Dockerfile
+            repository: notifications-service
+          - service: billing-service
+            dockerfile: backend/apps/billing-service/Dockerfile
+            repository: billing-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create ECR repository if missing
+        run: |
+          aws ecr describe-repositories --repository-names "${{ env.ECR_PREFIX }}/${{ matrix.repository }}" --region "${{ env.AWS_REGION }}" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "${{ env.ECR_PREFIX }}/${{ matrix.repository }}" --image-scanning-configuration scanOnPush=true --region "${{ env.AWS_REGION }}"
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
-          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ matrix.repository }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ matrix.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  staging:
-    needs: build
+  deploy-staging:
+    if: github.event_name != 'workflow_dispatch' || inputs.environment == 'staging'
+    needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     environment: staging
+    env:
+      DEPLOY_ENVIRONMENT: staging
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      EKS_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || vars.EKS_CLUSTER_NAME }}
+      EKS_NAMESPACE: ${{ vars.STAGING_EKS_NAMESPACE || vars.EKS_NAMESPACE || 'retainiq' }}
+      ECR_PREFIX: ${{ vars.STAGING_ECR_PREFIX || vars.ECR_PREFIX || 'retainiq' }}
     steps:
-      - uses: actions/checkout@v4
-      # - configure kube creds (aws-actions/configure-aws-credentials via OIDC) ...
-      - name: Run DB migrations (expand phase, backward-compatible)
-        run: echo "kubectl apply -f backend/infra/k8s/migrate-job.yaml && kubectl -n retainiq wait --for=condition=complete job/db-migrate"
-      - name: Deploy
-        run: echo "kustomize edit set image retainiq/app=${IMAGE}:${{ needs.build.outputs.tag }} && kubectl apply -k backend/infra/k8s"
-      - name: Smoke test
-        run: echo "curl -fsS https://staging.retainiq/v1/health/ready"
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  production:
-    needs: [build, staging]
-    runs-on: ubuntu-latest
-    environment: production # protected: requires manual approval
-    steps:
-      - uses: actions/checkout@v4
-      - name: Canary (10%) then promote
-        run: echo "argo rollouts / kubectl canary -> verify SLOs -> promote"
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      - name: Provision AWS database infrastructure
+        if: ${{ vars.STAGING_PRIVATE_SUBNET_IDS != '' && vars.STAGING_DATABASE_SECURITY_GROUP_IDS != '' && secrets.DATABASE_PASSWORD != '' }}
+        working-directory: backend/infra/terraform
+        env:
+          TF_VAR_environment: staging
+          TF_VAR_region: ${{ env.AWS_REGION }}
+          TF_VAR_private_subnet_ids: ${{ vars.STAGING_PRIVATE_SUBNET_IDS }}
+          TF_VAR_database_security_group_ids: ${{ vars.STAGING_DATABASE_SECURITY_GROUP_IDS }}
+          TF_VAR_database_password: ${{ secrets.DATABASE_PASSWORD }}
+        run: |
+          terraform init -backend=false
+          terraform plan -no-color -input=false -out=tfplan
+          terraform apply -auto-approve -input=false tfplan
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -k backend/infra/k8s
+
+      - name: Set container images
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          for svc in identity-service activity-ingestion event-processor analytics-service notifications-service; do
+            kubectl set image deployment/${svc} ${svc}=${ECR_REGISTRY}/${ECR_PREFIX}/${svc}:${IMAGE_TAG} -n "${EKS_NAMESPACE}" --record
+          done
+
+      - name: Wait for rollout
+        run: |
+          for deployment in identity-service activity-ingestion event-processor analytics-service notifications-service; do
+            kubectl rollout status deployment/${deployment} -n "${EKS_NAMESPACE}" --timeout=600s
+          done
+
       - name: Smoke test
-        run: echo "curl -fsS https://app.retainiq/v1/health/ready"
+        run: |
+          kubectl get pods -n "${EKS_NAMESPACE}"
+          kubectl get svc -n "${EKS_NAMESPACE}"
+
+  deploy-production:
+    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'production'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment: production
+    env:
+      DEPLOY_ENVIRONMENT: production
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      EKS_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || vars.EKS_CLUSTER_NAME }}
+      EKS_NAMESPACE: ${{ vars.PRODUCTION_EKS_NAMESPACE || vars.EKS_NAMESPACE || 'retainiq' }}
+      ECR_PREFIX: ${{ vars.PRODUCTION_ECR_PREFIX || vars.ECR_PREFIX || 'retainiq' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      - name: Provision AWS database infrastructure
+        if: ${{ vars.PRODUCTION_PRIVATE_SUBNET_IDS != '' && vars.PRODUCTION_DATABASE_SECURITY_GROUP_IDS != '' && secrets.DATABASE_PASSWORD != '' }}
+        working-directory: backend/infra/terraform
+        env:
+          TF_VAR_environment: production
+          TF_VAR_region: ${{ env.AWS_REGION }}
+          TF_VAR_private_subnet_ids: ${{ vars.PRODUCTION_PRIVATE_SUBNET_IDS }}
+          TF_VAR_database_security_group_ids: ${{ vars.PRODUCTION_DATABASE_SECURITY_GROUP_IDS }}
+          TF_VAR_database_password: ${{ secrets.DATABASE_PASSWORD }}
+        run: |
+          terraform init -backend=false
+          terraform plan -no-color -input=false -out=tfplan
+          terraform apply -auto-approve -input=false tfplan
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -k backend/infra/k8s
+
+      - name: Set container images
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          for svc in identity-service activity-ingestion event-processor analytics-service notifications-service; do
+            kubectl set image deployment/${svc} ${svc}=${ECR_REGISTRY}/${ECR_PREFIX}/${svc}:${IMAGE_TAG} -n "${EKS_NAMESPACE}" --record
+          done
+
+      - name: Wait for rollout
+        run: |
+          for deployment in identity-service activity-ingestion event-processor analytics-service notifications-service; do
+            kubectl rollout status deployment/${deployment} -n "${EKS_NAMESPACE}" --timeout=600s
+          done
+
+      - name: Smoke test
+        run: |
+          kubectl get pods -n "${EKS_NAMESPACE}"
+          kubectl get svc -n "${EKS_NAMESPACE}"

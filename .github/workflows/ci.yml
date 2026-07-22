@@ -3,8 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   verify:
@@ -14,7 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -28,14 +27,22 @@ jobs:
         env:
           DATABASE_URL: postgresql://retainiq:retainiq@localhost:5432/retainiq?schema=public
 
-      - name: Typecheck
-        run: npm run typecheck
-
       - name: Lint
         run: npm run lint
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Build
         run: npm run build
+        env:
+          DATABASE_URL: postgresql://retainiq:retainiq@localhost:5432/retainiq?schema=public
+          REDIS_URL: redis://localhost:6379
+          JWT_ACCESS_SECRET: ci-access-secret-change-me
+          JWT_REFRESH_SECRET: ci-refresh-secret-change-me
+
+      - name: Run tests
+        run: npm run test --workspaces --if-present
         env:
           DATABASE_URL: postgresql://retainiq:retainiq@localhost:5432/retainiq?schema=public
           REDIS_URL: redis://localhost:6379
