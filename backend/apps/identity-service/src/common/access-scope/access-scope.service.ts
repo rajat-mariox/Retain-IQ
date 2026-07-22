@@ -73,4 +73,41 @@ export class AccessScopeService {
     const rows = await this.prisma.employee.findMany({ where: { orgId, ...this.employeeWhere(scope) }, select: { id: true } });
     return rows.map((r) => r.id);
   }
+
+  /**
+   * The set of team ids a scope reaches: teams granted directly, plus every team
+   * under a granted department. Used to scope resources (projects) that hang off
+   * a team rather than an employee.
+   */
+  async reachableTeamIds(orgId: string, scope: AccessScope): Promise<string[]> {
+    const ids = new Set(scope.teamIds);
+    if (scope.departmentIds.length > 0) {
+      const teams = await this.prisma.team.findMany({
+        where: { orgId, departmentId: { in: scope.departmentIds } },
+        select: { id: true },
+      });
+      teams.forEach((t) => ids.add(t.id));
+    }
+    return [...ids];
+  }
+
+  /**
+   * Prisma where-fragment to filter Projects by this scope. A scoped manager
+   * reaches a project when its team is in their departments/teams, or they own
+   * it, or one of their reachable employees owns it. org → no filter; self →
+   * only projects they personally own (a plain member's manage reach is none).
+   */
+  async projectWhere(orgId: string, scope: AccessScope): Promise<Prisma.ProjectWhereInput> {
+    if (scope.tier === "org") return {};
+    if (scope.tier === "self") return { ownerEmployeeId: scope.employeeId ?? NIL };
+
+    const [teamIds, ownerIds] = await Promise.all([
+      this.reachableTeamIds(orgId, scope),
+      this.visibleEmployeeIds(orgId, scope),
+    ]);
+    const or: Prisma.ProjectWhereInput[] = [];
+    if (teamIds.length > 0) or.push({ teamId: { in: teamIds } });
+    if (ownerIds && ownerIds.length > 0) or.push({ ownerEmployeeId: { in: ownerIds } });
+    return or.length > 0 ? { OR: or } : { id: NIL };
+  }
 }

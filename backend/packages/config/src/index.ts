@@ -21,6 +21,16 @@ export function parseKafkaBrokers(value: string | undefined): string[] {
     .filter((b) => b.length > 0);
 }
 
+/**
+ * A boolean from an env var. Use this instead of z.coerce.boolean(), which runs
+ * JS Boolean() — making the string "false" evaluate to TRUE and silently turning
+ * a flag on when someone explicitly disabled it. Only the words below count as
+ * true; anything else (including "false", "0", "no", "") is false.
+ */
+export const envBoolean = z
+  .union([z.boolean(), z.string()])
+  .transform((v) => (typeof v === "boolean" ? v : ["true", "1", "yes", "on"].includes(v.trim().toLowerCase())));
+
 const PLACEHOLDER_SECRET = /replace|change[-_]?me|changeme|secret-here|example/i;
 
 const envSchema = z
@@ -36,6 +46,18 @@ const envSchema = z
     JWT_REFRESH_SECRET: z.string().min(16),
     ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+    /**
+     * Return the password-reset token in the API response instead of emailing it.
+     *
+     * DEV CONVENIENCE ONLY — there is no mail sender wired up yet. With this on,
+     * the response reveals whether an account exists AND hands the caller a reset
+     * for any address they can name. Defaults to off; only docker-compose.yml
+     * (local) sets it. Never set it in a deployed environment.
+     */
+    // NOT z.coerce.boolean(): that runs JS Boolean(), and Boolean("false") is
+    // true — so RESET_TOKEN_IN_RESPONSE=false would have turned the leak ON.
+    // Env values are strings; only an explicit opt-in word enables this.
+    RESET_TOKEN_IN_RESPONSE: envBoolean.default(false),
     // Platform (super-admin) auth — a cross-tenant principal with its OWN signing
     // secret so an org access token can never be replayed against admin routes.
     PLATFORM_JWT_SECRET: z.string().min(16),
@@ -85,6 +107,12 @@ const envSchema = z
           });
         }
       }
+      // NOTE: RESET_TOKEN_IN_RESPONSE is deliberately NOT gated on NODE_ENV.
+      // Every service image sets NODE_ENV=production for Node's runtime
+      // optimisations, so local `npm run up` containers report "production" too —
+      // gating here would break local development while proving nothing about a
+      // real deployment. The flag defaults to OFF and must be set explicitly;
+      // keep it out of production compose/env files.
     }
   });
 

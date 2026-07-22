@@ -4,10 +4,13 @@ import { DatabaseModule } from "./common/database/database.module.js";
 import { IdempotencyModule } from "./common/idempotency/idempotency.module.js";
 import { MessagingModule } from "./common/messaging/messaging.module.js";
 import { SeatLimitModule } from "./common/seat-limit/seat-limit.module.js";
+import { ApprovalModule } from "./common/approval/approval.module.js";
+import { OrgRolesModule } from "./common/org-roles/org-roles.module.js";
 import { SettingsModule } from "./common/settings/settings.module.js";
 import { AccessScopeModule } from "./common/access-scope/access-scope.module.js";
 import { ObservabilityModule } from "./common/observability/observability.module.js";
 import { SecurityModule } from "./common/security/security.module.js";
+import { ProductivityModule } from "./common/productivity/productivity.module.js";
 import { RequestContextMiddleware } from "./common/middleware/request-context.middleware.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { IdentityModule } from "./modules/identity/identity.module.js";
@@ -22,10 +25,17 @@ import { MembersModule } from "./modules/members/members.module.js";
 import { NotificationsModule } from "./modules/notifications/notifications.module.js";
 import { StorageModule } from "./modules/storage/storage.module.js";
 import { OrgStructureModule } from "./modules/org-structure/org-structure.module.js";
+import { ClientsModule } from "./modules/clients/clients.module.js";
 import { LeaveModule } from "./modules/leave/leave.module.js";
+import { PayrollModule } from "./modules/payroll/payroll.module.js";
 import { HolidaysModule } from "./modules/holidays/holidays.module.js";
 import { MonitoringModule } from "./modules/monitoring/monitoring.module.js";
+import { TimeTrackingModule } from "./modules/timetracking/timetracking.module.js";
 import { RbacModule } from "./modules/rbac/rbac.module.js";
+import { RecruitmentModule } from "./modules/recruitment/recruitment.module.js";
+import { OnboardingModule } from "./modules/onboarding/onboarding.module.js";
+import { PerformanceModule } from "./modules/performance/performance.module.js";
+import { HrAnalyticsModule } from "./modules/hr-analytics/hr-analytics.module.js";
 import { SeatSyncModule } from "./modules/seat-sync/seat-sync.module.js";
 import { OutboxModule } from "./modules/outbox/outbox.module.js";
 
@@ -38,8 +48,11 @@ import { OutboxModule } from "./modules/outbox/outbox.module.js";
     MessagingModule,
     SeatLimitModule,
     SettingsModule,
+    ApprovalModule,
+    OrgRolesModule,
     AccessScopeModule,
     SecurityModule,
+    ProductivityModule,
     HealthModule,
     IdentityModule,
     PlatformAdminModule,
@@ -53,10 +66,17 @@ import { OutboxModule } from "./modules/outbox/outbox.module.js";
     NotificationsModule,
     StorageModule,
     OrgStructureModule,
+    ClientsModule,
     LeaveModule,
+    PayrollModule,
     HolidaysModule,
     MonitoringModule,
+    TimeTrackingModule,
     RbacModule,
+    RecruitmentModule,
+    OnboardingModule,
+    PerformanceModule,
+    HrAnalyticsModule,
     SeatSyncModule,
     OutboxModule,
   ],

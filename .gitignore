@@ -7,3 +7,5 @@ coverage
 .env.*.local
 *.log
 backend/packages/database/prisma/generated
+# Working artifact from the task-tracker generator, not a deliverable.
+docs/*.backup.xlsx

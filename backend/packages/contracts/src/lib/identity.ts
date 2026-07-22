@@ -54,6 +54,20 @@ export const changePasswordSchema = z.object({
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
+export const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
+
+export const resetPasswordSchema = z.object({
+  email: z.string().email(),
+  token: z.string().min(1).max(200),
+  newPassword: z.string().min(12).max(200),
+});
+
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+
 /**
  * Claims embedded in the short-lived access JWT. `jti`/`sid` are stamped by the
  * token service at signing time (the service layer builds only the principal
@@ -82,6 +96,20 @@ export const createEmployeeSchema = z.object({
   lastName: z.string().min(1).max(80),
   email: z.string().email().optional(),
   employeeCode: z.string().min(1).max(64).optional(),
+  title: z.string().max(120).optional(),
+  departmentId: z.string().uuid().optional(),
+  teamId: z.string().uuid().optional(),
+  designationId: z.string().uuid().optional(),
+  managerId: z.string().uuid().optional(),
+  joinedAt: z.string().datetime().optional(),
+  phone: z.string().max(40).optional(),
+  dateOfBirth: z.string().datetime().optional(),
+  gender: z.string().max(20).optional(),
+  location: z.string().max(120).optional(),
+  employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"]).optional(),
+  address: z.string().max(500).optional(),
+  emergencyContactName: z.string().max(120).optional(),
+  emergencyContactPhone: z.string().max(40).optional(),
 });
 
 export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
