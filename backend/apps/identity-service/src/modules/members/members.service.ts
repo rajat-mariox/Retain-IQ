@@ -1,18 +1,71 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, type OnModuleInit } from "@nestjs/common";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { logger } from "../../common/observability/observability.js";
+import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { SeatLimitService } from "../../common/seat-limit/seat-limit.service.js";
 import { ensureSystemRoles } from "../../common/security/roles.util.js";
 import type { AddMemberInput } from "./dto.js";
 
 @Injectable()
-export class MembersService {
+export class MembersService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly seatLimit: SeatLimitService,
+    private readonly outbox: OutboxService,
   ) {}
+
+  /**
+   * Re-project every active membership on boot.
+   *
+   * Downstream read models (notifications' OrgRecipient) are built purely from
+   * `org.member.upserted`. Members created before that event existed — or while
+   * a consumer was down — would otherwise never appear, silently breaking
+   * role-based audiences like "approvers". The downstream upsert is idempotent,
+   * so replaying is safe and self-healing.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      const memberships = await this.prisma.organizationMembership.findMany({
+        where: { status: "ACTIVE" },
+        select: {
+          id: true,
+          orgId: true,
+          userId: true,
+          status: true,
+          user: { select: { email: true } },
+          role: { select: { name: true } },
+          employee: { select: { firstName: true, lastName: true } },
+        },
+      });
+      if (memberships.length === 0) return;
+
+      await this.prisma.$transaction(async (tx) => {
+        for (const m of memberships) {
+          await this.outbox.enqueue(tx, {
+            eventType: "org.member.upserted",
+            aggregateType: "organizationMembership",
+            aggregateId: m.id,
+            orgId: m.orgId,
+            payload: {
+              orgId: m.orgId,
+              userId: m.userId,
+              roleName: m.role?.name ?? "Employee",
+              status: m.status,
+              email: m.user?.email ?? null,
+              name: m.employee ? `${m.employee.firstName} ${m.employee.lastName}`.trim() : null,
+            },
+          });
+        }
+      });
+      logger.info({ count: memberships.length }, "re-projected org memberships to read models");
+    } catch (error) {
+      // Never block startup on a projection refresh.
+      logger.warn({ err: String(error) }, "membership re-projection on boot failed");
+    }
+  }
 
   /** Adds an employee + a login account with a temporary password (first-login change). */
   async addMember(input: AddMemberInput) {
@@ -74,7 +127,7 @@ export class MembersService {
         },
       });
       const user = await tx.user.create({ data: { email, passwordHash, mustChangePassword: true } });
-      await tx.organizationMembership.create({
+      const membership = await tx.organizationMembership.create({
         data: { orgId: ctx.orgId, userId: user.id, employeeId: emp.id, roleId, status: "ACTIVE" },
       });
       // Base-role grant at the chosen scope (multi-grant RBAC).
@@ -82,6 +135,26 @@ export class MembersService {
         data: { orgId: ctx.orgId, userId: user.id, employeeId: emp.id, roleId, scopeType, scopeId, status: "ACTIVE", createdBy: ctx.userId },
       });
       const role = await tx.role.findUnique({ where: { id: roleId }, select: { name: true } });
+
+      // Project the new membership to downstream read models. Without this the
+      // notifications service never learns about invited members, so role-based
+      // audiences (approvers / org-admins) silently resolve to nobody.
+      await this.outbox.enqueue(tx, {
+        eventType: "org.member.upserted",
+        aggregateType: "organizationMembership",
+        aggregateId: membership.id,
+        orgId: ctx.orgId,
+        actorUserId: ctx.userId,
+        payload: {
+          orgId: ctx.orgId,
+          userId: user.id,
+          roleName: role?.name ?? "Employee",
+          status: membership.status,
+          email,
+          name: `${input.firstName} ${input.lastName}`.trim(),
+        },
+      });
+
       return { emp, roleName: role?.name ?? "Member" };
     });
 

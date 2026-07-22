@@ -16,6 +16,23 @@ const envSchema = z.object({
   // during this window; IN_APP is always delivered.
   QUIET_HOURS_START: z.coerce.number().int().min(0).max(23).default(22),
   QUIET_HOURS_END: z.coerce.number().int().min(0).max(23).default(8),
+
+  // Email (SMTP). Unset SMTP_HOST -> the EMAIL channel logs instead of sending.
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(1025),
+  SMTP_SECURE: z.coerce.boolean().default(false),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  MAIL_FROM: z.string().default("RetainIQ <no-reply@retainiq.local>"),
+  APP_URL: z.string().default("http://localhost:3200"),
+
+  // Web Push (VAPID). Unset keys -> the PUSH channel logs instead of sending.
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default("mailto:no-reply@retainiq.local"),
+
+  // Digest sweep cadence (daily/weekly email summaries).
+  DIGEST_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
 });
 
 export type NotificationsConfig = z.infer<typeof envSchema>;

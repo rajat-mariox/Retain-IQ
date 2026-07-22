@@ -12,8 +12,12 @@ import {
 import { createLogger, createMetrics, installProcessErrorHandlers, startOpsServer } from "@retainiq/observability";
 import { dispatch } from "./channels.js";
 import { loadNotificationsConfig } from "./config.js";
+import { runDigestSweep } from "./digest.js";
+import { EmailSender } from "./email.js";
+import { PushSender } from "./push.js";
+import { hourInTimezone, resolvePreferences } from "./preferences.js";
 import { resolveRecipients } from "./recipients.js";
-import { rulesFor, type Channel } from "./rules.js";
+import { rulesFor, type Category, type Channel, type Priority } from "./rules.js";
 
 const config = loadNotificationsConfig();
 const logger = createLogger("notifications-service", config.LOG_LEVEL);
@@ -22,6 +26,24 @@ const created = metrics.counter("notifications_created_total", "Notifications cr
 const deferred = metrics.counter("notifications_deferred_total", "Notifications deferred (quiet hours).", ["channel"]);
 
 const prisma = new PrismaClient();
+
+const emailSender = new EmailSender(
+  {
+    host: config.SMTP_HOST,
+    port: config.SMTP_PORT,
+    secure: config.SMTP_SECURE,
+    user: config.SMTP_USER,
+    pass: config.SMTP_PASS,
+    from: config.MAIL_FROM,
+    appUrl: config.APP_URL,
+  },
+  logger,
+);
+const pushSender = new PushSender(
+  { publicKey: config.VAPID_PUBLIC_KEY, privateKey: config.VAPID_PRIVATE_KEY, subject: config.VAPID_SUBJECT },
+  prisma,
+  logger,
+);
 
 const broker = createBroker({
   driver: config.BROKER_DRIVER,
@@ -60,18 +82,33 @@ async function handle(message: StreamMessage): Promise<void> {
   }
 
   const payload = isRecord(event.payload) ? event.payload : {};
-  const quietHours = { start: config.QUIET_HOURS_START, end: config.QUIET_HOURS_END, now: new Date().getHours() };
 
   for (const spec of specs) {
     const recipients = await resolveRecipients(prisma, orgId, spec.audience, payload);
     for (const recipientUserId of recipients) {
+      // Narrow the rule's channels by what this recipient actually opted into,
+      // and evaluate quiet hours in *their* timezone (falling back to the
+      // service-wide window when they've not configured one).
+      const prefs = await resolvePreferences(prisma, orgId, recipientUserId, spec.category);
+      const quietHours = prefs.quiet.enabled
+        ? { start: prefs.quiet.start, end: prefs.quiet.end, now: hourInTimezone(prefs.quiet.timezone) }
+        : { start: config.QUIET_HOURS_START, end: config.QUIET_HOURS_END, now: new Date().getUTCHours() };
+
       for (const channel of spec.channels) {
+        if (!prefs.allowed.has(channel)) continue; // opted out of this channel
         await deliver({
           eventId,
           orgId,
           recipientUserId,
           channel,
-          spec: { type: spec.type, title: spec.title(payload), body: spec.body(payload) },
+          spec: {
+            type: spec.type,
+            title: spec.title(payload),
+            body: spec.body(payload),
+            category: spec.category,
+            priority: spec.priority,
+            link: spec.link ? spec.link(payload) : null,
+          },
           quietHours,
         });
       }
@@ -90,11 +127,14 @@ async function projectMember(orgId: string, payload: Record<string, unknown>): P
   if (!userId || !roleName) {
     return;
   }
+  const email = asString(payload.email);
+  const name = asString(payload.name);
 
   await prisma.orgRecipient.upsert({
     where: { orgId_userId: { orgId, userId } },
-    create: { orgId, userId, roleName, status },
-    update: { roleName, status, updatedAt: new Date() },
+    create: { orgId, userId, roleName, status, email, name },
+    // Don't blank an existing email if a later event omits it.
+    update: { roleName, status, updatedAt: new Date(), ...(email ? { email } : {}), ...(name ? { name } : {}) },
   });
 }
 
@@ -103,7 +143,7 @@ async function deliver(args: {
   orgId: string;
   recipientUserId: string;
   channel: Channel;
-  spec: { type: string; title: string; body: string };
+  spec: { type: string; title: string; body: string; category: Category; priority: Priority; link: string | null };
   quietHours: { start: number; end: number; now: number };
 }): Promise<void> {
   const dedupeKey = `${args.eventId}:${args.spec.type}:${args.recipientUserId}:${args.channel}`;
@@ -117,6 +157,9 @@ async function deliver(args: {
           orgId: args.orgId,
           recipientUserId: args.recipientUserId,
           channel: args.channel,
+          category: args.spec.category,
+          priority: args.spec.priority,
+          link: args.spec.link,
           type: args.spec.type,
           title: args.spec.title,
           body: args.spec.body,
@@ -134,13 +177,29 @@ async function deliver(args: {
     return; // already delivered/deferred-handled
   }
 
-  const outcome = dispatch({
+  // EMAIL needs an address; read it from the local recipient projection only
+  // when that channel is actually in play.
+  let recipientEmail: string | null = null;
+  if (args.channel === "EMAIL") {
+    const rec = await prisma.orgRecipient.findUnique({
+      where: { orgId_userId: { orgId: args.orgId, userId: args.recipientUserId } },
+      select: { email: true },
+    });
+    recipientEmail = rec?.email ?? null;
+  }
+
+  const outcome = await dispatch({
     channel: args.channel,
+    orgId: args.orgId,
     recipientUserId: args.recipientUserId,
+    recipientEmail,
     title: args.spec.title,
     body: args.spec.body,
+    link: args.spec.link,
     logger,
     quietHours: args.quietHours,
+    email: emailSender,
+    push: pushSender,
   });
   if (outcome.status === "DEFERRED") {
     deferred.inc({ channel: args.channel });
@@ -158,6 +217,9 @@ async function deliver(args: {
       type: args.spec.type,
       title: args.spec.title,
       body: args.spec.body,
+      category: args.spec.category,
+      priority: args.spec.priority,
+      link: args.spec.link,
       createdAt: notification.createdAt.toISOString(),
     });
   }
@@ -189,11 +251,20 @@ async function main(): Promise<void> {
 
   const runPromise = consumer.run(handle);
 
+  // Periodic digest sweep — rolls unread notifications into a daily/weekly email
+  // for users who opted in. Failures are logged, never fatal to the consumer.
+  const digestTimer = setInterval(() => {
+    void runDigestSweep(prisma, emailSender, logger, config.APP_URL).catch((error) =>
+      logger.error({ err: String(error) }, "digest sweep failed"),
+    );
+  }, config.DIGEST_INTERVAL_MS);
+
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, "Shutting down notifications-service...");
+    clearInterval(digestTimer);
     consumer.stop();
     opsServer.close();
     void Promise.race([runPromise, delay(8000)])
