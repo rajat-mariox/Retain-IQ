@@ -5,7 +5,9 @@ import { PageNav } from "@/components/ui/PageNav";
 import { OrgStructurePanel } from "@/components/settings/OrgStructurePanel";
 import { AccessRolesPanel } from "@/components/settings/AccessRolesPanel";
 import { MonitoringSettingsPanel } from "@/components/settings/MonitoringSettingsPanel";
-import { getAccess, getDepartments, getMembers, getMonitoringPolicy, getOrg, getRequisitions, getRoles, getTeams } from "@/lib/api";
+import { ProductivityRulesPanel } from "@/components/settings/ProductivityRulesPanel";
+import { ClientsRatesPanel } from "@/components/settings/ClientsRatesPanel";
+import { getAccess, getBillRates, getClients, getDepartments, getMembers, getMonitoringPolicy, getOrg, getPayrollSettings, getProductivityRules, getProjectPeople, getProjects, getRequisitions, getRoles, getTeams } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 const PAGE_SIZE = 10;
@@ -21,7 +23,17 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     getAccess(1, 10).catch(() => ({ items: [], total: 0, page: 1, pageSize: 10 })),
     getRequisitions().catch(() => []),
   ]);
-  const monitoringPolicy = await getMonitoringPolicy().catch(() => ({ screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280 }));
+  const monitoringPolicy = await getMonitoringPolicy().catch(() => ({ screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280, screenshotRetentionDays: 0 }));
+  const productivityRules = await getProductivityRules().catch(() => null);
+
+  // Payroll surfaces are payroll.read-gated; a Manager without it still gets the page.
+  const [clients, billRates, payrollSettings, projectList, people] = await Promise.all([
+    getClients(true).catch(() => []),
+    getBillRates().catch(() => []),
+    getPayrollSettings().catch(() => null),
+    getProjects(1, 100).catch(() => ({ items: [], total: 0, page: 1, pageSize: 100 })),
+    getProjectPeople().catch(() => []),
+  ]);
 
   return (
     <>
@@ -46,6 +58,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <AccessRolesPanel initial={access} roles={roles} departments={departments} teams={teams} />
 
         <MonitoringSettingsPanel initial={monitoringPolicy} />
+
+        {productivityRules ? <ProductivityRulesPanel initial={productivityRules} /> : null}
+
+        <ClientsRatesPanel
+          clients={clients}
+          billRates={billRates}
+          settings={payrollSettings}
+          projects={projectList.items}
+          people={people.map((p) => ({ id: p.id, name: p.name }))}
+        />
 
         <Card>
           <CardHeader title="Members" subtitle={`${members.total} people with access`} />

@@ -5,6 +5,7 @@ import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Briefcase, Calen
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { AttendanceBadge } from "@/components/ui/badges";
+import { LocalTime } from "@/components/ui/LocalTime";
 import { formatCompact } from "@/lib/format";
 import type { AttendanceRoster, ExecutiveOverview } from "@/lib/api";
 
@@ -21,10 +22,6 @@ type Tab = (typeof TABS)[number];
 
 function tone(v: number) {
   return v >= 75 ? "#16a34a" : v >= 55 ? "#d97706" : "#e5484d";
-}
-function clock(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
 }
 
 export function DashboardTabs({ exec, roster }: { exec: ExecutiveOverview; roster: AttendanceRoster | null }) {
@@ -155,8 +152,8 @@ export function DashboardTabs({ exec, roster }: { exec: ExecutiveOverview; roste
                       <td className="px-5 py-3 font-medium text-slate-900">{r.name}</td>
                       <td className="px-5 py-3 text-slate-600">{r.department ?? "—"}</td>
                       <td className="px-5 py-3"><AttendanceBadge status={r.status} /></td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkInAt)}</td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkOutAt)}</td>
+                      <td className="px-5 py-3 text-right tabular-nums text-slate-600"><LocalTime iso={r.checkInAt} /></td>
+                      <td className="px-5 py-3 text-right tabular-nums text-slate-600"><LocalTime iso={r.checkOutAt} /></td>
                       <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.workMinutes > 0 ? `${Math.floor(r.workMinutes / 60)}h ${r.workMinutes % 60}m` : "—"}</td>
                     </tr>
                   ))}

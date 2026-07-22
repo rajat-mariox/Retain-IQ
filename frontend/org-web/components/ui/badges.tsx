@@ -64,12 +64,22 @@ const RISK: Record<string, string> = {
 export function TaskBadge({ status }: { status: string }) {
   return <span className={pill(TASK, status)}>{status.replace("_", " ").toLowerCase()}</span>;
 }
-export function PriorityBadge({ priority }: { priority: string }) {
-  return <span className={pill(PRIORITY, priority)}>{priority.toLowerCase()}</span>;
+
+// A badge tinted from a custom hex colour (used when the org has configured
+// its own status/priority colours in Projects Admin).
+function customPill(color: string) {
+  return { backgroundColor: `${color}1a`, color, borderColor: `${color}40` };
+}
+export function PriorityBadge({ priority, label, color }: { priority: string; label?: string; color?: string }) {
+  const text = label ?? priority.toLowerCase();
+  if (color) return <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset" style={customPill(color)}>{text}</span>;
+  return <span className={pill(PRIORITY, priority)}>{text}</span>;
 }
 export function RiskBadge({ risk }: { risk: string }) {
   return <span className={pill(RISK, risk)}>{risk.replace("_", " ")}</span>;
 }
-export function ProjectStatusBadge({ status }: { status: string }) {
-  return <span className={pill(SUBSCRIPTION, status === "ACTIVE" ? "ACTIVE" : status)}>{status.replace("_", " ").toLowerCase()}</span>;
+export function ProjectStatusBadge({ status, label, color }: { status: string; label?: string; color?: string }) {
+  const text = label ?? status.replace("_", " ").toLowerCase();
+  if (color) return <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset" style={customPill(color)}>{text}</span>;
+  return <span className={pill(SUBSCRIPTION, status === "ACTIVE" ? "ACTIVE" : status)}>{text}</span>;
 }

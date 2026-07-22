@@ -5,12 +5,8 @@ import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { AttendanceBadge } from "@/components/ui/badges";
 import { DashboardTabs } from "@/components/dashboard/DashboardTabs";
+import { LocalTime } from "@/components/ui/LocalTime";
 import { getAttendanceRoster, getExecutiveOverview, getMyAttendance, getSession } from "@/lib/api";
-
-function clock(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
-}
 
 export default async function DashboardPage() {
   const session = await getSession().catch(() => null);
@@ -49,8 +45,8 @@ export default async function DashboardPage() {
           />
           <CardBody className="space-y-4">
             <Row label="Status"><AttendanceBadge status={myToday?.status ?? null} /></Row>
-            <Row label="Checked in"><span className="tabular-nums text-sm font-medium text-slate-900">{clock(myToday?.checkInAt ?? null)}</span></Row>
-            <Row label="Checked out"><span className="tabular-nums text-sm font-medium text-slate-900">{clock(myToday?.checkOutAt ?? null)}</span></Row>
+            <Row label="Checked in"><span className="tabular-nums text-sm font-medium text-slate-900"><LocalTime iso={myToday?.checkInAt ?? null} /></span></Row>
+            <Row label="Checked out"><span className="tabular-nums text-sm font-medium text-slate-900"><LocalTime iso={myToday?.checkOutAt ?? null} /></span></Row>
             <p className="text-xs text-slate-400">Check in and out from the My Time page.</p>
           </CardBody>
         </Card>
@@ -73,8 +69,8 @@ export default async function DashboardPage() {
                   <tr key={r.id} className="border-b border-hairline/60 last:border-0">
                     <td className="px-5 py-3 tabular-nums text-slate-700">{r.day.slice(0, 10)}</td>
                     <td className="px-5 py-3"><AttendanceBadge status={r.status} /></td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkInAt)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.checkOutAt)}</td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-600"><LocalTime iso={r.checkInAt} /></td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-600"><LocalTime iso={r.checkOutAt} /></td>
                     <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.workMinutes > 0 ? `${Math.floor(r.workMinutes / 60)}h ${r.workMinutes % 60}m` : "—"}</td>
                   </tr>
                 ))}

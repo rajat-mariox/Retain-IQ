@@ -1,6 +1,7 @@
 import { getSession } from "@/lib/api";
 import { LogoutButton } from "@/components/auth/LogoutButton";
 import { MobileMenuButton } from "@/components/layout/MobileNav";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 
 interface TopbarProps {
   title: string;
@@ -33,6 +34,7 @@ export async function Topbar({ title, subtitle }: TopbarProps) {
       </div>
 
       <div className="flex items-center gap-3">
+        <NotificationBell />
         <div className="flex items-center gap-2.5 rounded-xl border border-hairline bg-panel/70 py-1 pl-1 pr-3">
           <span className="grid size-7 place-items-center rounded-lg bg-gradient-to-br from-emerald-500 to-green-600 text-xs font-semibold text-white">
             {initials}

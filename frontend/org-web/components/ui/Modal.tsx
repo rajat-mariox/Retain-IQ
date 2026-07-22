@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -24,6 +25,11 @@ export function Modal({
   children: ReactNode;
   size?: "sm" | "md" | "lg";
 }) {
+  // Portal to <body> so the fixed overlay escapes any ancestor stacking context
+  // (a parent with transform/filter/backdrop-filter would otherwise trap it).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -35,8 +41,8 @@ export function Modal({
     };
   }, [open, onClose]);
 
-  if (!open) return null;
-  return (
+  if (!open || !mounted) return null;
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center" role="dialog" aria-modal>
       <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} aria-hidden />
       <div className={cn("relative z-10 my-8 w-full rounded-2xl border border-hairline bg-panel shadow-2xl", SIZE[size])}>
@@ -48,6 +54,7 @@ export function Modal({
         </div>
         <div className="px-5 py-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

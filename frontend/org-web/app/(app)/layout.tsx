@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { AlertTriangle, Megaphone, Wrench } from "lucide-react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { MobileNavProvider } from "@/components/layout/MobileNav";
+import { NotificationsProvider } from "@/components/notifications/NotificationsProvider";
 import { getSession } from "@/lib/api";
 import { getPublicConfig } from "@/lib/config";
 
@@ -42,13 +43,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const notification = config.notification;
 
   return (
-    <MobileNavProvider>
+    <NotificationsProvider>
+      <MobileNavProvider>
       <div className="min-h-screen">
         <Sidebar
           orgName={session?.org.name ?? "Organization"}
           isAdmin={isAdmin}
           platformName={config.branding.platformName}
-          featureFlags={config.featureFlags}
+          // Org-resolved flags (global ∩ this org's override), not the public
+          // global set — /v1/config can't know which tenant is asking.
+          featureFlags={session?.featureFlags ?? config.featureFlags}
           logoUrl={config.branding.logoUrl || undefined}
         />
         <div className="lg:pl-64">
@@ -61,6 +65,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           {children}
         </div>
       </div>
-    </MobileNavProvider>
+      </MobileNavProvider>
+    </NotificationsProvider>
   );
 }
