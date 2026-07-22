@@ -1,13 +1,15 @@
 import Link from "next/link";
 import {
-  AlertTriangle, ArrowLeftRight, Ban, Building2, CreditCard, Pencil, RefreshCw, Trash2, UserPlus, XCircle, CircleCheck,
+  AlertTriangle, ArrowLeftRight, Ban, Building2, CreditCard, Pencil, RefreshCw, RotateCcw, ToggleLeft, ToggleRight,
+  Trash2, UserMinus, UserPlus, XCircle, CircleCheck,
   type LucideIcon,
 } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card } from "@/components/ui/Card";
 import { PageNav } from "@/components/ui/PageNav";
-import { getActivity, type ApiActivityItem } from "@/lib/admin-api";
+import { ActivityFilters } from "@/components/activity/ActivityFilters";
+import { getActivity, getActivityFilters, type ApiActivityItem } from "@/lib/admin-api";
 import { timeAgo } from "@/lib/format";
 
 const PAGE_SIZE = 25;
@@ -19,6 +21,11 @@ const META: Record<string, { icon: LucideIcon; color: string }> = {
   "org.deleted": { icon: Trash2, color: "#e5484d" },
   "org.updated": { icon: Pencil, color: "#64748b" },
   "org.member_added": { icon: UserPlus, color: "#0d9488" },
+  "user.invited": { icon: UserPlus, color: "#0d9488" },
+  "user.removed": { icon: UserMinus, color: "#d97706" },
+  "feature.enabled": { icon: ToggleRight, color: "#16a34a" },
+  "feature.disabled": { icon: ToggleLeft, color: "#d97706" },
+  "feature.reset": { icon: RotateCcw, color: "#64748b" },
   "subscription.created": { icon: CreditCard, color: "#1f883d" },
   "subscription.plan_changed": { icon: ArrowLeftRight, color: "#0d9488" },
   "subscription.renewed": { icon: RefreshCw, color: "#16a34a" },
@@ -52,18 +59,41 @@ function Row({ e, now }: { e: ApiActivityItem; now: number }) {
   );
 }
 
-export default async function ActivityPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
-  const page = Math.max(1, Number((await searchParams).page) || 1);
-  const feed = await getActivity(page, PAGE_SIZE).catch(() => ({ items: [], total: 0, page, pageSize: PAGE_SIZE }));
+type Search = { page?: string; orgId?: string; type?: string; from?: string; to?: string };
+
+export default async function ActivityPage({ searchParams }: { searchParams: Promise<Search> }) {
+  const sp = await searchParams;
+  const page = Math.max(1, Number(sp.page) || 1);
+  const filter = { orgId: sp.orgId, type: sp.type, from: sp.from, to: sp.to };
+  const filtered = Object.values(filter).some(Boolean);
+
+  const [feed, filters] = await Promise.all([
+    getActivity(page, PAGE_SIZE, filter).catch(() => ({ items: [], total: 0, page, pageSize: PAGE_SIZE })),
+    getActivityFilters().catch(() => ({ types: [], organizations: [] })),
+  ]);
   const now = Date.now();
+
+  // Carry the filters through pagination — page 2 of a filtered view must stay filtered.
+  const query = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) if (v) query.set(k, v);
+  const basePath = `/activity${query.toString() ? `?${query}` : ""}`;
 
   return (
     <>
       <Topbar title="Activity" subtitle="Everything happening across all organizations · live" />
       <PageBody>
         <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline px-5 py-3">
+            <ActivityFilters types={filters.types} organizations={filters.organizations} />
+            <span className="text-xs text-slate-400">
+              {feed.total} {feed.total === 1 ? "event" : "events"}
+              {filtered ? " match" : ""}
+            </span>
+          </div>
           {feed.items.length === 0 ? (
-            <p className="px-5 py-12 text-center text-sm text-slate-500">No activity yet.</p>
+            <p className="px-5 py-12 text-center text-sm text-slate-500">
+              {filtered ? "No activity matches these filters." : "No activity yet."}
+            </p>
           ) : (
             <div className="divide-y divide-hairline/60">
               {feed.items.map((e) => (
@@ -71,7 +101,7 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
               ))}
             </div>
           )}
-          <PageNav page={feed.page} pageSize={feed.pageSize} total={feed.total} basePath="/activity" />
+          <PageNav page={feed.page} pageSize={feed.pageSize} total={feed.total} basePath={basePath} />
         </Card>
       </PageBody>
     </>

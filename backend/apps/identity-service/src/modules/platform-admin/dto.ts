@@ -6,6 +6,18 @@ export const platformLoginSchema = z.object({
 });
 export type PlatformLoginInput = z.infer<typeof platformLoginSchema>;
 
+export const platformForgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+export type PlatformForgotPasswordInput = z.infer<typeof platformForgotPasswordSchema>;
+
+export const platformResetPasswordSchema = z.object({
+  email: z.string().email(),
+  token: z.string().min(1).max(200),
+  newPassword: z.string().min(12).max(200),
+});
+export type PlatformResetPasswordInput = z.infer<typeof platformResetPasswordSchema>;
+
 export const platformRefreshSchema = z.object({
   refreshToken: z.string().min(1),
 });

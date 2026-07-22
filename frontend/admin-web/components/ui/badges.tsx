@@ -1,6 +1,15 @@
-import { PLANS } from "@/lib/data/seed";
-import type { OrgStatus, PlanId } from "@/lib/data/types";
+import type { OrgStatus } from "@/lib/data/types";
 import { cn } from "@/lib/cn";
+
+/** Name + accent for one plan, as served by the billing-service plan API. */
+export interface PlanMeta {
+  name: string;
+  color: string;
+}
+/** id → meta, built by the page from live plans and passed down. */
+export type PlanLookup = Record<string, PlanMeta>;
+
+const FALLBACK_COLOR = "#64748b";
 
 const STATUS_STYLES: Record<OrgStatus, string> = {
   active: "bg-emerald-500/10 text-emerald-700 ring-emerald-600/20",
@@ -30,15 +39,21 @@ export function StatusBadge({ status }: { status: OrgStatus }) {
   );
 }
 
-export function PlanBadge({ plan }: { plan: PlanId }) {
-  const meta = PLANS[plan];
+/**
+ * Plan chip. Metadata comes from the live plan API via `plans` — plans are DB
+ * rows an admin can rename or recolour, so this must never hardcode them. An
+ * unknown id still renders (with its raw id) rather than crashing the table.
+ */
+export function PlanBadge({ plan, plans }: { plan: string; plans?: PlanLookup }) {
+  const meta = plans?.[plan];
+  const color = meta?.color || FALLBACK_COLOR;
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset"
-      style={{ color: meta.color, backgroundColor: `${meta.color}1a`, borderColor: `${meta.color}40` }}
+      style={{ color, backgroundColor: `${color}1a`, borderColor: `${color}40` }}
     >
-      <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
-      {meta.name}
+      <span className="size-1.5 rounded-full" style={{ backgroundColor: color }} />
+      {meta?.name ?? plan}
     </span>
   );
 }

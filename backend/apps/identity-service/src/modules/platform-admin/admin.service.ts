@@ -8,6 +8,7 @@ import { BrokerService } from "../../common/messaging/broker.service.js";
 import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { PlatformSettingsService } from "../../common/settings/platform-settings.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { ensureSystemRoles } from "../../common/security/roles.util.js";
 import type {
@@ -42,6 +43,10 @@ import type {
   AdminTopCustomer,
   AdminUsage,
   AdminUsageAnalytics,
+  AdminGrowth,
+  AdminGrowthPoint,
+  AdminSeatPoint,
+  AdminStoragePoint,
   AdminUsagePoint,
   ChurnReason,
   HealthBand,
@@ -50,6 +55,8 @@ import type {
 
 const DAY_MS = 86_400_000;
 const WINDOW_DAYS = 30;
+/** Seats a new org gets when the admin doesn't say. Low on purpose — raising seats is easy, refunding isn't. */
+const DEFAULT_SEATS = 10;
 // Platform-wide rollups change slowly; a short cache spares a full recompute on
 // every dashboard load. Mutations (create-org) clear it.
 const CACHE_TTL_MS = 30_000;
@@ -58,7 +65,12 @@ function startOfUtcDay(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
-const hours = (seconds: number | null | undefined) => Math.round((seconds ?? 0) / 3600);
+/**
+ * Seconds → hours, to one decimal. NOT whole hours: rounding 840s (14 min) to
+ * "0 h" reads as "did nothing", and any caller testing `hours > 0` would then
+ * silently drop that person.
+ */
+const hours = (seconds: number | null | undefined) => Math.round(((seconds ?? 0) / 3600) * 10) / 10;
 const score = (value: number | null | undefined) => Math.round(value ?? 0);
 
 /**
@@ -75,6 +87,7 @@ export class AdminService {
     private readonly notifications: NotificationsReadPrismaService,
     private readonly broker: BrokerService,
     private readonly outbox: OutboxService,
+    private readonly settings: PlatformSettingsService,
   ) {}
 
   private readonly cache = new Map<string, { at: number; value: unknown }>();
@@ -154,7 +167,8 @@ export class AdminService {
     ]);
     const ids = orgs.map((o) => o.id);
 
-    const [memberCounts, employeeCounts, lastSessions, factAgg, subs] = await Promise.all([
+    // One batched query per fact, scoped to this page's orgIds — never N+1.
+    const [memberCounts, employeeCounts, lastSessions, factAgg, activeEmpRows, subs, plans, storageAgg] = await Promise.all([
       this.prisma.organizationMembership.groupBy({ by: ["orgId"], where: { orgId: { in: ids } }, _count: { _all: true } }),
       this.prisma.employee.groupBy({ by: ["orgId"], where: { orgId: { in: ids } }, _count: { _all: true } }),
       this.prisma.session.groupBy({ by: ["orgId"], where: { orgId: { in: ids } }, _max: { lastUsedAt: true } }),
@@ -164,19 +178,32 @@ export class AdminService {
         _sum: { activeSeconds: true },
         _avg: { productivityScore: true },
       }),
-      this.billing.subscription.findMany({ where: { orgId: { in: ids } }, select: { orgId: true, planId: true, status: true } }),
+      // Distinct employees with activity — groupBy can't COUNT(DISTINCT), so ask SQL.
+      this.analytics.$queryRaw<{ orgId: string; active_emp: bigint }[]>`
+        SELECT "orgId", count(DISTINCT "employeeId") AS active_emp
+        FROM "EmployeeDayFact" WHERE "day" >= ${since} GROUP BY "orgId"`,
+      this.billing.subscription.findMany({
+        where: { orgId: { in: ids } },
+        select: { orgId: true, planId: true, status: true, seats: true, currentPeriodEnd: true, trialEndsAt: true },
+      }),
+      this.billing.plan.findMany({ select: { id: true, name: true, storageLimitMb: true } }),
+      this.prisma.screenshotObject.groupBy({ by: ["orgId"], where: { orgId: { in: ids } }, _sum: { sizeBytes: true } }),
     ]);
 
     const members = new Map(memberCounts.map((m) => [m.orgId, m._count._all]));
     const employees = new Map(employeeCounts.map((e) => [e.orgId, e._count._all]));
     const lastActive = new Map(lastSessions.filter((s) => s.orgId).map((s) => [s.orgId!, s._max.lastUsedAt]));
     const facts = new Map(factAgg.map((f) => [f.orgId, f]));
+    const activeEmp = new Map(activeEmpRows.map((r) => [r.orgId, Number(r.active_emp)]));
     const subByOrg = new Map(subs.map((s) => [s.orgId, s]));
+    const planById = new Map(plans.map((p) => [p.id, p]));
+    const storageByOrg = new Map(storageAgg.map((s) => [s.orgId, s._sum.sizeBytes ? Number(s._sum.sizeBytes) : 0]));
 
     const items = orgs.map((o): AdminOrg => {
       const fact = facts.get(o.id);
       const last = lastActive.get(o.id) ?? null;
       const sub = subByOrg.get(o.id);
+      const plan = sub ? planById.get(sub.planId) : undefined;
       return {
         id: o.id,
         name: o.name,
@@ -184,12 +211,20 @@ export class AdminService {
         status: o.status,
         users: members.get(o.id) ?? 0,
         employees: employees.get(o.id) ?? 0,
+        activeUsers: activeEmp.get(o.id) ?? 0,
         avgProductivity: score(fact?._avg.productivityScore),
         activeHours: hours(fact?._sum.activeSeconds),
         createdAt: o.createdAt.toISOString(),
         lastActiveAt: last ? last.toISOString() : null,
         plan: sub?.planId ?? null,
+        planName: plan?.name ?? sub?.planId ?? null,
         subscriptionStatus: sub?.status ?? null,
+        seats: sub?.seats ?? null,
+        renewsAt: sub?.currentPeriodEnd ? sub.currentPeriodEnd.toISOString() : null,
+        // Only meaningful while trialing — a paying customer has no expiry.
+        trialEndsAt: sub?.status === "TRIALING" && sub.trialEndsAt ? sub.trialEndsAt.toISOString() : null,
+        storageUsedBytes: storageByOrg.get(o.id) ?? 0,
+        storageLimitBytes: plan?.storageLimitMb != null ? plan.storageLimitMb * 1024 * 1024 : null,
       };
     });
 
@@ -285,12 +320,23 @@ export class AdminService {
       status: org.status,
       users: memberCount,
       employees: employees.length,
+      // Count from raw SECONDS, matching the org list's COUNT(DISTINCT employeeId).
+      // Counting `activeHours > 0` instead would silently drop anyone under ~30
+      // minutes, because hours() rounds 840s to 0 — the list and this page then
+      // disagree about the same org.
+      activeUsers: factByEmployee.filter((f) => (f._sum.activeSeconds ?? 0) > 0).length,
       avgProductivity,
       activeHours: employeeRows.reduce((s, e) => s + e.activeHours, 0),
       createdAt: org.createdAt.toISOString(),
       lastActiveAt: lastSession._max.lastUsedAt ? lastSession._max.lastUsedAt.toISOString() : null,
       plan: subscription?.planId ?? null,
+      planName: subscription?.plan?.name ?? subscription?.planId ?? null,
       subscriptionStatus: subscription?.status ?? null,
+      seats: subscription?.seats ?? null,
+      renewsAt: subscription?.currentPeriodEnd ? subscription.currentPeriodEnd.toISOString() : null,
+      trialEndsAt: subscription?.status === "TRIALING" && subscription.trialEndsAt ? subscription.trialEndsAt.toISOString() : null,
+      storageUsedBytes: storageAgg._sum.sizeBytes ? Number(storageAgg._sum.sizeBytes) : 0,
+      storageLimitBytes: subscription?.plan?.storageLimitMb != null ? subscription.plan.storageLimitMb * 1024 * 1024 : null,
       region: org.region,
       timezone: org.timezone,
     };
@@ -326,6 +372,7 @@ export class AdminService {
     ownerLastName: string;
     planId: string;
     seats?: number;
+    attendancePolicy?: Record<string, unknown>;
   }) {
     const email = input.ownerEmail.toLowerCase();
     const [existing, plan] = await Promise.all([
@@ -339,11 +386,20 @@ export class AdminService {
       throw new BadRequestException("Unknown plan.");
     }
 
+    // Deliberately NOT plan.seatLimit: defaulting to the ceiling would bill a new
+    // Basic org for 50 seats ($400/mo) nobody asked for. Start small — seats are
+    // cheap to raise and awkward to refund. Capped so the default can't itself
+    // exceed a smaller plan.
+    const seats = input.seats ?? Math.min(DEFAULT_SEATS, plan.seatLimit ?? DEFAULT_SEATS);
+    // billing-service enforces this on plan CHANGE (plan-api.ts) but nothing
+    // enforced it on create — an org could be provisioned above its plan's limit.
+    if (plan.seatLimit != null && seats > plan.seatLimit) {
+      throw new BadRequestException(`${plan.name} allows at most ${plan.seatLimit} seats.`);
+    }
+
     const tempPassword = generateTempPassword();
     const passwordHash = await hashPassword(tempPassword);
     const slug = await this.uniqueSlug(input.orgName);
-
-    const seats = input.seats ?? 10;
 
     const org = await this.prisma.$transaction(async (tx) => {
       const created = await tx.organization.create({ data: { name: input.orgName, slug } });
@@ -369,6 +425,11 @@ export class AdminService {
         actorUserId: user.id,
         payload: { planId: plan.id, seats, billingEmail: email },
       });
+      // Attendance rules chosen at provisioning time. Omitted -> the org runs on
+      // schema defaults (single session, no re-entry) until the platform edits it.
+      if (input.attendancePolicy && Object.keys(input.attendancePolicy).length > 0) {
+        await tx.attendancePolicy.create({ data: { orgId: created.id, ...input.attendancePolicy } });
+      }
       return created;
     });
 
@@ -380,6 +441,61 @@ export class AdminService {
       owner: { email, tempPassword },
       plan: { id: plan.id, name: plan.name },
     };
+  }
+
+  /**
+   * Attendance rules for one org. Returns the stored row, or the schema defaults
+   * when the tenant has never been configured, so the console always has a
+   * complete object to edit rather than a half-empty form.
+   */
+  async getAttendancePolicy(orgId: string) {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { id: true, name: true } });
+    if (!org) throw new NotFoundException("Organization not found.");
+    const row = await this.prisma.attendancePolicy.findUnique({ where: { orgId } });
+    return {
+      orgId,
+      orgName: org.name,
+      configured: Boolean(row),
+      policy: row ?? {
+        allowMultipleSessions: false,
+        allowReEntry: false,
+        maxSessionsPerDay: 1,
+        maxBreaksPerDay: 0,
+        maxBreakMinutesPerDay: 0,
+        maxSingleBreakMinutes: 0,
+        paidBreakMinutesPerDay: 0,
+        allowCheckOutOnBreak: false,
+        graceMinutes: 10,
+        autoCheckOutAtShiftEnd: false,
+        autoCheckOutAfterMinutes: 120,
+        overtimeAfterMinutes: 0,
+        minHoursForPresent: 240,
+        workModel: "WFO",
+        allowedLocations: ["OFFICE", "HOME", "CLIENT_SITE", "REMOTE"],
+        requireLocation: false,
+        allowManualCorrection: true,
+      },
+    };
+  }
+
+  /** Create or update the org's attendance rules. */
+  async setAttendancePolicy(orgId: string, input: Record<string, unknown>) {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { id: true, name: true } });
+    if (!org) throw new NotFoundException("Organization not found.");
+
+    // Keep the two switches coherent: capping sessions at 1 means no re-entry,
+    // and allowing re-entry implies more than one session a day.
+    const data = { ...input } as Record<string, unknown>;
+    if (data.allowReEntry === true && data.allowMultipleSessions === undefined) data.allowMultipleSessions = true;
+    if (data.allowMultipleSessions === false && data.allowReEntry === undefined) data.allowReEntry = false;
+
+    const saved = await this.prisma.attendancePolicy.upsert({
+      where: { orgId },
+      create: { orgId, ...data },
+      update: data,
+    });
+    this.recordEvent("org.attendance_policy", orgId, `Attendance policy updated for "${org.name}"`);
+    return saved;
   }
 
   /** Edit an org's profile (name/region/timezone). Slug is immutable. */
@@ -543,6 +659,98 @@ export class AdminService {
     return { plans: planDist, revenue, trend, topCustomers };
   }
 
+  // ---- Org-level feature flags --------------------------------------------
+
+  /**
+   * Every feature for one org: the global default, this org's override (if any),
+   * and the effective result. The admin UI needs all three to explain WHY a
+   * feature is off — inherited, overridden, or killed globally.
+   */
+  async orgFeatures(orgId: string) {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { id: true, name: true } });
+    if (!org) throw new NotFoundException("Organization not found.");
+
+    const [{ featureFlags: globals }, overrides, resolved] = await Promise.all([
+      this.settings.getSettings(),
+      this.prisma.orgFeatureFlag.findMany({ where: { orgId }, select: { feature: true, enabled: true, reason: true, updatedAt: true } }),
+      this.settings.resolveFeatureFlags(orgId),
+    ]);
+    const overrideBy = new Map(overrides.map((o) => [o.feature, o]));
+
+    return {
+      orgId: org.id,
+      orgName: org.name,
+      features: this.settings.featureKeys().map((feature) => {
+        const o = overrideBy.get(feature);
+        const r = resolved[feature];
+        return {
+          feature,
+          globalEnabled: globals[feature] !== false,
+          override: o ? o.enabled : null, // null = inheriting the global
+          enabled: r?.enabled ?? false,
+          source: r?.source ?? "global", // global | org | kill_switch
+          reason: o?.reason ?? null,
+          updatedAt: o?.updatedAt.toISOString() ?? null,
+        };
+      }),
+    };
+  }
+
+  /** Set or clear one org's override. Emits a platform event so it lands in the audit trail. */
+  async setOrgFeature(orgId: string, input: { feature: string; enabled: boolean | null; reason?: string }) {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { id: true, name: true } });
+    if (!org) throw new NotFoundException("Organization not found.");
+    if (!this.settings.isKnownFeature(input.feature)) {
+      throw new BadRequestException(`Unknown feature "${input.feature}". Known: ${this.settings.featureKeys().join(", ")}.`);
+    }
+
+    await this.settings.setOrgFeature({ orgId, feature: input.feature, enabled: input.enabled, reason: input.reason });
+
+    const action = input.enabled === null ? "reset to the global default" : input.enabled ? "enabled" : "disabled";
+    await this.prisma.platformEvent.create({
+      data: {
+        type: input.enabled === null ? "feature.reset" : input.enabled ? "feature.enabled" : "feature.disabled",
+        orgId,
+        summary: `Feature "${input.feature}" ${action} for ${org.name}${input.reason ? ` — ${input.reason}` : ""}`,
+      },
+    });
+    this.cache.delete("customer-success"); // adoption counts shift with flags
+
+    return this.orgFeatures(orgId);
+  }
+
+  /** One feature across every org — answers "who has this turned on?". */
+  async featureMatrix(feature: string) {
+    if (!this.settings.isKnownFeature(feature)) {
+      throw new BadRequestException(`Unknown feature "${feature}".`);
+    }
+    const [{ featureFlags: globals }, orgs, overrides] = await Promise.all([
+      this.settings.getSettings(),
+      this.prisma.organization.findMany({ where: { status: { not: "DELETED" } }, select: { id: true, name: true, status: true }, orderBy: { name: "asc" } }),
+      this.prisma.orgFeatureFlag.findMany({ where: { feature }, select: { orgId: true, enabled: true, reason: true } }),
+    ]);
+    const globalEnabled = globals[feature] !== false;
+    const overrideBy = new Map(overrides.map((o) => [o.orgId, o]));
+
+    return {
+      feature,
+      globalEnabled,
+      organizations: orgs.map((o) => {
+        const ov = overrideBy.get(o.id);
+        const enabled = !globalEnabled ? false : (ov?.enabled ?? true);
+        return {
+          orgId: o.id,
+          orgName: o.name,
+          status: o.status,
+          override: ov ? ov.enabled : null,
+          enabled,
+          source: !globalEnabled ? "kill_switch" : ov ? "org" : "global",
+          reason: ov?.reason ?? null,
+        };
+      }),
+    };
+  }
+
   usage(): Promise<AdminUsage> {
     return this.cached("usage", () => this.computeUsage());
   }
@@ -552,13 +760,35 @@ export class AdminService {
   }
 
   /** Platform activity feed: org actions (identity-db) merged with billing events (billing-db). */
-  async activity(query: { page: number; pageSize: number }): Promise<AdminActivityFeed> {
+  /**
+   * The platform activity feed: org lifecycle + user changes (PlatformEvent,
+   * identity-db) merged with subscription/plan changes (BillingEvent, billing-db).
+   *
+   * Filters are applied in each DB before the merge, so paging stays correct —
+   * filtering after the merge would page over rows that were about to be dropped.
+   */
+  async activity(query: { page: number; pageSize: number; orgId?: string; type?: string; from?: string; to?: string }): Promise<AdminActivityFeed> {
     const take = query.page * query.pageSize; // enough from each source to cover the page after merge
+
+    const createdAt =
+      query.from || query.to
+        ? {
+            ...(query.from ? { gte: new Date(`${query.from}T00:00:00.000Z`) } : {}),
+            // `to` is inclusive of the whole day the admin picked.
+            ...(query.to ? { lt: new Date(new Date(`${query.to}T00:00:00.000Z`).getTime() + 86_400_000) } : {}),
+          }
+        : undefined;
+    const where = {
+      ...(query.orgId ? { orgId: query.orgId } : {}),
+      ...(query.type ? { type: query.type } : {}),
+      ...(createdAt ? { createdAt } : {}),
+    };
+
     const [orgEvents, billingEvents, orgTotal, billingTotal] = await Promise.all([
-      this.prisma.platformEvent.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, createdAt: true } }),
-      this.billing.billingEvent.findMany({ orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, createdAt: true } }),
-      this.prisma.platformEvent.count(),
-      this.billing.billingEvent.count(),
+      this.prisma.platformEvent.findMany({ where, orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, createdAt: true } }),
+      this.billing.billingEvent.findMany({ where, orderBy: { createdAt: "desc" }, take, select: { id: true, type: true, summary: true, orgId: true, createdAt: true } }),
+      this.prisma.platformEvent.count({ where }),
+      this.billing.billingEvent.count({ where }),
     ]);
 
     const orgIds = [...new Set([...orgEvents.map((e) => e.orgId), ...billingEvents.map((e) => e.orgId)].filter((x): x is string => Boolean(x)))];
@@ -572,6 +802,27 @@ export class AdminService {
 
     const start = (query.page - 1) * query.pageSize;
     return { items: merged.slice(start, start + query.pageSize), total: orgTotal + billingTotal, page: query.page, pageSize: query.pageSize };
+  }
+
+  /**
+   * Distinct event types + orgs present in the feed, for the filter dropdowns.
+   * Derived from the data rather than a hardcoded list, so a type can never be
+   * offered as a filter that would return nothing.
+   */
+  async activityFilters(): Promise<{ types: string[]; organizations: { id: string; name: string }[] }> {
+    const [orgTypes, billingTypes, orgIdRows] = await Promise.all([
+      this.prisma.platformEvent.findMany({ distinct: ["type"], select: { type: true } }),
+      this.billing.billingEvent.findMany({ distinct: ["type"], select: { type: true } }),
+      this.prisma.platformEvent.findMany({ distinct: ["orgId"], select: { orgId: true } }),
+    ]);
+    const types = [...new Set([...orgTypes, ...billingTypes].map((t) => t.type))].sort();
+    const ids = orgIdRows.map((r) => r.orgId).filter((x): x is string => Boolean(x));
+    const organizations = await this.prisma.organization.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    return { types, organizations };
   }
 
   /**
@@ -741,11 +992,123 @@ export class AdminService {
     return { usedBytes: Number(agg._sum.sizeBytes ?? 0n), objects: agg._count._all, orgs: orgRows.length, limitBytes };
   }
 
+  growth(): Promise<AdminGrowth> {
+    return this.cached("growth", () => this.computeGrowth());
+  }
+
+  /**
+   * Platform growth — the SaaS business, not the tenants' workforce. Answers
+   * "are we adding customers, are they using what they bought, and what is it
+   * costing us to store?".
+   *
+   * Everything is aggregated in SQL by month; nothing is loaded row-by-row.
+   */
+  private async computeGrowth(): Promise<AdminGrowth> {
+    const since = new Date();
+    since.setUTCMonth(since.getUTCMonth() - 11);
+    since.setUTCDate(1);
+    since.setUTCHours(0, 0, 0, 0);
+
+    const [orgRows, userRows, storageRows, subs, plans, totalOrgs, totalUsers, priorOrgs, priorUsers, priorStorage] = await Promise.all([
+      this.prisma.$queryRaw<{ m: Date; n: bigint }[]>`
+        SELECT date_trunc('month', "createdAt") AS m, count(*) AS n
+        FROM "Organization" WHERE status <> 'DELETED' AND "createdAt" >= ${since} GROUP BY 1`,
+      this.prisma.$queryRaw<{ m: Date; n: bigint }[]>`
+        SELECT date_trunc('month', "createdAt") AS m, count(*) AS n
+        FROM "User" WHERE "createdAt" >= ${since} GROUP BY 1`,
+      this.prisma.$queryRaw<{ m: Date; b: bigint }[]>`
+        SELECT date_trunc('month', "createdAt") AS m, COALESCE(sum("sizeBytes"), 0)::bigint AS b
+        FROM "ScreenshotObject" WHERE "createdAt" >= ${since} GROUP BY 1`,
+      this.billing.subscription.groupBy({ by: ["planId"], _sum: { seats: true, activeSeats: true }, _count: { _all: true } }),
+      this.billing.plan.findMany({ select: { id: true, name: true, sortOrder: true }, orderBy: { sortOrder: "asc" } }),
+      this.prisma.organization.count({ where: { status: { not: "DELETED" } } }),
+      this.prisma.user.count(),
+      // Counts BEFORE the window, so the first month's running total starts correctly.
+      this.prisma.organization.count({ where: { status: { not: "DELETED" }, createdAt: { lt: since } } }),
+      this.prisma.user.count({ where: { createdAt: { lt: since } } }),
+      this.prisma.screenshotObject.aggregate({ where: { createdAt: { lt: since } }, _sum: { sizeBytes: true } }),
+    ]);
+
+    const key = (d: Date) => d.toISOString().slice(0, 7);
+    const orgsBy = new Map(orgRows.map((r) => [key(r.m), Number(r.n)]));
+    const usersBy = new Map(userRows.map((r) => [key(r.m), Number(r.n)]));
+    const storageBy = new Map(storageRows.map((r) => [key(r.m), Number(r.b)]));
+
+    let runOrgs = priorOrgs;
+    let runUsers = priorUsers;
+    let runBytes = priorStorage._sum.sizeBytes ? Number(priorStorage._sum.sizeBytes) : 0;
+    const growth: AdminGrowthPoint[] = [];
+    const storage: AdminStoragePoint[] = [];
+    for (let i = 11; i >= 0; i -= 1) {
+      const d = new Date();
+      d.setUTCMonth(d.getUTCMonth() - i);
+      const k = key(d);
+      const label = d.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
+      const newOrgs = orgsBy.get(k) ?? 0;
+      const newUsers = usersBy.get(k) ?? 0;
+      const addedBytes = storageBy.get(k) ?? 0;
+      runOrgs += newOrgs;
+      runUsers += newUsers;
+      runBytes += addedBytes;
+      growth.push({ month: label, orgs: newOrgs, users: newUsers, totalOrgs: runOrgs, totalUsers: runUsers });
+      storage.push({ month: label, addedBytes, totalBytes: runBytes });
+    }
+
+    const planName = new Map(plans.map((p) => [p.id, p.name]));
+    const seats: AdminSeatPoint[] = subs
+      .map((s) => ({
+        planName: planName.get(s.planId) ?? s.planId,
+        seatsSold: s._sum.seats ?? 0,
+        seatsUsed: s._sum.activeSeats ?? 0,
+        orgs: s._count._all,
+      }))
+      .sort((a, b) => b.seatsSold - a.seatsSold);
+
+    const last = growth.at(-1);
+    const prev = growth.at(-2);
+    const orgGrowthPct = prev && prev.orgs > 0 ? Math.round((((last?.orgs ?? 0) - prev.orgs) / prev.orgs) * 100) : null;
+
+    // Biggest tenants by real usage — the one thing worth keeping from the old page.
+    const topOrgList = await this.computeOrganizations({ page: 1, pageSize: 8 });
+    const topOrgs = topOrgList.items
+      .map((o) => ({ id: o.id, name: o.name, users: o.users, activeUsers: o.activeUsers, seats: o.seats }))
+      .sort((a, b) => b.activeUsers - a.activeUsers || b.users - a.users);
+
+    return {
+      totals: {
+        orgs: totalOrgs,
+        users: totalUsers,
+        newOrgsThisMonth: last?.orgs ?? 0,
+        newUsersThisMonth: last?.users ?? 0,
+        orgGrowthPct,
+        seatsSold: seats.reduce((s, p) => s + p.seatsSold, 0),
+        seatsUsed: seats.reduce((s, p) => s + p.seatsUsed, 0),
+        storageBytes: runBytes,
+      },
+      growth,
+      storage,
+      seats,
+      topOrgs,
+    };
+  }
+
   usageAnalytics(): Promise<AdminUsageAnalytics> {
     return this.cached("usage-analytics", () => this.computeUsageAnalytics());
   }
 
-  /** Product usage: DAU/WAU/MAU + login trend (sessions) + feature adoption. */
+  /**
+   * Product usage: DAU/WAU/MAU + daily active users + feature adoption.
+   *
+   * Sessions are the source, but a Session row is NOT a login. The desktop agent
+   * mints one every 15 minutes when its access token expires, and (since the
+   * silent-refresh fix) so does the web middleware. Counting rows produced "59
+   * logins from 3 users" — a number nobody could act on.
+   *
+   * So: count only sessions from a real browser (a Mozilla-style user-agent, as
+   * every browser sends), and report DISTINCT USERS per day rather than rows.
+   * Machine sessions still count toward DAU/WAU/MAU — an agent running means that
+   * tenant is genuinely using the product.
+   */
   private async computeUsageAnalytics(): Promise<AdminUsageAnalytics> {
     const now = Date.now();
     const startToday = startOfUtcDay();
@@ -757,27 +1120,53 @@ export class AdminService {
       return rows.length;
     };
 
-    const [dau, wau, mau, loginsToday, trendRows, featureUsage] = await Promise.all([
+    // Browsers all send "Mozilla/5.0 (…)"; the agent sends "node", our own
+    // middleware "Next.js Middleware". Matching the browser is more robust than
+    // blacklisting every machine client we might add later.
+    const HUMAN_UA = "Mozilla/%";
+    // The desktop agent runs on Node and identifies itself as "node".
+    const AGENT_UA = "node%";
+
+    const [dau, wau, mau, signInsToday, trendRows, agentTrendRows, featureUsage] = await Promise.all([
       distinctActive(DAY_MS),
       distinctActive(7 * DAY_MS),
       distinctActive(30 * DAY_MS),
-      this.prisma.session.count({ where: { createdAt: { gte: startToday } } }),
+      this.prisma.session.count({ where: { createdAt: { gte: startToday }, userAgent: { startsWith: "Mozilla/" } } }),
       this.prisma.$queryRaw<{ d: Date; logins: bigint; users: bigint }[]>`
         SELECT date_trunc('day', "createdAt") AS d, count(*) AS logins, count(DISTINCT "userId") AS users
-        FROM "Session" WHERE "createdAt" >= ${since30} GROUP BY 1 ORDER BY 1`,
+        FROM "Session"
+        WHERE "createdAt" >= ${since30} AND "userAgent" LIKE ${HUMAN_UA}
+        GROUP BY 1 ORDER BY 1`,
+      // Desktop agent, reported as DISTINCT USERS for the same reason as browsers:
+      // it re-authenticates every ~15 minutes, so session rows are meaningless.
+      // Matched explicitly (the agent sends "node") rather than "not a browser",
+      // which would sweep in curl, our own middleware, and any future tooling.
+      this.prisma.$queryRaw<{ d: Date; users: bigint }[]>`
+        SELECT date_trunc('day', "createdAt") AS d, count(DISTINCT "userId") AS users
+        FROM "Session"
+        WHERE "createdAt" >= ${since30} AND "userAgent" LIKE ${AGENT_UA}
+        GROUP BY 1 ORDER BY 1`,
       this.computeFeatureUsage(),
     ]);
 
     const byDay = new Map<string, { logins: number; users: number }>();
     for (const r of trendRows) byDay.set(r.d.toISOString().slice(0, 10), { logins: Number(r.logins), users: Number(r.users) });
+    const agentByDay = new Map<string, number>();
+    for (const r of agentTrendRows) agentByDay.set(r.d.toISOString().slice(0, 10), Number(r.users));
+
     const loginTrend: AdminLoginPoint[] = [];
     for (let i = 29; i >= 0; i -= 1) {
       const key = new Date(now - i * DAY_MS).toISOString().slice(0, 10);
       const hit = byDay.get(key);
-      loginTrend.push({ date: key, logins: hit?.logins ?? 0, users: hit?.users ?? 0 });
+      loginTrend.push({
+        date: key,
+        logins: hit?.logins ?? 0,
+        users: hit?.users ?? 0,
+        agentUsers: agentByDay.get(key) ?? 0,
+      });
     }
 
-    return { dau, wau, mau, loginsToday, loginTrend, featureUsage };
+    return { dau, wau, mau, loginsToday: signInsToday, loginTrend, featureUsage };
   }
 
   private async computeFeatureUsage(): Promise<AdminFeatureUsage[]> {
@@ -904,9 +1293,16 @@ export class AdminService {
       for (const used of [fTm.has(o.id), fAtt.has(o.id), fSs.has(o.id), fPr.has(o.id), fTk.has(o.id)]) if (used) featuresUsed += 1;
       const adoption = clamp((featuresUsed / 5) * 100);
       const frequency = clamp(0.5 * recencyScore(daysSinceActive) + 0.5 * (activeDays / WINDOW_DAYS) * 100);
+      // How much of what they bought they actually use — a commercial signal.
       const seatUtil = seats > 0 ? (activeEmployees / seats) * 100 : 0;
-      const utilization = clamp(0.5 * Math.min(100, seatUtil) + 0.5 * avgProductivity);
-      const healthScore = clamp(0.35 * frequency + 0.35 * utilization + 0.3 * adoption);
+      const seatUsage = clamp(Math.min(100, seatUtil));
+
+      // Health deliberately EXCLUDES avgProductivity. That measures how hard the
+      // customer's employees work — their metric, not a signal about the health
+      // of our account with them. Blending it in also meant any org whose agent
+      // isn't running (or whose scoring is broken) looked at-risk when it wasn't.
+      // avgProductivity is still returned below, as its own column.
+      const healthScore = clamp(0.4 * frequency + 0.35 * seatUsage + 0.25 * adoption);
       const band: HealthBand = healthScore >= 70 ? "healthy" : healthScore >= 40 ? "attention" : "at_risk";
 
       const renewsInDays = sub ? Math.ceil((sub.currentPeriodEnd.getTime() - now) / DAY_MS) : null;
@@ -926,10 +1322,11 @@ export class AdminService {
         status: o.status,
         adoption,
         frequency,
-        utilization,
+        seatUsage,
         healthScore,
         band,
         featuresUsed,
+        activeDays,
         seats,
         activeEmployees,
         activeHours,

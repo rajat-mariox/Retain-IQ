@@ -8,6 +8,8 @@ import { StatTile } from "@/components/ui/StatTile";
 import { StatusBadge } from "@/components/ui/badges";
 import { OrgActions } from "@/components/orgs/OrgActions";
 import { EditSubscriptionButton } from "@/components/orgs/EditSubscriptionButton";
+import { OrgFeatureFlags, type OrgFeature } from "@/components/orgs/OrgFeatureFlags";
+import { OrgAttendancePolicy, type AttendancePolicy } from "@/components/orgs/OrgAttendancePolicy";
 import { PaginatedTable } from "@/components/ui/Pagination";
 import { adminFetch } from "@/lib/admin-api";
 import { getPlans } from "@/lib/plans-api";
@@ -102,6 +104,9 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
     notFound();
   }
   const plans = await getPlans().catch(() => []);
+  // Feature access is non-critical to the page — degrade to hiding the panel.
+  const features = await adminFetch<{ features: OrgFeature[] }>(`organizations/${id}/features`).catch(() => null);
+  const attendancePolicy = await adminFetch<{ configured: boolean; policy: AttendancePolicy }>(`organizations/${id}/attendance-policy`).catch(() => null);
   const { org, subscription, storage, employees, attendanceToday } = data;
   const att = attendanceToday;
 
@@ -273,6 +278,12 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
             ))}
           />
         </Card>
+
+        {features ? <OrgFeatureFlags orgId={org.id} orgName={org.name} initial={features.features} /> : null}
+
+        {attendancePolicy ? (
+          <OrgAttendancePolicy orgId={org.id} orgName={org.name} configured={attendancePolicy.configured} initial={attendancePolicy.policy} />
+        ) : null}
       </PageBody>
     </>
   );

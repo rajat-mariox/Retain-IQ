@@ -7,9 +7,13 @@ import {
   platformLoginSchema,
   platformLogoutSchema,
   platformRefreshSchema,
+  platformResetPasswordSchema,
+  platformForgotPasswordSchema,
   type PlatformLoginInput,
   type PlatformLogoutInput,
   type PlatformRefreshInput,
+  type PlatformForgotPasswordInput,
+  type PlatformResetPasswordInput,
 } from "./dto.js";
 
 @Controller("platform/auth")
@@ -34,6 +38,21 @@ export class PlatformAdminController {
   @HttpCode(204)
   async logout(@Body(new ZodValidationPipe(platformLogoutSchema)) body: PlatformLogoutInput) {
     await this.service.logout(body.refreshToken);
+  }
+
+  @Post("forgot-password")
+  @HttpCode(200)
+  @UseGuards(ThrottlerGuard)
+  async forgotPassword(@Body(new ZodValidationPipe(platformForgotPasswordSchema)) body: PlatformForgotPasswordInput) {
+    return this.service.requestPasswordReset(body);
+  }
+
+  @Post("reset-password")
+  @HttpCode(200)
+  @UseGuards(ThrottlerGuard)
+  async resetPassword(@Body(new ZodValidationPipe(platformResetPasswordSchema)) body: PlatformResetPasswordInput) {
+    await this.service.resetPassword(body);
+    return { ok: true };
   }
 
   @Get("me")

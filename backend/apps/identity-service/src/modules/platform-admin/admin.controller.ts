@@ -6,6 +6,31 @@ import { AdminService } from "./admin.service.js";
 import { PlatformSettingsService } from "../../common/settings/platform-settings.service.js";
 import { PlatformAuthGuard } from "./platform-auth.guard.js";
 
+/** Attendance rules the platform sets per tenant. All fields optional on PATCH. */
+const attendancePolicySchema = z
+  .object({
+    allowMultipleSessions: z.boolean(),
+    allowReEntry: z.boolean(),
+    maxSessionsPerDay: z.coerce.number().int().min(1).max(20),
+    maxBreaksPerDay: z.coerce.number().int().min(0).max(50),
+    maxBreakMinutesPerDay: z.coerce.number().int().min(0).max(1440),
+    maxSingleBreakMinutes: z.coerce.number().int().min(0).max(1440),
+    paidBreakMinutesPerDay: z.coerce.number().int().min(0).max(1440),
+    allowCheckOutOnBreak: z.boolean(),
+    graceMinutes: z.coerce.number().int().min(0).max(240),
+    autoCheckOutAtShiftEnd: z.boolean(),
+    autoCheckOutAfterMinutes: z.coerce.number().int().min(0).max(1440),
+    overtimeAfterMinutes: z.coerce.number().int().min(0).max(1440),
+    minHoursForPresent: z.coerce.number().int().min(0).max(1440),
+    workModel: z.enum(["WFO", "WFH", "HYBRID"]),
+    allowedLocations: z.array(z.enum(["OFFICE", "HOME", "CLIENT_SITE", "REMOTE"])).min(1),
+    requireLocation: z.boolean(),
+    allowManualCorrection: z.boolean(),
+  })
+  .partial()
+  .refine((v) => Object.keys(v).length > 0, { message: "Provide at least one field." });
+type AttendancePolicyInput = z.infer<typeof attendancePolicySchema>;
+
 const createOrgSchema = z.object({
   orgName: z.string().min(2).max(120),
   ownerEmail: z.string().email(),
@@ -13,6 +38,8 @@ const createOrgSchema = z.object({
   ownerLastName: z.string().min(1).max(80),
   planId: z.string().min(1).max(40),
   seats: z.coerce.number().int().min(1).max(100000).optional(),
+  /** Attendance rules chosen while creating the tenant. */
+  attendancePolicy: attendancePolicySchema.optional(),
 });
 type CreateOrgInput = z.infer<typeof createOrgSchema>;
 
@@ -61,6 +88,23 @@ const auditQuerySchema = offsetPaginationQuerySchema.extend({
   category: z.enum(["all", "login", "subscription", "plan", "organization"]).default("all"),
 });
 type AuditQuery = z.infer<typeof auditQuerySchema>;
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const activityQuerySchema = offsetPaginationQuerySchema.extend({
+  orgId: z.string().uuid().optional(),
+  type: z.string().max(60).optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
+});
+type ActivityQuery = z.infer<typeof activityQuerySchema>;
+
+// `enabled: null` clears the override so the org inherits the global flag again.
+const setOrgFeatureSchema = z.object({
+  feature: z.string().min(1).max(60),
+  enabled: z.boolean().nullable(),
+  reason: z.string().max(300).optional(),
+});
+type SetOrgFeatureInput = z.infer<typeof setOrgFeatureSchema>;
 
 /** Cross-org reporting reads for the super-admin dashboard. Platform-guarded. */
 @Controller("platform/admin")
@@ -114,6 +158,55 @@ export class AdminController {
     return this.admin.setOrganizationStatus(id, "DELETED");
   }
 
+  // ---- Org attendance policy (platform-owned) ----
+
+  /**
+   * Attendance rules for one org. Owned here rather than by the org owner: the
+   * platform decides whether a tenant may run multiple sessions, re-enter after
+   * check-out, and so on. Set at creation, editable at any time.
+   */
+  @Get("organizations/:id/attendance-policy")
+  orgAttendancePolicy(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.admin.getAttendancePolicy(id);
+  }
+
+  @Patch("organizations/:id/attendance-policy")
+  setOrgAttendancePolicy(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body(new ZodValidationPipe(attendancePolicySchema)) body: AttendancePolicyInput,
+  ) {
+    return this.admin.setAttendancePolicy(id, body);
+  }
+
+  // ---- Org-level feature flags ----
+
+  /** Every feature resolved for this org: global default, override, effective state. */
+  @Get("organizations/:id/features")
+  orgFeatures(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.admin.orgFeatures(id);
+  }
+
+  /** Enable/disable a feature for one org, or pass enabled:null to inherit global. */
+  @Patch("organizations/:id/features")
+  setOrgFeature(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body(new ZodValidationPipe(setOrgFeatureSchema)) body: SetOrgFeatureInput,
+  ) {
+    return this.admin.setOrgFeature(id, body);
+  }
+
+  /** One feature across every org — the "who has AI Assistant?" view. */
+  @Get("features/:feature/organizations")
+  featureMatrix(@Param("feature") feature: string) {
+    return this.admin.featureMatrix(feature);
+  }
+
+  /** Platform growth: orgs/users over time, seat utilization, storage cost curve. */
+  @Get("growth")
+  growth() {
+    return this.admin.growth();
+  }
+
   @Get("usage")
   usage() {
     return this.admin.usage();
@@ -130,8 +223,14 @@ export class AdminController {
   }
 
   @Get("activity")
-  activity(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery) {
+  activity(@Query(new ZodValidationPipe(activityQuerySchema)) query: ActivityQuery) {
     return this.admin.activity(query);
+  }
+
+  /** Distinct types + orgs present in the feed — populates the filter dropdowns. */
+  @Get("activity/filters")
+  activityFilters() {
+    return this.admin.activityFilters();
   }
 
   @Get("audit")

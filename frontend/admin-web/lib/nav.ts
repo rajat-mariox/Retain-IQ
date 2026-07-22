@@ -1,4 +1,4 @@
-import { Activity, Bell, Building2, CreditCard, DollarSign, HeartHandshake, HeartPulse, LayoutDashboard, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { Bell, Building2, CreditCard, DollarSign, HeartHandshake, HeartPulse, LayoutDashboard, ScrollText, Settings, TrendingUp, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   label: string;
@@ -10,7 +10,8 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Overview", href: "/", icon: LayoutDashboard },
   { label: "Organizations", href: "/organizations", icon: Building2 },
-  { label: "Usage & Analytics", href: "/usage", icon: Activity },
+  // Route stays /usage — renaming it would break bookmarks for no gain.
+  { label: "Platform Growth", href: "/usage", icon: TrendingUp },
   { label: "Customer Success", href: "/customer-success", icon: HeartHandshake, flag: "customerSuccess" },
   { label: "Subscriptions", href: "/subscriptions", icon: CreditCard },
   { label: "Revenue", href: "/revenue", icon: DollarSign },

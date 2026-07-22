@@ -35,14 +35,16 @@ export default async function HealthPage() {
     getUsageAnalytics().catch(() => null),
   ]);
   const now = Date.now();
-  const maxLogins = Math.max(1, ...(usage?.loginTrend.map((p) => p.logins) ?? [0]));
+  // Bars stack browser + agent, so the scale is the tallest combined day.
+  const maxUsers = Math.max(1, ...(usage?.loginTrend.map((p) => p.users + p.agentUsers) ?? [0]));
+  const activeDays = usage?.loginTrend.filter((p) => p.users + p.agentUsers > 0).length ?? 0;
   const maxFeature = Math.max(1, ...(usage?.featureUsage.map((f) => f.orgs) ?? [0]));
   const storagePct =
     health && health.storage.limitBytes ? Math.min(100, (health.storage.usedBytes / health.storage.limitBytes) * 100) : null;
 
   return (
     <>
-      <Topbar title="Platform Health" subtitle="System metrics & product usage analytics · live" />
+      <Topbar title="Platform Health" subtitle="System metrics & platform engagement · live" />
       <PageBody>
         {/* ---- SYSTEM METRICS ---- */}
         <div className="flex items-center justify-between gap-3">
@@ -145,37 +147,64 @@ export default async function HealthPage() {
           </Card>
         ) : null}
 
-        {/* ---- USAGE ANALYTICS ---- */}
-        <h2 className="pt-2 text-sm font-semibold text-slate-700">Usage analytics</h2>
+        {/* ---- PLATFORM ENGAGEMENT ----
+             How much the tenants use RetainIQ itself (sessions in identity-db).
+             Distinct from Workforce Analytics (/usage), which measures how much
+             their EMPLOYEES work (EmployeeDayFact in analytics-db). Both are
+             "usage"; only this one is a liveness signal for the platform. */}
+        <div className="pt-2">
+          <h2 className="text-sm font-semibold text-slate-700">Platform engagement</h2>
+          <p className="mt-0.5 text-xs text-slate-400">How much organizations use RetainIQ — not how much their employees work</p>
+        </div>
         {!usage ? (
-          <Card><p className="px-5 py-8 text-center text-sm text-slate-500">Usage analytics are unavailable.</p></Card>
+          <Card><p className="px-5 py-8 text-center text-sm text-slate-500">Engagement metrics are unavailable.</p></Card>
         ) : (
           <>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <StatTile label="Daily active users" value={formatCompact(usage.dau)} icon={Users} accent="#166534" hint="last 24 hours" />
               <StatTile label="Weekly active users" value={formatCompact(usage.wau)} icon={Users} accent="#1f883d" hint="last 7 days" />
               <StatTile label="Monthly active users" value={formatCompact(usage.mau)} icon={Users} accent="#0d9488" hint="last 30 days" />
-              <StatTile label="Logins today" value={formatCompact(usage.loginsToday)} icon={Activity} accent="#16a34a" hint="new sessions" />
+              <StatTile label="Signed in today" value={formatCompact(usage.loginsToday)} icon={Activity} accent="#16a34a" hint="from a browser" />
             </div>
 
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-              {/* Login trends */}
+              {/* Daily sign-ins — people, not sessions. A token refresh mints a
+                  session too, so bars track DISTINCT USERS instead of rows. */}
               <Card>
-                <CardHeader title="Login trends" subtitle="Sessions created per day · 30 days" />
+                <CardHeader title="Who signs in" subtitle="People per day · browser & desktop agent · 30 days" />
                 <CardBody>
                   <div className="flex h-44 items-end gap-1">
-                    {usage.loginTrend.map((p) => (
-                      <div key={p.date} className="group relative flex-1" title={`${p.date}: ${p.logins} logins, ${p.users} users`}>
+                    {usage.loginTrend.map((p) => {
+                      const total = p.users + p.agentUsers;
+                      const parts = [
+                        p.users > 0 ? `${p.users} from a browser` : null,
+                        p.agentUsers > 0 ? `${p.agentUsers} via the desktop agent` : null,
+                      ].filter(Boolean);
+                      return (
                         <div
-                          className="w-full rounded-t bg-brand/80 transition-colors group-hover:bg-brand"
-                          style={{ height: `${Math.max(2, (p.logins / maxLogins) * 100)}%` }}
-                        />
-                      </div>
-                    ))}
+                          key={p.date}
+                          className="group relative flex h-full flex-1 flex-col justify-end"
+                          title={total === 0 ? `${p.date}: nobody signed in` : `${p.date}: ${parts.join(" · ")}`}
+                        >
+                          {/* Browser sits on top of agent so the human signal reads first. */}
+                          <div className="w-full rounded-t bg-brand/80 transition-colors group-hover:bg-brand" style={{ height: `${(p.users / maxUsers) * 100}%` }} />
+                          <div className="w-full bg-sky-400/70 transition-colors group-hover:bg-sky-400" style={{ height: `${(p.agentUsers / maxUsers) * 100}%` }} />
+                          {/* A day with nobody still gets a visible floor, so "zero"
+                              reads as measured rather than missing. */}
+                          {total === 0 ? <div className="h-0.75 w-full rounded-sm bg-slate-200" /> : null}
+                        </div>
+                      );
+                    })}
                   </div>
                   <div className="mt-2 flex justify-between text-[11px] text-slate-400">
                     <span>{usage.loginTrend.at(0)?.date.slice(5)}</span>
                     <span>{usage.loginTrend.at(-1)?.date.slice(5)}</span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                    <span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-sm bg-brand/80" /> Browser</span>
+                    <span className="inline-flex items-center gap-1.5"><span className="size-2 rounded-sm bg-sky-400/70" /> Desktop agent</span>
+                    <span className="inline-flex items-center gap-1.5"><span className="h-0.75 w-2 rounded-sm bg-slate-200" /> No sign-ins</span>
+                    <span className="ml-auto">{activeDays} of 30 days had activity</span>
                   </div>
                 </CardBody>
               </Card>

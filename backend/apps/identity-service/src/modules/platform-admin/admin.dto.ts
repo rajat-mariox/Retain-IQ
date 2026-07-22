@@ -19,14 +19,29 @@ export interface AdminOrg {
   name: string;
   slug: string;
   status: string;
+  /** People with a login (memberships). */
   users: number;
+  /** HR records — not everyone here can necessarily sign in. */
   employees: number;
+  /** Employees with tracked activity in the last 30 days — the real usage number. */
+  activeUsers: number;
   avgProductivity: number;
   activeHours: number;
   createdAt: string;
   lastActiveAt: string | null;
   plan: string | null;
+  /** Human-readable plan name ("Basic"), vs `plan` which is the id ("basic"). */
+  planName: string | null;
   subscriptionStatus: string | null;
+  /** Seats bought vs seats in use — the upsell/churn signal. */
+  seats: number | null;
+  /** End of the current paid period. */
+  renewsAt: string | null;
+  /** When the trial lapses; null once they're a paying customer. */
+  trialEndsAt: string | null;
+  /** Screenshot bytes stored, and the plan's cap (null = unlimited). */
+  storageUsedBytes: number;
+  storageLimitBytes: number | null;
   region?: string;
   timezone?: string;
 }
@@ -171,6 +186,50 @@ export interface AdminSubscriptionsView {
   failed: AdminFailedPaymentRow[];
 }
 
+// ---- Platform growth (replaces the tenant-facing workforce analytics) ----
+
+export interface AdminGrowthPoint {
+  month: string; // "Jan 26"
+  /** New in that month. */
+  orgs: number;
+  users: number;
+  /** Running total at the end of that month — the actual growth curve. */
+  totalOrgs: number;
+  totalUsers: number;
+}
+
+export interface AdminStoragePoint {
+  month: string;
+  /** Bytes added that month, and the running total. */
+  addedBytes: number;
+  totalBytes: number;
+}
+
+export interface AdminSeatPoint {
+  planName: string;
+  seatsSold: number;
+  seatsUsed: number;
+  orgs: number;
+}
+
+export interface AdminGrowth {
+  totals: {
+    orgs: number;
+    users: number;
+    newOrgsThisMonth: number;
+    newUsersThisMonth: number;
+    /** Percent change in new orgs vs the previous month; null when there's no prior month. */
+    orgGrowthPct: number | null;
+    seatsSold: number;
+    seatsUsed: number;
+    storageBytes: number;
+  };
+  growth: AdminGrowthPoint[]; // last 12 months
+  storage: AdminStoragePoint[]; // last 12 months
+  seats: AdminSeatPoint[]; // by plan
+  topOrgs: { id: string; name: string; users: number; activeUsers: number; seats: number | null }[];
+}
+
 export interface AdminActivityItem {
   id: string;
   source: "org" | "billing";
@@ -227,10 +286,23 @@ export interface AdminSystemHealth {
   checkedAt: string;
 }
 
+/**
+ * One day of sign-in activity, split by where people signed in from. Browser and
+ * desktop-agent are reported separately: the agent re-authenticates on a timer,
+ * so mixing them would drown the human signal (that's why `*Users` is the honest
+ * number — distinct people, not session rows).
+ */
 export interface AdminLoginPoint {
   date: string; // YYYY-MM-DD
-  logins: number; // sessions created that day
-  users: number; // distinct users who logged in
+  /**
+   * Browser sessions created that day. Secondary: a token refresh also mints a
+   * session, so this over-counts real sign-ins. Prefer `users`.
+   */
+  logins: number;
+  /** Distinct people who signed in from a browser that day — the honest signal. */
+  users: number;
+  /** Distinct people whose desktop agent authenticated that day. */
+  agentUsers: number;
 }
 
 export interface AdminFeatureUsage {
@@ -240,9 +312,15 @@ export interface AdminFeatureUsage {
 }
 
 export interface AdminUsageAnalytics {
-  dau: number; // distinct users active in last 24h
+  /**
+   * Distinct users with a live session in the window. Counts machine sessions
+   * too (a running agent means the tenant IS using the product), so this is
+   * broader than the browser-only sign-in trend below.
+   */
+  dau: number; // last 24h
   wau: number; // last 7 days
   mau: number; // last 30 days
+  /** Browser sign-ins today — machine sessions excluded. */
   loginsToday: number;
   loginTrend: AdminLoginPoint[]; // last 30 days
   featureUsage: AdminFeatureUsage[];
@@ -258,17 +336,23 @@ export interface AdminOrgHealth {
   name: string;
   plan: string | null;
   status: string;
-  // 0-100 sub-scores + weighted overall.
-  adoption: number; // breadth: features used / 5
-  frequency: number; // recency + active-days cadence
-  utilization: number; // seat usage + productivity
+  // 0-100 sub-scores + weighted overall (0.40 frequency / 0.35 seatUsage / 0.25 adoption).
+  adoption: number; // how many of the 5 product areas they've ever used
+  frequency: number; // how recently, and how many days, they showed up
+  seatUsage: number; // how much of the plan they bought is actually in use
   healthScore: number;
   band: HealthBand;
   // Supporting figures.
   featuresUsed: number; // 0-5
+  /** Days with any tracked activity in the 30-day window — the "how often" behind `frequency`. */
+  activeDays: number;
   seats: number;
   activeEmployees: number; // distinct employees with tracked activity (30d)
   activeHours: number;
+  /**
+   * The customer's own workforce productivity. Reported for context but NOT part
+   * of healthScore — see computeCustomerSuccess.
+   */
   avgProductivity: number;
   daysSinceActive: number | null; // null = never active
   renewsInDays: number | null;

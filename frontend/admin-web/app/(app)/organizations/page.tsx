@@ -11,6 +11,9 @@ import { formatCompact } from "@/lib/format";
 
 export default async function OrganizationsPage() {
   const [kpi, orgs, plans] = await Promise.all([getKpiSummary(), getOrganizations(), getPlanDistribution()]);
+  // Plan name/colour for the badges — live from billing, since an admin can
+  // rename or recolour a plan and the table must follow.
+  const planLookup = Object.fromEntries(plans.map((p) => [p.plan, { name: p.name, color: p.color }]));
 
   return (
     <>
@@ -26,7 +29,7 @@ export default async function OrganizationsPage() {
         <AddOrgForm plans={plans.map((p) => ({ id: p.plan, name: p.name }))} />
 
         <Card>
-          <OrgsTable organizations={orgs} now={Date.now()} />
+          <OrgsTable organizations={orgs} now={Date.now()} plans={planLookup} />
         </Card>
       </PageBody>
     </>

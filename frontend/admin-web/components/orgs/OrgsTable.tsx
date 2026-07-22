@@ -4,33 +4,37 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, ChevronRight, Search } from "lucide-react";
 import type { Organization } from "@/lib/data/types";
-import { PlanBadge, StatusBadge } from "@/components/ui/badges";
+import { PlanBadge, StatusBadge, type PlanLookup } from "@/components/ui/badges";
 import { PaginationBar } from "@/components/ui/Pagination";
 import { cn } from "@/lib/cn";
-import { formatCompact, formatNumber, timeAgo } from "@/lib/format";
+import { formatBytes, formatDate, formatNumber, timeAgo } from "@/lib/format";
 
 const PAGE_SIZE = 10;
 
-type SortKey = "name" | "users" | "employees" | "avgProductivity" | "activeHours" | "lastActiveAt";
+type SortKey = "name" | "users" | "activeUsers" | "seats" | "storageUsedBytes" | "renewsAt" | "lastActiveAt";
 
 interface OrgsTableProps {
   organizations: Organization[];
   /** Fixed "now" from the server so timeAgo is stable across hydration. */
   now: number;
+  /** Live plan name/colour by id — this is a client component, so the server page passes it in. */
+  plans?: PlanLookup;
 }
 
 const COLUMNS: { key: SortKey; label: string; align: "left" | "right" }[] = [
   { key: "name", label: "Organization", align: "left" },
   { key: "users", label: "Users", align: "right" },
-  { key: "employees", label: "Employees", align: "right" },
-  { key: "avgProductivity", label: "Productivity", align: "right" },
-  { key: "activeHours", label: "Active hrs (30d)", align: "right" },
+  { key: "activeUsers", label: "Active (30d)", align: "right" },
+  { key: "seats", label: "Seats", align: "right" },
+  { key: "storageUsedBytes", label: "Storage", align: "right" },
+  { key: "renewsAt", label: "Renews", align: "right" },
   { key: "lastActiveAt", label: "Last active", align: "right" },
 ];
 
-export function OrgsTable({ organizations, now }: OrgsTableProps) {
+export function OrgsTable({ organizations, now, plans }: OrgsTableProps) {
   const [query, setQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("activeHours");
+  // Biggest accounts first — the ones worth a Super Admin's attention.
+  const [sortKey, setSortKey] = useState<SortKey>("activeUsers");
   const [asc, setAsc] = useState(false);
   const [page, setPage] = useState(1);
 
@@ -130,21 +134,16 @@ export function OrgsTable({ organizations, now }: OrgsTableProps) {
                       <span className="block truncate font-medium text-slate-900 group-hover:text-brand">{o.name}</span>
                       <span className="mt-0.5 flex items-center gap-1.5">
                         <StatusBadge status={o.status} />
-                        {o.plan ? <PlanBadge plan={o.plan} /> : null}
+                        {o.plan ? <PlanBadge plan={o.plan} plans={plans} /> : null}
                       </span>
                     </div>
                   </Link>
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatNumber(o.users)}</td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatNumber(o.employees)}</td>
-                <td className="px-5 py-3 text-right">
-                  {o.avgProductivity > 0 ? (
-                    <ProductivityCell value={o.avgProductivity} />
-                  ) : (
-                    <span className="text-slate-400">—</span>
-                  )}
-                </td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatCompact(o.activeHours)}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-700">{formatNumber(o.activeUsers)}</td>
+                <td className="px-5 py-3 text-right"><SeatsCell active={o.activeUsers} seats={o.seats} /></td>
+                <td className="px-5 py-3 text-right"><StorageCell used={o.storageUsedBytes} limit={o.storageLimitBytes} /></td>
+                <td className="px-5 py-3 text-right"><RenewalCell org={o} now={now} /></td>
                 <td className="px-5 py-3 text-right text-xs text-slate-500">
                   {o.lastActiveAt ? timeAgo(o.lastActiveAt, now) : "—"}
                 </td>
@@ -174,14 +173,53 @@ export function OrgsTable({ organizations, now }: OrgsTableProps) {
   );
 }
 
-function ProductivityCell({ value }: { value: number }) {
-  const tone = value >= 80 ? "#16a34a" : value >= 65 ? "#d97706" : "#e5484d";
+/** Seats bought vs actually used — under-use is a churn signal, full is an upsell. */
+function SeatsCell({ active, seats }: { active: number; seats?: number | null }) {
+  if (!seats) return <span className="text-slate-400">—</span>;
+  const pct = Math.min(100, Math.round((active / seats) * 100));
+  const tone = pct >= 70 ? "#16a34a" : pct >= 30 ? "#d97706" : "#e5484d";
   return (
     <div className="inline-flex items-center justify-end gap-2">
-      <span className="h-1.5 w-16 overflow-hidden rounded-full bg-panel-2">
-        <span className="block h-full rounded-full" style={{ width: `${value}%`, backgroundColor: tone }} />
+      <span className="h-1.5 w-12 overflow-hidden rounded-full bg-panel-2">
+        <span className="block h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: tone }} />
       </span>
-      <span className="w-8 tabular-nums text-slate-700">{value}%</span>
+      <span className="tabular-nums text-slate-700">
+        {active}/{seats}
+      </span>
     </div>
+  );
+}
+
+/** Storage against the plan cap — the overage/upsell trigger. */
+function StorageCell({ used, limit }: { used?: number; limit?: number | null }) {
+  const bytes = used ?? 0;
+  if (!limit) return <span className="tabular-nums text-slate-700">{formatBytes(bytes)}</span>;
+  const pct = Math.min(100, Math.round((bytes / limit) * 100));
+  return (
+    <span className="inline-flex flex-col items-end">
+      <span className="tabular-nums text-slate-700">{formatBytes(bytes)}</span>
+      <span className={`text-[11px] tabular-nums ${pct >= 80 ? "text-rose-600" : "text-slate-400"}`}>{pct}% of quota</span>
+    </span>
+  );
+}
+
+/**
+ * When the money next moves. A trial shows its expiry instead — that's the date
+ * that actually matters for a prospect, and it's the one that turns them paying.
+ */
+function RenewalCell({ org, now }: { org: Organization; now: number }) {
+  const trial = org.subscriptionStatus === "TRIALING" && org.trialEndsAt;
+  const iso = trial ? org.trialEndsAt : org.renewsAt;
+  if (!iso) return <span className="text-slate-400">—</span>;
+  const days = Math.ceil((Date.parse(iso) - now) / 86_400_000);
+  const soon = days <= 7;
+  return (
+    <span className="inline-flex flex-col items-end">
+      <span className={`text-xs tabular-nums ${soon ? "font-medium text-amber-700" : "text-slate-600"}`}>{formatDate(iso)}</span>
+      <span className="text-[11px] text-slate-400">
+        {trial ? "trial ends " : ""}
+        {days < 0 ? "overdue" : days === 0 ? "today" : `in ${days}d`}
+      </span>
+    </span>
   );
 }

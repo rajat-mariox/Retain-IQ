@@ -73,25 +73,65 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
+  /** Per-field messages, keyed like the API's `path` so server errors map straight on. */
+  const [fields, setFields] = useState<Record<string, string>>({});
+
+  /** Setting a field clears its error — stale red is its own problem. */
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => {
+    setForm((f) => ({ ...f, [k]: v }));
+    if (fields[k as string]) setFields((prev) => ({ ...prev, [k as string]: "" }));
+  };
   const toggleFeature = (key: string) =>
     setForm((f) => ({ ...f, features: f.features.includes(key) ? f.features.filter((x) => x !== key) : [...f.features, key] }));
+
+  /** Catch what we can before a round-trip; the server still validates everything. */
+  function validate(isNew: boolean): Record<string, string> {
+    const f: Record<string, string> = {};
+    if (isNew) {
+      if (!form.id.trim()) f.id = "Plan id is required.";
+      // The id becomes part of URLs and billing records — keep it a safe slug.
+      else if (!/^[a-z0-9][a-z0-9_-]*$/.test(form.id.trim())) f.id = "Use lowercase letters, numbers, dashes or underscores.";
+    }
+    if (!form.name.trim()) f.name = "Name is required.";
+    const price = Number(form.priceDollars);
+    if (form.priceDollars.trim() === "") f.priceDollars = "Price is required — use 0 for a free plan.";
+    else if (!Number.isFinite(price) || price < 0) f.priceDollars = "Price must be 0 or more.";
+    if (form.seatLimit.trim() !== "" && (!Number.isInteger(Number(form.seatLimit)) || Number(form.seatLimit) < 1)) {
+      f.seatLimit = "Seat limit must be a whole number of 1 or more, or blank for unlimited.";
+    }
+    if (form.storageGb.trim() !== "" && (!Number.isFinite(Number(form.storageGb)) || Number(form.storageGb) < 0)) {
+      f.storageGb = "Storage must be 0 or more, or blank for unlimited.";
+    }
+    return f;
+  }
 
   function openCreate() {
     setForm(emptyForm());
     setError(null);
+    setFields({});
     setEditing("new");
   }
   function openEdit(p: AdminPlan) {
     setForm(planToForm(p));
     setError(null);
+    setFields({});
     setEditing(p.id);
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+
+    const found = validate(editing === "new");
+    if (Object.keys(found).length > 0) {
+      setFields(found);
+      const count = Object.keys(found).length;
+      setError(count === 1 ? Object.values(found)[0] : `Fix ${count} fields below to continue.`);
+      return;
+    }
+    setFields({});
+
+    setBusy(true);
     const payload = {
       name: form.name,
       description: form.description.trim() || undefined,
@@ -159,18 +199,28 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
       </div>
 
       <Modal open={editing !== null} onClose={() => setEditing(null)} title={editing === "new" ? "Create plan" : `Edit ${form.name}`} size="lg">
-        <form onSubmit={submit} className="space-y-4">
-          {error ? <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
+        <form onSubmit={submit} noValidate className="space-y-4">
+          <p className="text-xs text-slate-400">
+            Fields marked <span className="text-rose-600">*</span> are required.
+          </p>
+          {error ? (
+            <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
+              {error}
+            </p>
+          ) : null}
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {editing === "new" ? (
-              <Field label="Plan id" hint="lowercase, e.g. team">
-                <input value={form.id} onChange={(e) => set("id", e.target.value)} required className={inputCls} placeholder="team" />
+              <Field label="Plan id" hint="lowercase, e.g. team" required error={fields.id}>
+                <input value={form.id} onChange={(e) => set("id", e.target.value)} className={fields.id ? `${inputCls} border-rose-400` : inputCls} placeholder="team" />
               </Field>
             ) : (
-              <Field label="Plan id"><input value={form.id} disabled className={`${inputCls} opacity-60`} /></Field>
+              // The id is baked into subscriptions and URLs — it can't be changed after creation.
+              <Field label="Plan id" hint="can't be changed"><input value={form.id} disabled className={`${inputCls} opacity-60`} /></Field>
             )}
-            <Field label="Name"><input value={form.name} onChange={(e) => set("name", e.target.value)} required className={inputCls} /></Field>
+            <Field label="Name" required error={fields.name}>
+              <input value={form.name} onChange={(e) => set("name", e.target.value)} className={fields.name ? `${inputCls} border-rose-400` : inputCls} />
+            </Field>
           </div>
 
           <Field label="Description">
@@ -178,15 +228,21 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
           </Field>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Field label="Price / seat (USD)"><input type="number" min="0" step="0.01" value={form.priceDollars} onChange={(e) => set("priceDollars", e.target.value)} className={inputCls} /></Field>
+            <Field label="Price / seat (USD)" required error={fields.priceDollars}>
+              <input type="number" min="0" step="0.01" value={form.priceDollars} onChange={(e) => set("priceDollars", e.target.value)} className={fields.priceDollars ? `${inputCls} border-rose-400` : inputCls} />
+            </Field>
             <Field label="Billing period">
               <select value={form.billingPeriod} onChange={(e) => set("billingPeriod", e.target.value)} className={inputCls}>
                 <option value="monthly">Monthly</option>
                 <option value="yearly">Yearly</option>
               </select>
             </Field>
-            <Field label="Seat limit" hint="blank = ∞"><input type="number" min="1" value={form.seatLimit} onChange={(e) => set("seatLimit", e.target.value)} className={inputCls} placeholder="Unlimited" /></Field>
-            <Field label="Storage (GB)" hint="blank = ∞"><input type="number" min="0" value={form.storageGb} onChange={(e) => set("storageGb", e.target.value)} className={inputCls} placeholder="Unlimited" /></Field>
+            <Field label="Seat limit" hint="blank = ∞" error={fields.seatLimit}>
+              <input type="number" min="1" value={form.seatLimit} onChange={(e) => set("seatLimit", e.target.value)} className={fields.seatLimit ? `${inputCls} border-rose-400` : inputCls} placeholder="Unlimited" />
+            </Field>
+            <Field label="Storage (GB)" hint="blank = ∞" error={fields.storageGb}>
+              <input type="number" min="0" value={form.storageGb} onChange={(e) => set("storageGb", e.target.value)} className={fields.storageGb ? `${inputCls} border-rose-400` : inputCls} placeholder="Unlimited" />
+            </Field>
           </div>
 
           {/* Feature mapping */}
@@ -304,14 +360,37 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
 const inputCls =
   "w-full rounded-xl border border-hairline bg-panel-2/60 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand/30";
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+/**
+ * A labelled field. Required ones carry a visible asterisk — the HTML `required`
+ * attribute alone tells a sighted user nothing until they try to submit — and an
+ * error shows against the field rather than only in the banner.
+ */
+function Field({
+  label,
+  hint,
+  required,
+  error,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  required?: boolean;
+  error?: string;
+  children: React.ReactNode;
+}) {
   return (
     <label className="block">
       <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600">
         {label}
+        {required ? (
+          <span className="-ml-1 text-rose-600" aria-hidden="true">
+            *
+          </span>
+        ) : null}
         {hint ? <span className="text-slate-400">· {hint}</span> : null}
       </span>
       {children}
+      {error ? <p className="mt-1 text-xs text-rose-600">{error}</p> : null}
     </label>
   );
 }

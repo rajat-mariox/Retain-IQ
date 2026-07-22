@@ -4,7 +4,7 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 
-/** Re-runs the server render of the Platform Health page (fresh probes + analytics). */
+/** Re-runs the server render of the Platform Health page (fresh probes + engagement). */
 export function RefreshButton() {
   const router = useRouter();
   const [pending, start] = useTransition();

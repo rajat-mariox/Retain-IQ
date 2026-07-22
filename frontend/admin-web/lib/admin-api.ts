@@ -71,8 +71,59 @@ export interface ApiActivityFeed {
   page: number;
   pageSize: number;
 }
-export const getActivity = cache((page = 1, pageSize = 25) =>
-  adminFetch<ApiActivityFeed>(`activity?page=${page}&pageSize=${pageSize}`),
+// ---- Platform growth ----
+
+export interface ApiGrowthPoint {
+  month: string;
+  orgs: number;
+  users: number;
+  totalOrgs: number;
+  totalUsers: number;
+}
+export interface ApiStoragePoint {
+  month: string;
+  addedBytes: number;
+  totalBytes: number;
+}
+export interface ApiSeatPoint {
+  planName: string;
+  seatsSold: number;
+  seatsUsed: number;
+  orgs: number;
+}
+export interface ApiGrowth {
+  totals: {
+    orgs: number;
+    users: number;
+    newOrgsThisMonth: number;
+    newUsersThisMonth: number;
+    orgGrowthPct: number | null;
+    seatsSold: number;
+    seatsUsed: number;
+    storageBytes: number;
+  };
+  growth: ApiGrowthPoint[];
+  storage: ApiStoragePoint[];
+  seats: ApiSeatPoint[];
+  topOrgs: { id: string; name: string; users: number; activeUsers: number; seats: number | null }[];
+}
+export const getGrowth = cache(() => adminFetch<ApiGrowth>("growth"));
+
+export interface ActivityFilter {
+  orgId?: string;
+  type?: string;
+  from?: string;
+  to?: string;
+}
+export const getActivity = cache((page = 1, pageSize = 25, filter: ActivityFilter = {}) => {
+  const q = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
+  return adminFetch<ApiActivityFeed>(`activity?${q}`);
+});
+
+/** Distinct types + orgs present in the feed — drives the filter dropdowns. */
+export const getActivityFilters = cache(() =>
+  adminFetch<{ types: string[]; organizations: { id: string; name: string }[] }>("activity/filters"),
 );
 
 export type HealthStatus = "up" | "degraded" | "down";
@@ -89,7 +140,8 @@ export interface ApiUsageAnalytics {
   wau: number;
   mau: number;
   loginsToday: number;
-  loginTrend: { date: string; logins: number; users: number }[];
+  /** `users` = people who signed in from a browser; `agentUsers` = via the desktop agent. */
+  loginTrend: { date: string; logins: number; users: number; agentUsers: number }[];
   featureUsage: { feature: string; orgs: number; events: number }[];
 }
 export const getSystemHealth = cache(() => adminFetch<ApiSystemHealth>("health"));
@@ -102,12 +154,13 @@ export interface ApiOrgHealth {
   name: string;
   plan: string | null;
   status: string;
-  adoption: number;
-  frequency: number;
-  utilization: number;
-  healthScore: number;
+  adoption: number; // features used / 5
+  frequency: number; // recency + active-days cadence
+  seatUsage: number; // active employees / seats bought
+  healthScore: number; // 0.40 frequency + 0.35 seatUsage + 0.25 adoption
   band: HealthBand;
   featuresUsed: number;
+  activeDays: number; // days active in the last 30
   seats: number;
   activeEmployees: number;
   activeHours: number;

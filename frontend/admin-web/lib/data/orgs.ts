@@ -11,12 +11,19 @@ interface ApiOrg {
   status: string;
   users: number;
   employees: number;
+  activeUsers: number;
   avgProductivity: number;
   activeHours: number;
   createdAt: string;
   lastActiveAt: string | null;
   plan: string | null;
+  planName: string | null;
   subscriptionStatus: string | null;
+  seats: number | null;
+  renewsAt: string | null;
+  trialEndsAt: string | null;
+  storageUsedBytes: number;
+  storageLimitBytes: number | null;
 }
 
 interface ApiOverview {
@@ -45,11 +52,19 @@ function toOrg(o: ApiOrg): Organization {
     status: STATUS_MAP[o.status] ?? "active",
     users: o.users,
     employees: o.employees,
+    activeUsers: o.activeUsers,
     avgProductivity: o.avgProductivity,
     activeHours: o.activeHours,
     createdAt: o.createdAt,
     lastActiveAt: o.lastActiveAt,
-    plan: o.plan ? (o.plan as PlanId) : undefined,
+    plan: o.plan,
+    planName: o.planName,
+    subscriptionStatus: o.subscriptionStatus,
+    seats: o.seats,
+    renewsAt: o.renewsAt,
+    trialEndsAt: o.trialEndsAt,
+    storageUsedBytes: o.storageUsedBytes,
+    storageLimitBytes: o.storageLimitBytes,
   };
 }
 

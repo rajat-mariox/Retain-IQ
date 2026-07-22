@@ -1,6 +1,6 @@
-// Domain types for the super-admin dashboard. These describe the shape every
-// data module returns, regardless of whether the source is the current mock or
-// a real platform-admin API later — the UI only ever imports from here.
+// Domain types for the super-admin dashboard — the shape every data module
+// returns. All of them now read the live platform-admin API; the UI only ever
+// imports from here.
 
 export type PlanId = "free" | "basic" | "professional" | "enterprise";
 export type OrgStatus = "active" | "trialing" | "suspended" | "churned";
@@ -19,20 +19,32 @@ export interface Organization {
   name: string;
   slug: string;
   status: OrgStatus;
+  /** People who can sign in (memberships). */
   users: number;
+  /** HR records — not all of them necessarily have a login. */
   employees: number;
+  /** Employees with tracked activity in the last 30 days. */
+  activeUsers: number;
   /** Average productivity score across the org, 0–100. */
   avgProductivity: number;
   /** Tracked active hours over the last 30 days. */
   activeHours: number;
   createdAt: string;
   lastActiveAt: string | null;
-  // Billing/plan fields have no backing model yet — present only on mock data.
+  // Subscription facts, live from billing-service.
+  plan?: string | null;
+  /** Display name ("Basic") for `plan`, which is the id ("basic"). */
+  planName?: string | null;
+  subscriptionStatus?: string | null;
+  seats?: number | null;
+  /** End of the current paid period. */
+  renewsAt?: string | null;
+  /** When the trial lapses; null once paying. */
+  trialEndsAt?: string | null;
+  storageUsedBytes?: number;
+  /** null = unlimited on this plan. */
+  storageLimitBytes?: number | null;
   country?: string;
-  plan?: PlanId;
-  seats?: number;
-  activeSeats?: number;
-  mrr?: number;
 }
 
 export interface KpiSummary {

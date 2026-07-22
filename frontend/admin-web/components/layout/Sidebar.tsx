@@ -107,13 +107,6 @@ export function Sidebar({
             );
           })}
         </nav>
-
-        <div className="rounded-xl border border-hairline bg-panel-2/60 p-3">
-          <p className="text-xs font-medium text-slate-700">Mock data</p>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
-            Figures are generated locally. Swap <code className="text-slate-600">lib/data/*</code> for the admin API.
-          </p>
-        </div>
       </aside>
     </>
   );
