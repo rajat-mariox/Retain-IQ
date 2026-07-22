@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCESS_COOKIE, IDENTITY_URL } from "@/lib/auth";
+import { errorMessage } from "@/lib/api-error";
 
 export async function GET() {
   const token = (await cookies()).get(ACCESS_COOKIE)?.value;
@@ -20,6 +21,6 @@ export async function PATCH(req: Request) {
     cache: "no-store",
   });
   const data = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) return NextResponse.json({ error: data.message ?? "Update failed." }, { status: res.status });
+  if (!res.ok) return NextResponse.json({ error: errorMessage(data, "We couldn't update the monitoring policy. Please try again.") }, { status: res.status });
   return NextResponse.json(data);
 }

@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCESS_COOKIE, IDENTITY_URL } from "@/lib/auth";
+import { errorMessage } from "@/lib/api-error";
 
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const token = (await cookies()).get(ACCESS_COOKIE)?.value;
@@ -14,7 +15,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { message?: string };
-    return NextResponse.json({ error: data.message ?? "Could not delete screenshot." }, { status: res.status });
+    return NextResponse.json({ error: errorMessage(data, "Could not delete screenshot.") }, { status: res.status });
   }
   return NextResponse.json(await res.json().catch(() => ({})));
 }

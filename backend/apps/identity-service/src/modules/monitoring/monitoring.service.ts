@@ -4,10 +4,12 @@ import { AccessScopeService } from "../../common/access-scope/access-scope.servi
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { AnalyticsReadPrismaService } from "../../common/database/analytics-prisma.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { classifyApp, classifyDomain, type ProductivityRules } from "../../common/productivity/classify.js";
+import { ProductivitySettingsService } from "../../common/productivity/productivity-settings.service.js";
 
 const ONLINE_WINDOW_MS = 10 * 60 * 1000; // active within 10 min → online
 
-const POLICY_DEFAULTS = { screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280 };
+const POLICY_DEFAULTS = { screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280, screenshotRetentionDays: 0 };
 export type MonitoringPolicyInput = Partial<typeof POLICY_DEFAULTS>;
 
 function startOfUtcDay(d = new Date()): Date {
@@ -26,6 +28,7 @@ export class MonitoringService {
     private readonly prisma: PrismaService,
     private readonly analytics: AnalyticsReadPrismaService,
     private readonly accessScope: AccessScopeService,
+    private readonly productivity: ProductivitySettingsService,
   ) {}
 
   /** The org's monitoring policy (agent reads this to pace screenshots). Falls back to defaults. */
@@ -37,6 +40,7 @@ export class MonitoringService {
       screenshotIntervalSeconds: row?.screenshotIntervalSeconds ?? POLICY_DEFAULTS.screenshotIntervalSeconds,
       screenshotQuality: row?.screenshotQuality ?? POLICY_DEFAULTS.screenshotQuality,
       screenshotMaxWidth: row?.screenshotMaxWidth ?? POLICY_DEFAULTS.screenshotMaxWidth,
+      screenshotRetentionDays: row?.screenshotRetentionDays ?? POLICY_DEFAULTS.screenshotRetentionDays,
     };
   }
 
@@ -84,24 +88,27 @@ export class MonitoringService {
     const day = resolveDay(dayStr);
     const empFilter = await this.resolveFilter(employeeId);
 
-    const [facts, topApps, topSites, presence] = await Promise.all([
-      this.analytics.employeeDayFact.findMany({ where: { orgId: ctx.orgId, day, ...empFilter }, select: { employeeId: true, activeSeconds: true, idleSeconds: true, productiveSeconds: true, productivityScore: true, focusScore: true } }),
-      this.aggApps(ctx.orgId, day, empFilter, 6),
-      this.aggSites(ctx.orgId, day, empFilter, 6),
+    const rules = await this.productivity.getRules(ctx.orgId);
+    const [facts, topApps, topSites, presence, prodByEmp] = await Promise.all([
+      this.analytics.employeeDayFact.findMany({ where: { orgId: ctx.orgId, day, ...empFilter }, select: { employeeId: true, activeSeconds: true, idleSeconds: true, focusScore: true } }),
+      this.aggApps(ctx.orgId, day, empFilter, 6, rules),
+      this.aggSites(ctx.orgId, day, empFilter, 6, rules),
       this.presence(dayStr, employeeId),
+      this.productiveByEmployee(ctx.orgId, day, empFilter, rules),
     ]);
 
     const n = facts.length || 1;
     const activeSeconds = facts.reduce((s, f) => s + f.activeSeconds, 0);
     const idleSeconds = facts.reduce((s, f) => s + f.idleSeconds, 0);
-    const productiveSeconds = facts.reduce((s, f) => s + f.productiveSeconds, 0);
+    const productiveSeconds = facts.reduce((s, f) => s + Math.min(prodByEmp.get(f.employeeId) ?? 0, f.activeSeconds), 0);
+    const avgProductivity = Math.round(facts.reduce((s, f) => s + (f.activeSeconds > 0 ? Math.min(100, ((prodByEmp.get(f.employeeId) ?? 0) / f.activeSeconds) * 100) : 0), 0) / n);
     return {
       day: day.toISOString().slice(0, 10),
       trackedEmployees: facts.length,
       online: presence.filter((p) => p.status === "online").length,
       idle: presence.filter((p) => p.status === "idle").length,
       offline: presence.filter((p) => p.status === "offline").length,
-      avgProductivity: Math.round(facts.reduce((s, f) => s + f.productivityScore, 0) / n),
+      avgProductivity,
       avgFocus: Math.round(facts.reduce((s, f) => s + f.focusScore, 0) / n),
       activeHours: hours(activeSeconds),
       idleHours: hours(idleSeconds),
@@ -109,6 +116,19 @@ export class MonitoringService {
       topApps,
       topWebsites: topSites,
     };
+  }
+
+  /** Productive seconds per employee for a day, classified by the org's current rules. */
+  private async productiveByEmployee(orgId: string, day: Date, empFilter: { employeeId?: string | { in: string[] } }, rules: ProductivityRules) {
+    const [apps, sites] = await Promise.all([
+      this.analytics.appUsageDaily.findMany({ where: { orgId, day, ...empFilter }, select: { employeeId: true, appName: true, seconds: true } }),
+      this.analytics.websiteUsageDaily.findMany({ where: { orgId, day, ...empFilter }, select: { employeeId: true, domain: true, seconds: true } }),
+    ]);
+    const map = new Map<string, number>();
+    const add = (id: string, s: number) => map.set(id, (map.get(id) ?? 0) + s);
+    for (const a of apps) if (classifyApp(a.appName, rules) === "PRODUCTIVE") add(a.employeeId, a.seconds);
+    for (const s of sites) if (classifyDomain(s.domain, rules) === "PRODUCTIVE") add(s.employeeId, s.seconds);
+    return map;
   }
 
   /** Live-ish presence per employee from the latest activity event. */
@@ -135,48 +155,36 @@ export class MonitoringService {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  private async aggApps(orgId: string, day: Date, empFilter: { employeeId?: string | { in: string[] } }, take: number) {
-    const groups = await this.analytics.appUsageDaily.groupBy({ by: ["appName", "category"], where: { orgId, day, ...empFilter }, _sum: { seconds: true } });
-    const merged = new Map<string, { appName: string; category: string; seconds: number }>();
-    for (const g of groups) {
-      const cur = merged.get(g.appName);
-      const secs = g._sum.seconds ?? 0;
-      if (!cur) merged.set(g.appName, { appName: g.appName, category: g.category, seconds: secs });
-      else {
-        cur.seconds += secs;
-        if (secs > 0 && g.category !== "NEUTRAL") cur.category = g.category;
-      }
-    }
-    return [...merged.values()].sort((a, b) => b.seconds - a.seconds).slice(0, take).map((a) => ({ ...a, hours: hours(a.seconds) }));
+  private async aggApps(orgId: string, day: Date, empFilter: { employeeId?: string | { in: string[] } }, take: number, rules: ProductivityRules) {
+    const groups = await this.analytics.appUsageDaily.groupBy({ by: ["appName"], where: { orgId, day, ...empFilter }, _sum: { seconds: true } });
+    return groups
+      .map((g) => ({ appName: g.appName, category: classifyApp(g.appName, rules), seconds: g._sum.seconds ?? 0 }))
+      .sort((a, b) => b.seconds - a.seconds)
+      .slice(0, take)
+      .map((a) => ({ ...a, hours: hours(a.seconds) }));
   }
 
-  private async aggSites(orgId: string, day: Date, empFilter: { employeeId?: string | { in: string[] } }, take: number) {
-    const groups = await this.analytics.websiteUsageDaily.groupBy({ by: ["domain", "category"], where: { orgId, day, ...empFilter }, _sum: { seconds: true, visits: true } });
-    const merged = new Map<string, { domain: string; category: string; seconds: number; visits: number }>();
-    for (const g of groups) {
-      const cur = merged.get(g.domain);
-      const secs = g._sum.seconds ?? 0;
-      const visits = g._sum.visits ?? 0;
-      if (!cur) merged.set(g.domain, { domain: g.domain, category: g.category, seconds: secs, visits });
-      else {
-        cur.seconds += secs;
-        cur.visits += visits;
-        if (secs > 0 && g.category !== "NEUTRAL") cur.category = g.category;
-      }
-    }
-    return [...merged.values()].sort((a, b) => b.seconds - a.seconds).slice(0, take).map((s) => ({ ...s, hours: hours(s.seconds) }));
+  private async aggSites(orgId: string, day: Date, empFilter: { employeeId?: string | { in: string[] } }, take: number, rules: ProductivityRules) {
+    const groups = await this.analytics.websiteUsageDaily.groupBy({ by: ["domain"], where: { orgId, day, ...empFilter }, _sum: { seconds: true, visits: true } });
+    return groups
+      .map((g) => ({ domain: g.domain, category: classifyDomain(g.domain, rules), seconds: g._sum.seconds ?? 0, visits: g._sum.visits ?? 0 }))
+      .sort((a, b) => b.seconds - a.seconds)
+      .slice(0, take)
+      .map((s) => ({ ...s, hours: hours(s.seconds) }));
   }
 
   async apps(dayStr?: string, employeeId?: string) {
     const ctx = requireTenantContext();
     const day = resolveDay(dayStr);
-    return { day: day.toISOString().slice(0, 10), apps: await this.aggApps(ctx.orgId, day, await this.resolveFilter(employeeId), 100) };
+    const [filter, rules] = await Promise.all([this.resolveFilter(employeeId), this.productivity.getRules(ctx.orgId)]);
+    return { day: day.toISOString().slice(0, 10), apps: await this.aggApps(ctx.orgId, day, filter, 100, rules) };
   }
 
   async websites(dayStr?: string, employeeId?: string) {
     const ctx = requireTenantContext();
     const day = resolveDay(dayStr);
-    return { day: day.toISOString().slice(0, 10), websites: await this.aggSites(ctx.orgId, day, await this.resolveFilter(employeeId), 100) };
+    const [filter, rules] = await Promise.all([this.resolveFilter(employeeId), this.productivity.getRules(ctx.orgId)]);
+    return { day: day.toISOString().slice(0, 10), websites: await this.aggSites(ctx.orgId, day, filter, 100, rules) };
   }
 
   async sessions(dayStr?: string, employeeId?: string) {
@@ -210,12 +218,18 @@ export class MonitoringService {
   async timeline(employeeId: string, dayStr?: string) {
     const ctx = requireTenantContext();
     const day = resolveDay(dayStr);
-    const rows = await this.analytics.activityEvent.findMany({
-      where: { orgId: ctx.orgId, employeeId, day },
-      orderBy: { occurredAt: "asc" },
-      take: 5000,
-      select: { occurredAt: true, type: true, title: true, detail: true, category: true, seconds: true },
-    });
+    const [rows, rules] = await Promise.all([
+      this.analytics.activityEvent.findMany({
+        where: { orgId: ctx.orgId, employeeId, day },
+        orderBy: { occurredAt: "asc" },
+        take: 5000,
+        select: { occurredAt: true, type: true, title: true, detail: true, category: true, seconds: true },
+      }),
+      this.productivity.getRules(ctx.orgId),
+    ]);
+    // Re-classify app/site segments with the org's current rules (not the stored category).
+    const catOf = (type: string, title: string | null, stored: string | null): string | null =>
+      type === "app" ? classifyApp(title ?? "", rules) : type === "website" ? classifyDomain(title ?? "", rules) : stored;
     const name = (await this.names([employeeId])).get(employeeId) ?? "Unknown";
 
     const GAP_MS = 5 * 60 * 1000; // a gap longer than this ends the current block
@@ -237,12 +251,12 @@ export class MonitoringService {
           current.seconds += secs;
         } else {
           flush();
-          current = { type: e.type, title: e.title, detail: e.detail, category: e.category, startMs: t, endMs: t + secs * 1000, seconds: secs, key };
+          current = { type: e.type, title: e.title, detail: e.detail, category: catOf(e.type, e.title, e.category), startMs: t, endMs: t + secs * 1000, seconds: secs, key };
         }
       } else {
         // idle / break / session / screenshot / focus — a distinct point/marker.
         flush();
-        segments.push({ type: e.type, title: e.title, detail: e.detail, category: e.category, startMs: t, endMs: t + secs * 1000, seconds: secs, key: e.type });
+        segments.push({ type: e.type, title: e.title, detail: e.detail, category: catOf(e.type, e.title, e.category), startMs: t, endMs: t + secs * 1000, seconds: secs, key: e.type });
       }
     }
     flush();

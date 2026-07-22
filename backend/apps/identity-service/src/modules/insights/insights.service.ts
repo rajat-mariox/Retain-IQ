@@ -2,21 +2,38 @@ import { BadRequestException, Injectable } from "@nestjs/common";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { AnalyticsReadPrismaService } from "../../common/database/analytics-prisma.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { classifyApp, classifyDomain, type ProductivityRules } from "../../common/productivity/classify.js";
+import { ProductivitySettingsService } from "../../common/productivity/productivity-settings.service.js";
 
 const DAY_MS = 86_400_000;
 const WINDOW_DAYS = 30;
 const hours = (sec: number | null | undefined) => Math.round((sec ?? 0) / 3600);
 const score = (v: number | null | undefined) => Math.round(v ?? 0);
+const pct = (part: number, whole: number) => (whole > 0 ? Math.min(100, Math.round((part / whole) * 100)) : 0);
 
 @Injectable()
 export class InsightsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly analytics: AnalyticsReadPrismaService,
+    private readonly productivity: ProductivitySettingsService,
   ) {}
 
   private windowStart(): Date {
     return new Date(Date.now() - WINDOW_DAYS * DAY_MS);
+  }
+
+  /** Productive seconds per employee (org-configurable classification of app/site usage). */
+  private async productiveSecondsByEmployee(where: { orgId: string; day: { gte: Date; lt?: Date }; employeeId?: string }, rules: ProductivityRules): Promise<Map<string, number>> {
+    const [apps, sites] = await Promise.all([
+      this.analytics.appUsageDaily.findMany({ where, select: { employeeId: true, appName: true, seconds: true } }),
+      this.analytics.websiteUsageDaily.findMany({ where, select: { employeeId: true, domain: true, seconds: true } }),
+    ]);
+    const map = new Map<string, number>();
+    const add = (id: string, s: number) => map.set(id, (map.get(id) ?? 0) + s);
+    for (const a of apps) if (classifyApp(a.appName, rules) === "PRODUCTIVE") add(a.employeeId, a.seconds);
+    for (const s of sites) if (classifyDomain(s.domain, rules) === "PRODUCTIVE") add(s.employeeId, s.seconds);
+    return map;
   }
 
   /** The caller's own time/productivity (Time Tracking + personal insights). */
@@ -30,19 +47,34 @@ export class InsightsService {
       throw new BadRequestException("Your account is not linked to an employee record.");
     }
 
-    const facts = await this.analytics.employeeDayFact.findMany({
-      where: { orgId: ctx.orgId, employeeId: membership.employeeId, day: { gte: this.windowStart() } },
-      orderBy: { day: "asc" },
-    });
+    const since = this.windowStart();
+    const employeeId = membership.employeeId;
+    const [facts, apps, sites, rules] = await Promise.all([
+      this.analytics.employeeDayFact.findMany({ where: { orgId: ctx.orgId, employeeId, day: { gte: since } }, orderBy: { day: "asc" } }),
+      this.analytics.appUsageDaily.findMany({ where: { orgId: ctx.orgId, employeeId, day: { gte: since } }, select: { day: true, appName: true, seconds: true } }),
+      this.analytics.websiteUsageDaily.findMany({ where: { orgId: ctx.orgId, employeeId, day: { gte: since } }, select: { day: true, domain: true, seconds: true } }),
+      this.productivity.getRules(ctx.orgId),
+    ]);
 
-    const series = facts.map((f) => ({
-      date: f.day.toISOString().slice(0, 10),
-      activeHours: hours(f.activeSeconds),
-      productiveHours: hours(f.productiveSeconds),
-      idleHours: hours(f.idleSeconds),
-      productivity: score(f.productivityScore),
-      focus: score(f.focusScore),
-    }));
+    // Productive seconds per day = configured productive apps + domains.
+    const prodByDay = new Map<string, number>();
+    const addDay = (day: Date, s: number) => { const k = day.toISOString().slice(0, 10); prodByDay.set(k, (prodByDay.get(k) ?? 0) + s); };
+    for (const a of apps) if (classifyApp(a.appName, rules) === "PRODUCTIVE") addDay(a.day, a.seconds);
+    for (const s of sites) if (classifyDomain(s.domain, rules) === "PRODUCTIVE") addDay(s.day, s.seconds);
+
+    const series = facts.map((f) => {
+      const d = f.day.toISOString().slice(0, 10);
+      const active = f.activeSeconds ?? 0;
+      const productiveSec = active > 0 ? Math.min(prodByDay.get(d) ?? 0, active) : prodByDay.get(d) ?? 0;
+      return {
+        date: d,
+        activeHours: hours(f.activeSeconds),
+        productiveHours: hours(productiveSec),
+        idleHours: hours(f.idleSeconds),
+        productivity: pct(productiveSec, active),
+        focus: score(f.focusScore),
+      };
+    });
 
     const trackedDays = series.length;
     const totals = {
@@ -70,23 +102,26 @@ export class InsightsService {
   async team() {
     const ctx = requireTenantContext();
     const since = this.windowStart();
-    const [byEmployee, employees] = await Promise.all([
+    const rules = await this.productivity.getRules(ctx.orgId);
+    const [byEmployee, employees, prodByEmp] = await Promise.all([
       this.analytics.employeeDayFact.groupBy({
         by: ["employeeId"],
         where: { orgId: ctx.orgId, day: { gte: since } },
-        _avg: { productivityScore: true, focusScore: true },
-        _sum: { activeSeconds: true, productiveSeconds: true },
+        _avg: { focusScore: true },
+        _sum: { activeSeconds: true },
         _count: { _all: true },
       }),
       this.prisma.employee.findMany({ where: { orgId: ctx.orgId }, select: { id: true, firstName: true, lastName: true } }),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since } }, rules),
     ]);
 
     const names = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
 
     const people = byEmployee.map((f) => {
       const days = f._count._all || 1;
-      const activeHours = hours(f._sum.activeSeconds);
-      const productivity = score(f._avg.productivityScore);
+      const activeSec = f._sum.activeSeconds ?? 0;
+      const activeHours = hours(activeSec);
+      const productivity = pct(prodByEmp.get(f.employeeId) ?? 0, activeSec);
       const focus = score(f._avg.focusScore);
       const avgDailyHours = activeHours / days;
       const risk =
@@ -145,20 +180,24 @@ export class InsightsService {
     const excludeIds = admins.map((a) => a.employeeId).filter((x): x is string => Boolean(x));
     const empWhere = excludeIds.length > 0 ? { orgId: ctx.orgId, id: { notIn: excludeIds } } : { orgId: ctx.orgId };
 
-    const [statusGroups, newJoinees, byEmployee, attendanceGroups, recentAgg, priorAgg, openReqs] = await Promise.all([
+    const rules = await this.productivity.getRules(ctx.orgId);
+    const [statusGroups, newJoinees, byEmployee, attendanceGroups, recentActive, priorActive, openReqs, prodAll, prodRecent, prodPrior] = await Promise.all([
       this.prisma.employee.groupBy({ by: ["status"], where: empWhere, _count: { _all: true } }),
       this.prisma.employee.count({ where: { ...empWhere, createdAt: { gte: since } } }),
       this.analytics.employeeDayFact.groupBy({
         by: ["employeeId"],
         where: { orgId: ctx.orgId, day: { gte: since } },
-        _avg: { productivityScore: true, focusScore: true },
-        _sum: { activeSeconds: true, productiveSeconds: true },
+        _avg: { focusScore: true },
+        _sum: { activeSeconds: true },
         _count: { _all: true },
       }),
       this.prisma.attendanceRecord.groupBy({ by: ["status"], where: { orgId: ctx.orgId, day: { gte: since } }, _count: { _all: true } }),
-      this.analytics.employeeDayFact.aggregate({ _avg: { productivityScore: true }, where: { orgId: ctx.orgId, day: { gte: half } } }),
-      this.analytics.employeeDayFact.aggregate({ _avg: { productivityScore: true }, where: { orgId: ctx.orgId, day: { gte: since, lt: half } } }),
+      this.analytics.employeeDayFact.aggregate({ _sum: { activeSeconds: true }, where: { orgId: ctx.orgId, day: { gte: half } } }),
+      this.analytics.employeeDayFact.aggregate({ _sum: { activeSeconds: true }, where: { orgId: ctx.orgId, day: { gte: since, lt: half } } }),
       this.prisma.requisition.aggregate({ _sum: { openings: true }, where: { orgId: ctx.orgId, status: "OPEN" } }),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since } }, rules),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: half } }, rules),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since, lt: half } }, rules),
     ]);
 
     // --- Workforce Overview (real headcount) ---
@@ -174,13 +213,17 @@ export class InsightsService {
     };
 
     // --- Productivity Overview (real) ---
-    const per = byEmployee.map((f) => ({
-      productivity: score(f._avg.productivityScore),
-      focus: score(f._avg.focusScore),
-      active: f._sum.activeSeconds ?? 0,
-      productive: f._sum.productiveSeconds ?? 0,
-      days: f._count._all,
-    }));
+    const per = byEmployee.map((f) => {
+      const active = f._sum.activeSeconds ?? 0;
+      const productive = prodAll.get(f.employeeId) ?? 0;
+      return {
+        productivity: pct(productive, active),
+        focus: score(f._avg.focusScore),
+        active,
+        productive,
+        days: f._count._all,
+      };
+    });
     const n = per.length || 1;
     const companyProductivity = Math.round(per.reduce((s, p) => s + p.productivity, 0) / n);
     const focusScore = Math.round(per.reduce((s, p) => s + p.focus, 0) / n);
@@ -218,7 +261,8 @@ export class InsightsService {
       else if (r >= 40) high += 1;
       else if (r >= 25) medium += 1;
     }
-    const trendDelta = score(recentAgg._avg.productivityScore) - score(priorAgg._avg.productivityScore);
+    const sumMap = (m: Map<string, number>) => [...m.values()].reduce((s, v) => s + v, 0);
+    const trendDelta = pct(sumMap(prodRecent), recentActive._sum.activeSeconds ?? 0) - pct(sumMap(prodPrior), priorActive._sum.activeSeconds ?? 0);
     const attrition = {
       high,
       medium,

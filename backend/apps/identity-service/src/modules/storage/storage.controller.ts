@@ -80,4 +80,11 @@ export class StorageController {
   deleteScreenshot(@Param("id", new ParseUUIDPipe()) id: string) {
     return this.storage.deleteScreenshot(requireTenantContext().orgId, id);
   }
+
+  /** Run the retention purge now for this org (auto-deletes screenshots past the configured window). */
+  @Post("screenshots/purge")
+  @RequirePermissions(permissions.screenshotsDelete)
+  purge() {
+    return this.storage.purgeRequestOrg();
+  }
 }

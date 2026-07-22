@@ -1,5 +1,7 @@
 import { Injectable, Logger, NotFoundException, PayloadTooLargeException, type OnModuleInit } from "@nestjs/common";
+import { Cron, CronExpression } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
+import { requireTenantContext } from "../../common/context/request-context.store.js";
 import {
   CreateBucketCommand,
   DeleteObjectCommand,
@@ -249,5 +251,44 @@ export class StorageService implements OnModuleInit {
     await this.prisma.screenshotObject.delete({ where: { id } });
     this.log.log(`Deleted screenshot ${id} (object + metadata) for org ${orgId}`);
     return { id };
+  }
+
+  /** Delete every screenshot older than the org's retention window (S3 + metadata). Returns the count. */
+  async purgeOrgExpired(orgId: string, retentionDays: number): Promise<number> {
+    if (retentionDays <= 0) return 0;
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000);
+    const expired = await this.prisma.screenshotObject.findMany({ where: { orgId, capturedAt: { lt: cutoff } }, select: { id: true, key: true } });
+    let deleted = 0;
+    for (const obj of expired) {
+      try {
+        await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: obj.key }));
+        await this.prisma.screenshotObject.delete({ where: { id: obj.id } });
+        deleted += 1;
+      } catch (err) {
+        this.log.warn(`Retention purge: failed to delete screenshot ${obj.id}: ${String(err)}`);
+      }
+    }
+    if (deleted > 0) this.log.log(`Retention purge: removed ${deleted} screenshots for org ${orgId} (older than ${retentionDays}d)`);
+    return deleted;
+  }
+
+  /** Purge the caller's org now, using its configured retention window (manual "purge now"). */
+  async purgeRequestOrg(): Promise<{ deleted: number; retentionDays: number }> {
+    const ctx = requireTenantContext();
+    const policy = await this.prisma.monitoringPolicy.findUnique({ where: { orgId: ctx.orgId }, select: { screenshotRetentionDays: true } });
+    const retentionDays = policy?.screenshotRetentionDays ?? 0;
+    return { deleted: await this.purgeOrgExpired(ctx.orgId, retentionDays), retentionDays };
+  }
+
+  /** Daily auto-purge across every org that has a retention window configured. */
+  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  async purgeExpiredScreenshots(): Promise<void> {
+    const policies = await this.prisma.monitoringPolicy.findMany({
+      where: { screenshotRetentionDays: { gt: 0 } },
+      select: { orgId: true, screenshotRetentionDays: true },
+    });
+    let total = 0;
+    for (const p of policies) total += await this.purgeOrgExpired(p.orgId, p.screenshotRetentionDays);
+    if (total > 0) this.log.log(`Retention purge complete: ${total} screenshots across ${policies.length} org(s)`);
   }
 }

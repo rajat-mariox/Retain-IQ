@@ -14,6 +14,8 @@ const policySchema = z
     screenshotIntervalSeconds: z.coerce.number().int().min(60).max(3600),
     screenshotQuality: z.coerce.number().int().min(10).max(100),
     screenshotMaxWidth: z.coerce.number().int().min(320).max(3840),
+    // 0 = keep forever; otherwise auto-delete screenshots older than N days (max ~2y).
+    screenshotRetentionDays: z.coerce.number().int().min(0).max(730),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: "Provide at least one field." });

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Activity, AppWindow, Clock, Gauge, Globe, HeartPulse, Target, Users } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
+import { LocalTime } from "@/components/ui/LocalTime";
 import { EmployeeSelect } from "./EmployeeSelect";
 import type { AppUsage, MonitoringSession, MonitoringSummary, PresenceRow, TimelineSegment, WebsiteUsage } from "@/lib/api";
 
@@ -23,7 +24,6 @@ function Cat({ c }: { c: string }) {
   return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${CAT[c] ?? CAT.NEUTRAL}`}>{c.toLowerCase()}</span>;
 }
 const PRESENCE_DOT: Record<string, string> = { online: "bg-emerald-500", idle: "bg-amber-500", break: "bg-sky-500", offline: "bg-slate-300" };
-const clock = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
 export function MonitoringWorkspace({ employees, today }: { employees: { id: string; name: string }[]; today: string }) {
   const [tab, setTab] = useState<Tab>("overview");
@@ -156,7 +156,7 @@ function PresenceTable({ rows }: { rows: PresenceRow[] }) {
                 <td className="px-5 py-3 font-medium text-slate-900">{r.name}</td>
                 <td className="px-5 py-3"><span className="inline-flex items-center gap-1.5"><span className={`size-2 rounded-full ${PRESENCE_DOT[r.status] ?? "bg-slate-300"}`} />{r.status}</span></td>
                 <td className="px-5 py-3 text-slate-600">{r.lastActivity}{r.lastTitle ? ` · ${r.lastTitle}` : ""}</td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-500">{clock(r.lastSeen)}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-500"><LocalTime iso={r.lastSeen} /></td>
               </tr>
             ))}
             {rows.length === 0 ? <tr><td colSpan={4} className="px-5 py-8 text-center text-sm text-slate-500">No activity yet.</td></tr> : null}
@@ -210,8 +210,8 @@ function SessionsTable({ rows }: { rows: MonitoringSession[] }) {
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-inset ring-slate-200">Ended</span>
                   )}
                 </td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{clock(r.startedAt)}</td>
-                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.open ? "—" : clock(r.endedAt!)}</td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-600"><LocalTime iso={r.startedAt} /></td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.open ? "—" : <LocalTime iso={r.endedAt} />}</td>
                 <td className="px-5 py-3 text-right tabular-nums text-emerald-700">{r.activeHours}h</td>
                 <td className="px-5 py-3 text-right tabular-nums text-amber-700">{r.idleHours}h</td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.durationHours}h</td>
@@ -236,7 +236,7 @@ function Timeline({ events, name }: { events: TimelineSegment[]; name: string })
           const mins = Math.max(1, Math.round(e.seconds / 60));
           return (
             <li key={e.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
-              <span className="w-28 shrink-0 tabular-nums text-xs text-slate-500">{marker ? clock(e.startAt) : `${clock(e.startAt)}–${clock(e.endAt)}`}</span>
+              <span className="w-28 shrink-0 tabular-nums text-xs text-slate-500">{marker ? <LocalTime iso={e.startAt} /> : <><LocalTime iso={e.startAt} />–<LocalTime iso={e.endAt} /></>}</span>
               <span className={`w-20 shrink-0 text-xs font-medium ${TYPE_TONE[e.type] ?? "text-slate-500"}`}>{e.type.replace("_", " ")}</span>
               <span className="min-w-0 flex-1 truncate text-slate-700">{e.title ?? e.detail ?? "—"}</span>
               {!marker ? <span className="shrink-0 tabular-nums text-xs text-slate-400">{mins}m</span> : null}
