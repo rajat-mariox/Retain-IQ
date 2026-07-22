@@ -19,6 +19,7 @@ const updateDeptSchema = z
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: "Provide at least one field." });
 const assignSchema = z.object({ employeeIds: z.array(z.string().uuid()).min(1).max(1000) });
+const setMembersSchema = z.object({ employeeIds: z.array(z.string().uuid()).max(1000) });
 
 const createReqSchema = z.object({
   title: z.string().min(1).max(120),
@@ -174,6 +175,26 @@ export class OrgStructureController {
     @Body(new ZodValidationPipe(assignSchema)) body: z.infer<typeof assignSchema>,
   ) {
     return this.svc.assignTeamMembers(id, body.employeeIds);
+  }
+
+  /** Replace the full member list of a team (add + remove in one call). */
+  @Patch("teams/:id/members")
+  @RequirePermissions(permissions.employeeWrite)
+  setTeamMembers(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(setMembersSchema)) body: z.infer<typeof setMembersSchema>,
+  ) {
+    return this.svc.setTeamMembers(id, body.employeeIds);
+  }
+
+  /** Replace the full member list of a department. */
+  @Patch("departments/:id/members")
+  @RequirePermissions(permissions.employeeWrite)
+  setDepartmentMembers(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(setMembersSchema)) body: z.infer<typeof setMembersSchema>,
+  ) {
+    return this.svc.setDepartmentMembers(id, body.employeeIds);
   }
 
   @Get("requisitions")

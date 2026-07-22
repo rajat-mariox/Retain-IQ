@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCESS_COOKIE, IDENTITY_URL } from "@/lib/auth";
+import { errorMessage } from "@/lib/api-error";
 
 export async function POST(req: Request) {
   const token = (await cookies()).get(ACCESS_COOKIE)?.value;
@@ -15,7 +16,7 @@ export async function POST(req: Request) {
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { message?: string };
-    return NextResponse.json({ error: data.message ?? "Could not create project." }, { status: res.status });
+    return NextResponse.json({ error: errorMessage(data, "Could not create project.") }, { status: res.status });
   }
   return NextResponse.json(await res.json());
 }

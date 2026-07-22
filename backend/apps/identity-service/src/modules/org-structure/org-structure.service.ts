@@ -160,6 +160,37 @@ export class OrgStructureService {
     return { assigned: res.count };
   }
 
+  /** Replace a team's full membership: given ids join, current members not listed are detached. */
+  async setTeamMembers(teamId: string, employeeIds: string[]) {
+    const ctx = requireTenantContext();
+    const team = await this.ensureTeam(teamId);
+    await this.prisma.$transaction([
+      // Detach anyone currently on the team who isn't in the new list.
+      this.prisma.employee.updateMany({ where: { orgId: ctx.orgId, teamId: team.id, id: { notIn: employeeIds.length ? employeeIds : ["00000000-0000-0000-0000-000000000000"] } }, data: { teamId: null } }),
+      // Attach the listed employees.
+      ...(employeeIds.length ? [this.prisma.employee.updateMany({ where: { orgId: ctx.orgId, id: { in: employeeIds } }, data: { teamId: team.id } })] : []),
+    ]);
+    // Clear the lead if they were removed.
+    if (team.leadEmployeeId && !employeeIds.includes(team.leadEmployeeId)) {
+      await this.prisma.team.update({ where: { id: team.id }, data: { leadEmployeeId: null } });
+    }
+    return { members: employeeIds.length };
+  }
+
+  /** Replace a department's full membership. */
+  async setDepartmentMembers(departmentId: string, employeeIds: string[]) {
+    const ctx = requireTenantContext();
+    const dept = await this.ensureDepartment(departmentId);
+    await this.prisma.$transaction([
+      this.prisma.employee.updateMany({ where: { orgId: ctx.orgId, departmentId: dept.id, id: { notIn: employeeIds.length ? employeeIds : ["00000000-0000-0000-0000-000000000000"] } }, data: { departmentId: null } }),
+      ...(employeeIds.length ? [this.prisma.employee.updateMany({ where: { orgId: ctx.orgId, id: { in: employeeIds } }, data: { departmentId: dept.id } })] : []),
+    ]);
+    if (dept.leadEmployeeId && !employeeIds.includes(dept.leadEmployeeId)) {
+      await this.prisma.department.update({ where: { id: dept.id }, data: { leadEmployeeId: null } });
+    }
+    return { members: employeeIds.length };
+  }
+
   private async ensureTeam(id: string) {
     const ctx = requireTenantContext();
     const team = await this.prisma.team.findFirst({ where: { id, orgId: ctx.orgId } });

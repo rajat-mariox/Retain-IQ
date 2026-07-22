@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCESS_COOKIE, IDENTITY_URL } from "@/lib/auth";
+import { errorMessage } from "@/lib/api-error";
 
 async function token() {
   return (await cookies()).get(ACCESS_COOKIE)?.value ?? null;
@@ -18,7 +19,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     cache: "no-store",
   });
   const data = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) return NextResponse.json({ error: data.message ?? "Could not update department." }, { status: res.status });
+  if (!res.ok) return NextResponse.json({ error: errorMessage(data, "Could not update department.") }, { status: res.status });
   return NextResponse.json(data);
 }
 
@@ -32,6 +33,6 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     cache: "no-store",
   });
   const data = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) return NextResponse.json({ error: data.message ?? "Could not archive department." }, { status: res.status });
+  if (!res.ok) return NextResponse.json({ error: errorMessage(data, "Could not archive department.") }, { status: res.status });
   return NextResponse.json(data);
 }
