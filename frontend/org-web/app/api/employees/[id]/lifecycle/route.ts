@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCESS_COOKIE, IDENTITY_URL } from "@/lib/auth";
+import { errorMessage } from "@/lib/api-error";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const token = (await cookies()).get(ACCESS_COOKIE)?.value;
@@ -14,6 +15,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     cache: "no-store",
   });
   const data = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) return NextResponse.json({ error: data.message ?? "Transition failed." }, { status: res.status });
+  if (!res.ok) return NextResponse.json({ error: errorMessage(data, "We couldn't update this employee's status. Please try again.") }, { status: res.status });
   return NextResponse.json(data);
 }

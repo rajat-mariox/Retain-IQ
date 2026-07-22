@@ -2,18 +2,20 @@
 
 import { useState } from "react";
 import { GitBranch, Users, type LucideIcon } from "lucide-react";
-import type { EmployeePage, LifecycleSummary, OrgDepartment, OrgDesignation, OrgRole, OrgShift, OrgTeam } from "@/lib/api";
+import type { EmployeePage, LifecycleSummary, OrgChartNode, OrgDepartment, OrgDesignation, OrgRole, OrgShift, OrgTeam } from "@/lib/api";
 import { AllEmployeesView } from "./AllEmployeesView";
 import { DesignationsView } from "./DesignationsView";
 import { ShiftsView } from "./ShiftsView";
 import { StructureView } from "./StructureView";
 import { LifecycleView } from "./LifecycleView";
+import { OrgChartView } from "./OrgChartView";
 
-type DirKey = "all" | "departments" | "teams" | "designations" | "shifts";
+type DirKey = "all" | "orgchart" | "departments" | "teams" | "designations" | "shifts";
 type LifeKey = "ONBOARDING" | "PROBATION" | "CONFIRMED" | "EXITED";
 
 const DIRECTORY: { key: DirKey; label: string }[] = [
   { key: "all", label: "All Employees" },
+  { key: "orgchart", label: "Org Chart" },
   { key: "departments", label: "Departments" },
   { key: "teams", label: "Teams" },
   { key: "designations", label: "Designations" },
@@ -34,6 +36,7 @@ export function EmployeeManagement({
   shifts,
   roles,
   lifecycle,
+  orgChart,
 }: {
   initialEmployees: EmployeePage;
   departments: OrgDepartment[];
@@ -42,6 +45,7 @@ export function EmployeeManagement({
   shifts: OrgShift[];
   roles: OrgRole[];
   lifecycle: LifecycleSummary;
+  orgChart: { roots: OrgChartNode[]; total: number };
 }) {
   const [group, setGroup] = useState<"directory" | "lifecycle">("directory");
   const [dirTab, setDirTab] = useState<DirKey>("all");
@@ -81,6 +85,7 @@ export function EmployeeManagement({
       {group === "directory" ? (
         <>
           {dirTab === "all" ? <AllEmployeesView initial={initialEmployees} departments={departments} teams={teams} designations={designations} shifts={shifts} roles={roles} /> : null}
+          {dirTab === "orgchart" ? <OrgChartView roots={orgChart.roots} total={orgChart.total} /> : null}
           {dirTab === "departments" ? <StructureView kind="departments" departments={departments} teams={teams} /> : null}
           {dirTab === "teams" ? <StructureView kind="teams" departments={departments} teams={teams} /> : null}
           {dirTab === "designations" ? <DesignationsView designations={designations} departments={departments} /> : null}

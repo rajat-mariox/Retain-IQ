@@ -27,12 +27,29 @@ const LIST_SELECT = {
   shiftRef: { select: { id: true, name: true } },
 } as const;
 
+// Full profile fields (single-employee view).
+const PROFILE_SELECT = {
+  ...LIST_SELECT,
+  updatedAt: true,
+  phone: true,
+  dateOfBirth: true,
+  gender: true,
+  location: true,
+  employmentType: true,
+  address: true,
+  emergencyContactName: true,
+  emergencyContactPhone: true,
+} as const;
+
 export interface EmployeeListFilters {
   page: number;
   pageSize: number;
   q?: string;
   lifecycleStage?: string;
   departmentId?: string;
+  teamId?: string;
+  managerId?: string;
+  designationId?: string;
   status?: string;
 }
 
@@ -47,6 +64,9 @@ export class EmployeeRepository {
       ...scopeWhere,
       ...(filters.lifecycleStage ? { lifecycleStage: filters.lifecycleStage as Prisma.EmployeeWhereInput["lifecycleStage"] } : {}),
       ...(filters.departmentId ? { departmentId: filters.departmentId } : {}),
+      ...(filters.teamId ? { teamId: filters.teamId } : {}),
+      ...(filters.managerId ? { managerId: filters.managerId } : {}),
+      ...(filters.designationId ? { designationId: filters.designationId } : {}),
       ...(filters.status ? { status: filters.status as Prisma.EmployeeWhereInput["status"] } : {}),
       ...(q
         ? {
@@ -97,7 +117,7 @@ export class EmployeeRepository {
   findById(context: RequestContext, employeeId: string) {
     return this.prisma.employee.findFirst({
       where: { id: employeeId, orgId: context.orgId },
-      select: { ...LIST_SELECT, updatedAt: true },
+      select: PROFILE_SELECT,
     });
   }
 
@@ -109,10 +129,24 @@ export class EmployeeRepository {
         lastName: input.lastName,
         email: input.email,
         employeeCode: input.employeeCode,
+        title: input.title ?? null,
+        departmentId: input.departmentId ?? null,
+        teamId: input.teamId ?? null,
+        designationId: input.designationId ?? null,
+        managerId: input.managerId ?? null,
+        joinedAt: input.joinedAt ? new Date(input.joinedAt) : null,
+        phone: input.phone ?? null,
+        dateOfBirth: input.dateOfBirth ? new Date(input.dateOfBirth) : null,
+        gender: input.gender ?? null,
+        location: input.location ?? null,
+        employmentType: input.employmentType ?? null,
+        address: input.address ?? null,
+        emergencyContactName: input.emergencyContactName ?? null,
+        emergencyContactPhone: input.emergencyContactPhone ?? null,
         createdBy: context.userId,
         updatedBy: context.userId,
       },
-      select: { ...LIST_SELECT, updatedAt: true },
+      select: PROFILE_SELECT,
     });
   }
 
@@ -120,7 +154,7 @@ export class EmployeeRepository {
     return this.prisma.employee.update({
       where: { id: employeeId },
       data: { ...data, updatedBy: context.userId },
-      select: { ...LIST_SELECT, updatedAt: true },
+      select: PROFILE_SELECT,
     });
   }
 }
