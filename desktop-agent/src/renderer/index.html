@@ -56,6 +56,16 @@
         <button id="toggleBtn">Pause tracking</button>
         <button id="logoutBtn" class="secondary">Sign out</button>
       </div>
+
+      <!-- Attendance mirrors the web app; hidden for owners, who aren't tracked. -->
+      <div id="attendance" class="card hide">
+        <div class="row"><span>Attendance</span><span id="attState">—</span></div>
+        <div class="row"><span>Checked in</span><span id="attIn">—</span></div>
+        <div class="row"><span>Checked out</span><span id="attOut">—</span></div>
+        <div class="row"><span>Break today</span><span id="attBreak">0 min</span></div>
+        <button id="punchBtn" class="secondary hide">Check in</button>
+        <button id="breakBtn" class="secondary hide">Start break</button>
+      </div>
     </div>
     <script src="renderer.js"></script>
   </body>

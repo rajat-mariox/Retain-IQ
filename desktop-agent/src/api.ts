@@ -62,6 +62,78 @@ async function refresh(): Promise<string | null> {
   return tokens.accessToken;
 }
 
+export type AttendanceAction = "CHECK_IN" | "CHECK_OUT" | "BREAK_START" | "BREAK_END";
+
+export interface AttendanceStatus {
+  tracksAttendance: boolean;
+  /** Derived state (WORKING / ON_BREAK / COMPLETED / …). */
+  state: string;
+  /** Actions the server says are valid right now — the agent renders only these. */
+  availableActions: AttendanceAction[];
+  checkedIn: boolean;
+  checkedOut: boolean;
+  onBreak: boolean;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  breakMinutes: number;
+  overtimeMinutes: number;
+  openBreakStartedAt: string | null;
+  workMinutes: number;
+  sessionCount: number;
+  source: string | null;
+}
+
+/** Authenticated call to identity, refreshing the token once on a 401. */
+async function identityFetch(path: string, init: RequestInit = {}): Promise<Response | null> {
+  const { identityUrl } = getConfig();
+  const session = getSession();
+  if (!session) return null;
+  const call = (token: string) =>
+    fetch(`${identityUrl}/v1${path}`, { ...init, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${token}` } });
+  let res = await call(session.accessToken);
+  if (res.status === 401) {
+    const fresh = await refresh();
+    if (!fresh) return null;
+    res = await call(fresh);
+  }
+  return res;
+}
+
+/**
+ * Attendance from the desktop agent. Signing in marks the employee present and
+ * signing out (or quitting) closes the day, so the agent and the web app write
+ * to the same record — whichever the person happens to use.
+ *
+ * All of these are safe to call blindly: the server is idempotent, and owners
+ * (who aren't tracked for attendance) simply get a 403 we ignore.
+ */
+export async function agentCheckIn(): Promise<boolean> {
+  const res = await identityFetch("/attendance/check-in?source=agent", { method: "POST" });
+  return Boolean(res?.ok);
+}
+
+export async function agentCheckOut(): Promise<boolean> {
+  const res = await identityFetch("/attendance/check-out?source=agent", { method: "POST" });
+  return Boolean(res?.ok);
+}
+
+export async function agentStartBreak(kind = "BREAK"): Promise<boolean> {
+  const res = await identityFetch(`/attendance/break/start?source=agent&kind=${encodeURIComponent(kind)}`, { method: "POST" });
+  return Boolean(res?.ok);
+}
+
+export async function agentEndBreak(): Promise<boolean> {
+  const res = await identityFetch("/attendance/break/end?source=agent", { method: "POST" });
+  return Boolean(res?.ok);
+}
+
+/** Current attendance state — used to keep the agent UI in step with the web app. */
+export async function fetchAttendanceStatus(): Promise<AttendanceStatus | null> {
+  const res = await identityFetch("/attendance/status");
+  if (!res?.ok) return null;
+  return (await res.json()) as AttendanceStatus;
+}
+
 /**
  * Reserve screenshot storage quota and get a presigned PUT URL from identity.
  * Returns null on 403 (screenshots disabled for the org), quota exceeded, or error.

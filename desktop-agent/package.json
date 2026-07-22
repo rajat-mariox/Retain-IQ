@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
-    "package": "npm run build && electron-builder"
+    "package": "npm run build && electron-builder",
+    "test:renderer": "node test/renderer-flow.test.mjs"
   },
   "dependencies": {
     "active-win": "^8.2.1"
@@ -24,7 +25,12 @@
   "build": {
     "appId": "com.retainiq.agent",
     "productName": "RetainIQ Agent",
-    "files": ["dist/**/*", "src/renderer/**/*"],
-    "directories": { "output": "release" }
+    "files": [
+      "dist/**/*",
+      "src/renderer/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    }
   }
 }

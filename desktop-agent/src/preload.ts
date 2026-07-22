@@ -8,4 +8,10 @@ contextBridge.exposeInMainWorld("agent", {
   start: () => ipcRenderer.invoke("agent:start"),
   stop: () => ipcRenderer.invoke("agent:stop"),
   logout: () => ipcRenderer.invoke("agent:logout"),
+  // Attendance — the same record the web app writes to.
+  attendance: () => ipcRenderer.invoke("agent:attendance"),
+  checkIn: () => ipcRenderer.invoke("agent:check-in"),
+  checkOut: () => ipcRenderer.invoke("agent:check-out"),
+  breakStart: (kind?: string) => ipcRenderer.invoke("agent:break-start", kind),
+  breakEnd: () => ipcRenderer.invoke("agent:break-end"),
 });

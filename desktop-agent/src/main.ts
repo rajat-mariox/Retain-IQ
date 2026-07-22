@@ -5,7 +5,14 @@
 import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from "electron";
 import { join } from "node:path";
 import { Collector } from "./collector.js";
-import { login } from "./api.js";
+import {
+  agentCheckIn,
+  agentCheckOut,
+  agentEndBreak,
+  agentStartBreak,
+  fetchAttendanceStatus,
+  login,
+} from "./api.js";
 import { clearSession, getConfig, getSession } from "./store.js";
 import { startTabServer, stopTabServer } from "./tabserver.js";
 
@@ -72,7 +79,32 @@ ipcMain.handle("agent:login", async (_e, email: string, password: string, rememb
   const session = await login(email, password, remember !== false);
   void collector.replayPending(); // send anything buffered before this login
   collector.start(); // auto-start tracking after login
+  // Signing in to the agent IS arriving at work: mark the employee present.
+  // Awaited so the first render already shows the right state rather than
+  // flashing "not checked in". Owners aren't tracked — a 403 here is expected.
+  await agentCheckIn();
   return session;
+});
+
+// ---- attendance (kept in step with the web app; the server is the source of truth) ----
+ipcMain.handle("agent:attendance", () => fetchAttendanceStatus());
+ipcMain.handle("agent:check-in", async () => {
+  await agentCheckIn();
+  return fetchAttendanceStatus();
+});
+ipcMain.handle("agent:check-out", async () => {
+  await agentCheckOut();
+  return fetchAttendanceStatus();
+});
+ipcMain.handle("agent:break-start", async (_e, kind?: string) => {
+  await agentStartBreak(kind || "BREAK");
+  await collector.stop(); // don't record activity while on a break
+  return fetchAttendanceStatus();
+});
+ipcMain.handle("agent:break-end", async () => {
+  await agentEndBreak();
+  if (getSession()) collector.start();
+  return fetchAttendanceStatus();
 });
 ipcMain.handle("agent:start", () => {
   if (getSession()) collector.start();
@@ -84,6 +116,7 @@ ipcMain.handle("agent:stop", async () => {
 });
 ipcMain.handle("agent:logout", async () => {
   await collector.stop();
+  await agentCheckOut(); // close the day before the session is dropped
   clearSession();
   return true;
 });
@@ -95,6 +128,10 @@ void app.whenReady().then(() => {
   if (getSession()) {
     void collector.replayPending(); // upload anything left over from a previous run
     collector.start(); // resume tracking on relaunch
+    // Relaunching with a remembered session is the same as arriving at work —
+    // without this, someone whose agent auto-starts each morning would never be
+    // marked present. Check-in is idempotent, so a same-day restart is a no-op.
+    void agentCheckIn();
   }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -105,7 +142,27 @@ app.on("window-all-closed", () => {
   // Stay resident in the tray (don't quit on window close), except on explicit quit.
 });
 
-app.on("before-quit", () => {
+// Quitting the agent ends the working day too — not just an explicit sign-out —
+// so closing the laptop lid on the app doesn't leave the day hanging open.
+// `before-quit` is async-hostile, so hold the quit until check-out is away.
+let checkoutOnQuitDone = false;
+app.on("before-quit", (event) => {
   (app as unknown as { isQuitting?: boolean }).isQuitting = true;
-  stopTabServer();
+  if (checkoutOnQuitDone || !getSession()) {
+    stopTabServer();
+    return;
+  }
+  event.preventDefault();
+  void (async () => {
+    try {
+      await collector.stop();
+      await agentCheckOut();
+    } catch {
+      // The 1AM missed-checkout sweep is the safety net if this can't land.
+    } finally {
+      checkoutOnQuitDone = true;
+      stopTabServer();
+      app.quit();
+    }
+  })();
 });
