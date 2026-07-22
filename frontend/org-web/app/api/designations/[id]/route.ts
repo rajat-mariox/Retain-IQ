@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { ACCESS_COOKIE, IDENTITY_URL } from "@/lib/auth";
+import { errorMessage } from "@/lib/api-error";
 
 async function forward(method: string, id: string, body?: unknown) {
   const token = (await cookies()).get(ACCESS_COOKIE)?.value;
@@ -12,7 +13,7 @@ async function forward(method: string, id: string, body?: unknown) {
     cache: "no-store",
   });
   const data = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) return NextResponse.json({ error: data.message ?? "Request failed." }, { status: res.status });
+  if (!res.ok) return NextResponse.json({ error: errorMessage(data, "We couldn't save your changes to this designation. Please try again.") }, { status: res.status });
   return NextResponse.json(data);
 }
 
