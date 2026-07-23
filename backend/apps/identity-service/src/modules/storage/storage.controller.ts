@@ -3,6 +3,7 @@ import { permissions } from "@retainiq/authz";
 import { offsetPaginationQuerySchema } from "@retainiq/contracts";
 import { z } from "zod";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
@@ -36,12 +37,14 @@ export class StorageController {
   constructor(private readonly storage: StorageService) {}
 
   @Get("usage")
+  @PublicRoute("org storage usage aggregate, no personal data")
   usage() {
     return this.storage.usage(requireTenantContext().orgId);
   }
 
   /** Reserve quota + get a presigned PUT URL; the client uploads the binary directly. */
   @Post("screenshots")
+  @PublicRoute("the agent uploads the caller's own screenshot")
   createUpload(@Body(new ZodValidationPipe(uploadSchema)) body: UploadInput) {
     const ctx = requireTenantContext();
     return this.storage.createUpload({

@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { permissions } from "@retainiq/authz";
 import { z } from "zod";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
@@ -28,6 +29,7 @@ export class HolidaysController {
 
   /** Holiday calendar — visible to all members. */
   @Get()
+  @PublicRoute("the org holiday calendar, visible to all members")
   list(@Query("year") year?: string, @Query("upcoming") upcoming?: string) {
     return this.holidays.list({ year: year ? Number(year) : undefined, upcoming: upcoming === "true" });
   }

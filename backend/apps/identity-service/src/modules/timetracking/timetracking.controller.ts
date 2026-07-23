@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { permissions } from "@retainiq/authz";
 import { z } from "zod";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
@@ -45,33 +46,39 @@ export class TimeTrackingController {
 
   /** The caller's timesheet for a week (entries + status). */
   @Get("timesheet")
+  @PublicRoute("the caller's own timesheet")
   timesheet(@Query("week") week?: string) {
     return this.time.getTimesheet(week);
   }
 
   @Post("entries")
+  @PublicRoute("the caller logs their own time")
   createEntry(@Body(new ZodValidationPipe(createEntrySchema)) body: z.infer<typeof createEntrySchema>) {
     return this.time.createEntry(body);
   }
 
   @Patch("entries/:id")
+  @PublicRoute("the caller edits their own entry (ownership enforced in-service)")
   updateEntry(@Param("id", ParseUUIDPipe) id: string, @Body(new ZodValidationPipe(updateEntrySchema)) body: z.infer<typeof updateEntrySchema>) {
     return this.time.updateEntry(id, body);
   }
 
   @Delete("entries/:id")
+  @PublicRoute("the caller deletes their own entry (ownership enforced in-service)")
   deleteEntry(@Param("id", ParseUUIDPipe) id: string) {
     return this.time.deleteEntry(id);
   }
 
   /** Submit the week's timesheet for approval. */
   @Post("timesheet/submit")
+  @PublicRoute("the caller submits their own timesheet")
   submit(@Body(new ZodValidationPipe(submitSchema)) body: z.infer<typeof submitSchema>) {
     return this.time.submit(body.week);
   }
 
   /** The caller's own timesheet history (all weeks, by status). */
   @Get("timesheets/mine")
+  @PublicRoute("the caller's own timesheet history")
   mine() {
     return this.time.mine();
   }

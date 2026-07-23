@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { permissions } from "@retainiq/authz";
 import { z } from "zod";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
@@ -35,6 +36,7 @@ export class LeaveController {
   constructor(private readonly leave: LeaveService) {}
 
   @Get("types")
+  @PublicRoute("the org leave-type catalog every requester needs")
   listTypes() {
     return this.leave.listTypes();
   }
@@ -53,6 +55,7 @@ export class LeaveController {
 
   /** The caller's own leave balances. */
   @Get("me/balances")
+  @PublicRoute("the caller's own leave balances")
   myBalances(@Query("year") year?: string) {
     return this.leave.balances(undefined, year ? Number(year) : undefined);
   }
@@ -66,6 +69,7 @@ export class LeaveController {
 
   /** The caller's leave calendar for a month (week-offs from their shift + holidays + leaves). */
   @Get("calendar")
+  @PublicRoute("the caller's own leave calendar")
   calendar(@Query("month") month?: string) {
     return this.leave.calendar(month);
   }
@@ -79,6 +83,7 @@ export class LeaveController {
 
   /** The caller's own leave requests. */
   @Get("requests")
+  @PublicRoute("the caller's own leave requests")
   myRequests(@Query("status") status?: string) {
     return this.leave.listRequests({ scope: "mine", status });
   }
@@ -91,6 +96,7 @@ export class LeaveController {
   }
 
   @Post("requests")
+  @PublicRoute("a person files their own leave request")
   createRequest(@Body(new ZodValidationPipe(createRequestSchema)) body: z.infer<typeof createRequestSchema>) {
     return this.leave.createRequest(body);
   }
@@ -102,6 +108,7 @@ export class LeaveController {
   }
 
   @Post("requests/:id/cancel")
+  @PublicRoute("a person cancels their own leave request")
   cancel(@Param("id", ParseUUIDPipe) id: string) {
     return this.leave.cancel(id);
   }

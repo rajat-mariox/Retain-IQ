@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Patch, Query, UseGuards } from "@nestjs/common";
 import { permissions } from "@retainiq/authz";
 import { z } from "zod";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
@@ -64,6 +65,7 @@ export class MonitoringController {
 
   /** Effective monitoring policy — any member (the desktop agent) can read it. */
   @Get("policy")
+  @PublicRoute("the capture policy the agent must read to know its cadence")
   policy() {
     return this.monitoring.getPolicy();
   }

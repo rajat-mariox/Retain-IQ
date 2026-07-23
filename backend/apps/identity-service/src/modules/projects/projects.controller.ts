@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query
 import { permissions } from "@retainiq/authz";
 import { offsetPaginationQuerySchema, type OffsetPaginationQuery } from "@retainiq/contracts";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
@@ -41,35 +42,44 @@ export class ProjectsController {
 
   /** Portfolio KPIs + progress overview. Declared before :id so it isn't parsed as an id. */
   @Get("projects/dashboard")
+  @PublicRoute("scoped in-service to the caller's visible projects")
   dashboard() {
     return this.projects.dashboard();
   }
 
-  /** Active employees for owner/assignee pickers (read-open). */
+  /** Active employees for owner/assignee pickers. Takes project.read — it's the
+   *  whole active directory, and only someone working with projects needs it. */
   @Get("projects/people")
+  @RequirePermissions(permissions.projectRead)
   people() {
     return this.projects.listPeople();
   }
 
-  /** Teams for the project team picker (read-open — avoids the employee.read gate). */
+  /** Teams for the project team picker — structure labels only. */
   @Get("projects/teams")
+  @RequirePermissions(permissions.projectRead)
   teams() {
     return this.projects.listTeams();
   }
 
-  // ---- Phase 2: overviews (read-open) ----
+  // ---- Phase 2: overviews. Org-wide team/department rollups, so gated on
+  // project.read rather than open to every member. ----
   @Get("projects/teams-overview")
+  @RequirePermissions(permissions.projectRead)
   teamsOverview() {
     return this.projects.teamsOverview();
   }
 
   @Get("projects/departments-overview")
+  @RequirePermissions(permissions.projectRead)
   departmentsOverview() {
     return this.projects.departmentsOverview();
   }
 
   // ---- Settings / Admin ----
+  /** Project workflow config (statuses, priorities) — labels the UI renders. */
   @Get("projects/settings")
+  @PublicRoute("project workflow labels every member's board renders")
   getSettings() {
     return this.projects.getSettings();
   }
@@ -80,19 +90,25 @@ export class ProjectsController {
     return this.projects.updateSettings(body);
   }
 
-  // ---- Phase 4: reports & manager view (read-open) ----
+  // ---- Phase 4: reports & manager view ----
+  /** Reports are scoped to the caller's visible projects in the service. */
   @Get("projects/reports")
+  @PublicRoute("scoped in-service to the caller's visible projects")
   reports() {
     return this.projects.reports();
   }
 
+  /** Manager overview — gated on project.read; its unscoped fallback would
+   *  otherwise show org-wide projects to a plain member. */
   @Get("projects/manager-overview")
+  @RequirePermissions(permissions.projectRead)
   managerOverview() {
     return this.projects.managerOverview();
   }
 
   // ---- Phase 3: Goals (org- or project-scoped) ----
   @Get("goals")
+  @PublicRoute("scoped in-service to the caller's visible projects")
   listGoals(@Query("projectId") projectId?: string) {
     return this.projects.listGoals(projectId);
   }
@@ -116,6 +132,7 @@ export class ProjectsController {
   }
 
   @Get("projects")
+  @PublicRoute("scoped in-service to the caller's visible projects")
   listProjects(
     @Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: OffsetPaginationQuery,
     @Query("status") status?: string,
@@ -131,6 +148,7 @@ export class ProjectsController {
   }
 
   @Get("projects/:id")
+  @PublicRoute("in-service 404 if the project isn't in the caller's view set")
   getProject(@Param("id", new ParseUUIDPipe()) id: string) {
     return this.projects.getProject(id);
   }
@@ -160,21 +178,24 @@ export class ProjectsController {
   }
 
   // Self-scoped: the caller's own assigned tasks across all projects. Open to any
-  // member (no permission gate) since it only ever returns the caller's own work.
+  // member since it only ever returns the caller's own work.
   // Declared before tasks/:id so "mine" isn't parsed as an id.
   @Get("tasks/mine")
+  @PublicRoute("the caller's own assigned tasks")
   myTasks() {
     return this.projects.myTasks();
   }
 
-  // Task detail + discussion. No permission gate: getTask() itself decides
-  // visibility (manages the project, sees the project, or is the assignee).
+  // Task detail + discussion. getTask() itself decides visibility (manages the
+  // project, sees the project, or is the assignee), 404-ing otherwise.
   @Get("tasks/:id")
+  @PublicRoute("in-service visibility check on the task")
   getTask(@Param("id", new ParseUUIDPipe()) id: string) {
     return this.projects.getTask(id);
   }
 
   @Post("tasks/:id/comments")
+  @PublicRoute("in-service visibility check before commenting")
   addTaskComment(
     @Param("id", new ParseUUIDPipe()) id: string,
     @Body(new ZodValidationPipe(addTaskCommentSchema)) body: AddTaskCommentInput,
@@ -182,10 +203,11 @@ export class ProjectsController {
     return this.projects.addTaskComment(id, body.body);
   }
 
-  // No @RequirePermissions here: project.write grants a full edit, but an
-  // assignee may also move their OWN task between statuses. updateTask() does
-  // that authorization since it depends on the task and the fields being changed.
+  // project.write grants a full edit, but an assignee may also move their OWN
+  // task between statuses. updateTask() does that authorization since it depends
+  // on the task and the fields being changed.
   @Patch("tasks/:id")
+  @PublicRoute("in-service authz: full edit needs project.write, assignee may move own task")
   updateTask(
     @Param("id", new ParseUUIDPipe()) id: string,
     @Body(new ZodValidationPipe(updateTaskSchema)) body: UpdateTaskInput,

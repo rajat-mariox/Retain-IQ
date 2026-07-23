@@ -3,6 +3,7 @@ import { offsetPaginationQuerySchema } from "@retainiq/contracts";
 import { permissions } from "@retainiq/authz";
 import { Observable, Subject } from "rxjs";
 import { z } from "zod";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
@@ -72,6 +73,7 @@ export class NotificationsController {
 
   /** The caller's in-app inbox (paginated history; live updates arrive via SSE). */
   @Get()
+  @PublicRoute("the caller's own notifications")
   async listInbox(@Query(new ZodValidationPipe(inboxQuerySchema)) query: z.infer<typeof inboxQuerySchema>) {
     const ctx = requireTenantContext();
     const where: Record<string, unknown> = {
@@ -147,6 +149,7 @@ export class NotificationsController {
 
   /** Count of the caller's unread in-app notifications (for the bell badge). */
   @Get("unread-count")
+  @PublicRoute("the caller's own unread count")
   async unreadCount() {
     const ctx = requireTenantContext();
     const count = await this.prisma.notification.count({
@@ -161,6 +164,7 @@ export class NotificationsController {
    * layer) owns this small write to the notifications DB.
    */
   @Post("read-all")
+  @PublicRoute("the caller marks their own as read")
   async readAll() {
     const ctx = requireTenantContext();
     const res = await this.prisma.notification.updateMany({
@@ -172,6 +176,7 @@ export class NotificationsController {
 
   /** Dashboard counters: totals, unread, critical and a per-category breakdown. */
   @Get("stats")
+  @PublicRoute("the caller's own notification stats")
   async stats() {
     const ctx = requireTenantContext();
     const base = { orgId: ctx.orgId, recipientUserId: ctx.userId, channel: "IN_APP" as const };
@@ -193,6 +198,7 @@ export class NotificationsController {
 
   /** Archive (dismiss) a notification — hidden from the inbox but kept for history. */
   @Post(":id/archive")
+  @PublicRoute("the caller archives their own notification")
   async archive(@Param("id", ParseUUIDPipe) id: string) {
     const ctx = requireTenantContext();
     const res = await this.prisma.notification.updateMany({
@@ -204,6 +210,7 @@ export class NotificationsController {
   }
 
   @Post(":id/unarchive")
+  @PublicRoute("the caller unarchives their own notification")
   async unarchive(@Param("id", ParseUUIDPipe) id: string) {
     const ctx = requireTenantContext();
     const res = await this.prisma.notification.updateMany({
@@ -215,6 +222,7 @@ export class NotificationsController {
 
   /** Archive every read notification in one go. */
   @Post("archive-read")
+  @PublicRoute("the caller archives their own read notifications")
   async archiveRead() {
     const ctx = requireTenantContext();
     const res = await this.prisma.notification.updateMany({
@@ -226,6 +234,7 @@ export class NotificationsController {
 
   /** The caller's per-category channel preferences + global delivery settings. */
   @Get("preferences")
+  @PublicRoute("the caller's own notification preferences")
   async getPreferences() {
     const ctx = requireTenantContext();
     const [prefs, setting] = await Promise.all([
@@ -258,6 +267,7 @@ export class NotificationsController {
 
   /** Upsert the caller's preferences and/or global delivery settings. */
   @Post("preferences")
+  @PublicRoute("the caller saves their own preferences")
   async savePreferences(@Body(new ZodValidationPipe(prefsSchema)) body: z.infer<typeof prefsSchema>) {
     const ctx = requireTenantContext();
     for (const p of body.preferences ?? []) {
@@ -352,12 +362,14 @@ export class NotificationsController {
    * the private key never leaves the notifications service.
    */
   @Get("push/public-key")
+  @PublicRoute("the public VAPID key, public by design")
   pushPublicKey() {
     return { publicKey: process.env.VAPID_PUBLIC_KEY ?? "" };
   }
 
   /** Register (or refresh) a browser push subscription for the caller. */
   @Post("push/subscribe")
+  @PublicRoute("the caller registers their own push device")
   async pushSubscribe(@Body(new ZodValidationPipe(pushSubSchema)) body: z.infer<typeof pushSubSchema>) {
     const ctx = requireTenantContext();
     await this.prisma.pushSubscription.upsert({
@@ -370,6 +382,7 @@ export class NotificationsController {
 
   /** Drop a browser push subscription (user disabled push on that device). */
   @Post("push/unsubscribe")
+  @PublicRoute("the caller removes their own push device")
   async pushUnsubscribe(@Body(new ZodValidationPipe(z.object({ endpoint: z.string().min(1) }))) body: { endpoint: string }) {
     const ctx = requireTenantContext();
     const res = await this.prisma.pushSubscription.deleteMany({ where: { endpoint: body.endpoint, orgId: ctx.orgId, userId: ctx.userId } });
@@ -378,6 +391,7 @@ export class NotificationsController {
 
   /** Mark a single notification as read (scoped to the caller). */
   @Post(":id/read")
+  @PublicRoute("the caller marks their own notification read")
   async markRead(@Param("id", ParseUUIDPipe) id: string) {
     const ctx = requireTenantContext();
     const res = await this.prisma.notification.updateMany({

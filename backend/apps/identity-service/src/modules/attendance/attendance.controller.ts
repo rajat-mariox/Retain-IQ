@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Query, UseGuards } from "@nestjs/common";
 import { permissions } from "@retainiq/authz";
 import { z } from "zod";
+import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
@@ -42,6 +43,7 @@ export class AttendanceController {
    */
   @Post("check-in")
   @HttpCode(200)
+  @PublicRoute("a person checks themselves in")
   checkIn(@Query("source") source?: string, @Query("location") location?: string) {
     return this.attendance.checkIn(source === "agent" ? "agent" : "web", location);
   }
@@ -49,6 +51,7 @@ export class AttendanceController {
   /** Self check-out (agent sign-out/quit, or the browser button). */
   @Post("check-out")
   @HttpCode(200)
+  @PublicRoute("a person checks themselves out")
   checkOut(@Query("source") source?: string) {
     return this.attendance.checkOut(source === "agent" ? "agent" : "web");
   }
@@ -56,6 +59,7 @@ export class AttendanceController {
   /** Start a break. Idempotent while a break is already open. */
   @Post("break/start")
   @HttpCode(200)
+  @PublicRoute("a person starts their own break")
   startBreak(@Query("source") source?: string, @Query("kind") kind?: string) {
     return this.attendance.startBreak(source === "agent" ? "agent" : "web", kind || "BREAK");
   }
@@ -63,6 +67,7 @@ export class AttendanceController {
   /** End the open break; its minutes are deducted from worked time. */
   @Post("break/end")
   @HttpCode(200)
+  @PublicRoute("a person ends their own break")
   endBreak(@Query("source") source?: string) {
     return this.attendance.endBreak(source === "agent" ? "agent" : "web");
   }
@@ -72,6 +77,7 @@ export class AttendanceController {
    * agent read this to stay in step after a change on the other surface.
    */
   @Get("status")
+  @PublicRoute("the caller's own live attendance state")
   status() {
     return this.attendance.liveStatus();
   }
@@ -81,12 +87,14 @@ export class AttendanceController {
   /** Raise a correction for one of your own days (missed punch, wrong time, OT). */
   @Post("corrections")
   @HttpCode(200)
+  @PublicRoute("a person raises a correction for their own day")
   requestCorrection(@Body(new ZodValidationPipe(correctionSchema)) body: z.infer<typeof correctionSchema>) {
     return this.corrections.request(body);
   }
 
   /** The caller's own correction history. */
   @Get("corrections/me")
+  @PublicRoute("the caller's own correction history")
   myCorrections() {
     return this.corrections.mine();
   }
@@ -132,12 +140,14 @@ export class AttendanceController {
   /** Withdraw your own pending request. */
   @Post("corrections/:id/cancel")
   @HttpCode(200)
+  @PublicRoute("a person withdraws their own pending request")
   cancelCorrection(@Param("id", ParseUUIDPipe) id: string) {
     return this.corrections.cancel(id);
   }
 
   /** The caller's own attendance (today + recent history). */
   @Get("me")
+  @PublicRoute("the caller's own attendance")
   me() {
     return this.attendance.me();
   }
