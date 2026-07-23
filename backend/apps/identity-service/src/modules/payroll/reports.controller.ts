@@ -43,6 +43,6 @@ export class ReportsController {
   async exportCsv(@Query(new ZodValidationPipe(exportSchema)) query: z.infer<typeof exportSchema>, @Res() res: FastifyReply) {
     const { filename, body } = await this.reports.exportCsv(query.kind, query);
     // The BOM makes Excel read the UTF-8 correctly instead of mangling accents.
-    await res.header("Content-Disposition", `attachment; filename="${filename}"`).send(`﻿${body}`);
+    await res.header("Content-Disposition", `attachment; filename="${filename}"`).send(String.fromCharCode(0xfeff) + body);
   }
 }

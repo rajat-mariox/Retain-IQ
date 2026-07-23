@@ -138,11 +138,12 @@ export class PayrollService {
 
     // Bucket by employee → ISO week, so overtime is assessed against the week
     // the hours were actually worked in.
-    const byEmployee = new Map<string, Map<string, { minutes: number; billable: number; dates: Date[] }>>();
+    type WeekBucket = { minutes: number; billable: number; dates: Date[] };
+    const byEmployee = new Map<string, Map<string, WeekBucket>>();
     for (const e of usable) {
       const wk = iso(weekStartOf(e.date));
-      const weeks = byEmployee.get(e.employeeId) ?? new Map();
-      const bucket = weeks.get(wk) ?? { minutes: 0, billable: 0, dates: [] };
+      const weeks = byEmployee.get(e.employeeId) ?? new Map<string, WeekBucket>();
+      const bucket: WeekBucket = weeks.get(wk) ?? { minutes: 0, billable: 0, dates: [] };
       bucket.minutes += e.minutes;
       if (e.billable) bucket.billable += e.minutes;
       bucket.dates.push(e.date);

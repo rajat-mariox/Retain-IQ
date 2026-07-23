@@ -7,8 +7,7 @@ import { AttendancePolicyService } from "./attendance-policy.service.js";
 
 const startOfUtcDay = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 
-const CORRECTION_TYPES = ["MISSED_CHECK_IN", "MISSED_CHECK_OUT", "WRONG_TIME", "OVERTIME", "OTHER"] as const;
-export type CorrectionType = (typeof CORRECTION_TYPES)[number];
+export type CorrectionType = "MISSED_CHECK_IN" | "MISSED_CHECK_OUT" | "WRONG_TIME" | "OVERTIME" | "OTHER";
 
 /**
  * Attendance corrections and overtime approval.

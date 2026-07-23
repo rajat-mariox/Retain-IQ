@@ -36,7 +36,7 @@ export class AccessScopeService {
       }),
     ]);
     const employeeId = membership?.employeeId ?? null;
-    const relevant = grants.filter((g) => (g.role.permissions as string[]).includes(permission));
+    const relevant = grants.filter((g) => (g.role.permissions).includes(permission));
 
     if (relevant.some((g) => g.scopeType === "ORG")) {
       return { tier: "org", departmentIds: [], teamIds: [], employeeId };

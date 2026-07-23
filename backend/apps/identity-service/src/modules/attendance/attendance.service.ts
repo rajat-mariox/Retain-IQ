@@ -37,9 +37,8 @@ function earlyExitBy(checkOutAt: Date, tz: string, shift: ShiftLike): number {
   return Math.max(0, shift.endMinute - local);
 }
 
-// Fallback thresholds when an employee has no shift and the org has no default:
-// checking in after 09:15 is LATE, checking out before 17:00 is an early exit.
-const LATE_AFTER_MINUTES = 9 * 60 + 15;
+// Fallback threshold when an employee has no shift and the org has no default:
+// checking out before 17:00 is an early exit.
 const EARLY_EXIT_BEFORE_MINUTES = 17 * 60;
 
 interface ShiftLike {
@@ -70,16 +69,6 @@ function minuteOfDayInTz(d: Date, tz: string): number {
   } catch {
     return d.getUTCHours() * 60 + d.getUTCMinutes();
   }
-}
-
-/** LATE if the check-in is after shift start + grace. Handles overnight wrap-around. */
-function lateStatus(checkInAt: Date, tz: string, shift: ShiftLike | null): "PRESENT" | "LATE" {
-  const mod = minuteOfDayInTz(checkInAt, tz);
-  if (!shift) return mod > LATE_AFTER_MINUTES ? "LATE" : "PRESENT";
-  const threshold = shift.startMinute + shift.graceMinutes;
-  // Overnight: a check-in after midnight belongs to the shift's second calendar day.
-  const effective = isOvernight(shift) && mod < shift.startMinute ? mod + 1440 : mod;
-  return effective > threshold ? "LATE" : "PRESENT";
 }
 
 /** Early exit if checked out before the shift end. Handles overnight wrap-around. */

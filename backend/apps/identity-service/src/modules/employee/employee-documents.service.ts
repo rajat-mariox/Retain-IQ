@@ -38,7 +38,7 @@ export class EmployeeDocumentsService {
     const ctx = requireTenantContext();
     await this.assertEmployee(ctx.orgId, employeeId);
     const category = (CATEGORIES as readonly string[]).includes(input.category) ? input.category : "OTHER";
-    const safeName = input.fileName.replace(/[^\w.\-]+/g, "_").slice(0, 160);
+    const safeName = input.fileName.replace(/[^\w.-]+/g, "_").slice(0, 160);
     const key = `documents/${ctx.orgId}/${employeeId}/${randomUUID()}-${safeName}`;
 
     const doc = await this.prisma.employeeDocument.create({

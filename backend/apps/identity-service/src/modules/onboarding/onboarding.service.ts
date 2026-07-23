@@ -160,13 +160,13 @@ export class OnboardingService {
     if (emp.onboarding) throw new BadRequestException("This employee already has an onboarding journey.");
 
     // Resolve the item set: explicit template → org default template → built-in defaults.
-    let template = templateId
+    const template = templateId
       ? await this.prisma.onboardingTemplate.findFirst({ where: { id: templateId, orgId: ctx.orgId }, include: { items: { orderBy: { order: "asc" } } } })
       : await this.prisma.onboardingTemplate.findFirst({ where: { orgId: ctx.orgId, isDefault: true }, include: { items: { orderBy: { order: "asc" } } } });
     if (templateId && !template) throw new NotFoundException("Template not found.");
 
     const items: SeedItem[] = template?.items.length
-      ? template.items.map((i) => ({ title: i.title, description: i.description ?? undefined, category: i.category as Category, assignee: i.assignee as Assignee, required: i.required }))
+      ? template.items.map((i) => ({ title: i.title, description: i.description ?? undefined, category: i.category, assignee: i.assignee, required: i.required }))
       : DEFAULT_ITEMS;
 
     return this.prisma.$transaction(async (tx) => {

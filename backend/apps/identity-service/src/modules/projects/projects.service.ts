@@ -1179,8 +1179,8 @@ export class ProjectsService {
   async getSettings() {
     const ctx = requireTenantContext();
     const row = await this.prisma.projectSetting.findUnique({ where: { orgId: ctx.orgId } });
-    const statuses = Array.isArray(row?.statuses) && (row!.statuses as unknown[]).length ? (row!.statuses as typeof DEFAULT_STATUSES) : DEFAULT_STATUSES;
-    const priorities = Array.isArray(row?.priorities) && (row!.priorities as unknown[]).length ? (row!.priorities as typeof DEFAULT_PRIORITIES) : DEFAULT_PRIORITIES;
+    const statuses = Array.isArray(row?.statuses) && (row.statuses as unknown[]).length ? (row.statuses as typeof DEFAULT_STATUSES) : DEFAULT_STATUSES;
+    const priorities = Array.isArray(row?.priorities) && (row.priorities as unknown[]).length ? (row.priorities as typeof DEFAULT_PRIORITIES) : DEFAULT_PRIORITIES;
     return {
       statuses,
       priorities,
