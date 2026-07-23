@@ -69,15 +69,14 @@ async function renderAttendance() {
   $("attOut").textContent = a.checkOutAt ? new Date(a.checkOutAt).toLocaleTimeString() : "—";
   $("attBreak").textContent = `${a.breakMinutes} min`;
 
-  // Overtime is measured but not payable until a manager signs it off, so show
-  // it read-only and say so. Only surface it once there's any to show.
+  // Overtime is measured but not payable until a manager signs it off. Always
+  // shown (as "0h 0m" until any accrues) so the employee can see it's tracked;
+  // the "pending approval" note only makes sense once there's some.
   const ot = a.overtimeMinutes || 0;
-  if (ot > 0) {
-    $("attOtRow").classList.remove("hide");
-    $("attOt").textContent = `${Math.floor(ot / 60)}h ${ot % 60}m (pending approval)`;
-  } else {
-    $("attOtRow").classList.add("hide");
-  }
+  $("attOtRow").classList.remove("hide");
+  $("attOt").textContent = ot > 0
+    ? `${Math.floor(ot / 60)}h ${ot % 60}m (pending approval)`
+    : "0h 0m";
 
   // Render strictly from the server's list of valid actions, so the agent can
   // never offer something the state machine would reject.

@@ -84,9 +84,11 @@ check("status card visible", visible("statusView"), true);
 check("attendance card visible", visible("attendance"), true);
 check("break button enabled", els.breakBtn.disabled, false);
 check("break button label", els.breakBtn.textContent, "Start break");
-// The kind picker is offered before a break, and no overtime row without OT.
+// The kind picker is offered before a break; the overtime row is always shown
+// (as 0h 0m until any accrues) so the employee can see it's being tracked.
 check("break-kind picker visible before a break", visible("breakKind"), true);
-check("overtime row hidden when no overtime", visible("attOtRow"), false);
+check("overtime row visible even at zero", visible("attOtRow"), true);
+check("overtime reads zero when none", els.attOt.textContent, "0h 0m");
 
 console.log("\n2b) Overtime measured -> read-only row appears");
 state.attendance = { ...state.attendance, overtimeMinutes: 95 };
