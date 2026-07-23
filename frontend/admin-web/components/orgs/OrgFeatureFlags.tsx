@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { Ban, Check, Globe, RotateCcw, ShieldOff } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 
@@ -32,7 +31,6 @@ const LABEL: Record<string, string> = {
 const label = (k: string) => LABEL[k] ?? k;
 
 export function OrgFeatureFlags({ orgId, orgName, initial }: { orgId: string; orgName: string; initial: OrgFeature[] }) {
-  const router = useRouter();
   const [features, setFeatures] = useState(initial);
   const [pending, start] = useTransition();
   const [busy, setBusy] = useState<string | null>(null);
@@ -54,8 +52,10 @@ export function OrgFeatureFlags({ orgId, orgName, initial }: { orgId: string; or
         return;
       }
       const d = (await res.json()) as { features: OrgFeature[] };
+      // The PATCH already returns the full, updated flag set, so we render from
+      // that. A router.refresh() here would re-fetch the whole org page on every
+      // toggle for data we already hold — pure redundant round-trips.
       setFeatures(d.features);
-      router.refresh();
     });
 
   const overrides = features.filter((f) => f.override !== null).length;

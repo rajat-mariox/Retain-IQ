@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import type { ProjectGoal, ProjectPerson } from "@/lib/api";
 import { formatDate } from "@/lib/format";
+import { useSubmitLock } from "@/lib/hooks";
 
 const input = "w-full rounded-lg border border-hairline bg-panel px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none";
 const label = "mb-1.5 block text-sm font-medium text-slate-700";
@@ -27,6 +28,8 @@ export function GoalsWorkspace({ goals, canManage, people, projects, lockedProje
   const [modal, setModal] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Guards the per-card achieve/delete icons against a double-click.
+  const { busy: rowBusy, run } = useSubmitLock();
 
   const openEdit = (g: ProjectGoal) => setModal({ id: g.id, title: g.title, description: g.description ?? "", projectId: g.projectId ?? "", metric: g.metric ?? "", target: g.target != null ? String(g.target) : "", current: String(g.current), ownerEmployeeId: g.ownerEmployeeId ?? "", dueDate: g.dueDate?.slice(0, 10) ?? "", status: g.status });
 
@@ -54,12 +57,16 @@ export function GoalsWorkspace({ goals, canManage, people, projects, lockedProje
     } finally { setBusy(false); }
   }
   async function remove(id: string) {
-    await fetch(`/api/goals/${id}`, { method: "DELETE" });
-    router.refresh();
+    await run(async () => {
+      await fetch(`/api/goals/${id}`, { method: "DELETE" });
+      router.refresh();
+    });
   }
   async function markAchieved(g: ProjectGoal) {
-    await fetch(`/api/goals/${g.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ACHIEVED" }) });
-    router.refresh();
+    await run(async () => {
+      await fetch(`/api/goals/${g.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ACHIEVED" }) });
+      router.refresh();
+    });
   }
 
   return (
@@ -84,9 +91,9 @@ export function GoalsWorkspace({ goals, canManage, people, projects, lockedProje
                   </div>
                   {canManage ? (
                     <div className="flex gap-1">
-                      {g.status === "ACTIVE" ? <button title="Mark achieved" onClick={() => markAchieved(g)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-emerald-600"><CheckCircle2 className="size-4" /></button> : null}
+                      {g.status === "ACTIVE" ? <button title="Mark achieved" disabled={rowBusy} onClick={() => markAchieved(g)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-emerald-600 disabled:opacity-50"><CheckCircle2 className="size-4" /></button> : null}
                       <button title="Edit" onClick={() => openEdit(g)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><Pencil className="size-3.5" /></button>
-                      <button title="Delete" onClick={() => remove(g.id)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600"><Trash2 className="size-3.5" /></button>
+                      <button title="Delete" disabled={rowBusy} onClick={() => remove(g.id)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600 disabled:opacity-50"><Trash2 className="size-3.5" /></button>
                     </div>
                   ) : null}
                 </div>

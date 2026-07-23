@@ -7,6 +7,7 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import type { ProjectMilestone, ProjectPerson } from "@/lib/api";
 import { formatDate } from "@/lib/format";
+import { useSubmitLock } from "@/lib/hooks";
 
 const input = "w-full rounded-lg border border-hairline bg-panel px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none";
 const label = "mb-1.5 block text-sm font-medium text-slate-700";
@@ -27,6 +28,9 @@ export function MilestonesPanel({ projectId, milestones, canManage, people }: { 
   const [modal, setModal] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Guards the inline toggle/delete icons — a double-click on the completion
+  // circle would otherwise flip status twice and land on the wrong state.
+  const { busy: rowBusy, run } = useSubmitLock();
 
   const openEdit = (m: ProjectMilestone) => setModal({ id: m.id, title: m.title, description: m.description ?? "", status: m.status, ownerEmployeeId: m.ownerEmployeeId ?? "", dueDate: m.dueDate?.slice(0, 10) ?? "", progress: String(m.progress) });
 
@@ -44,10 +48,17 @@ export function MilestonesPanel({ projectId, milestones, canManage, people }: { 
     } finally { setBusy(false); }
   }
   async function toggle(m: ProjectMilestone) {
-    await fetch(`/api/milestones/${m.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: m.status === "COMPLETED" ? "IN_PROGRESS" : "COMPLETED" }) });
-    router.refresh();
+    await run(async () => {
+      await fetch(`/api/milestones/${m.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: m.status === "COMPLETED" ? "IN_PROGRESS" : "COMPLETED" }) });
+      router.refresh();
+    });
   }
-  async function remove(id: string) { await fetch(`/api/milestones/${id}`, { method: "DELETE" }); router.refresh(); }
+  async function remove(id: string) {
+    await run(async () => {
+      await fetch(`/api/milestones/${id}`, { method: "DELETE" });
+      router.refresh();
+    });
+  }
 
   return (
     <Card>
@@ -57,7 +68,7 @@ export function MilestonesPanel({ projectId, milestones, canManage, people }: { 
           const overdue = m.status !== "COMPLETED" && m.dueDate && new Date(m.dueDate).getTime() < Date.now();
           return (
             <li key={m.id} className="flex items-start gap-3 px-5 py-3">
-              <button disabled={!canManage} onClick={() => toggle(m)} className="mt-0.5 text-slate-300 enabled:hover:text-emerald-600 disabled:cursor-default">
+              <button disabled={!canManage || rowBusy} onClick={() => toggle(m)} className="mt-0.5 text-slate-300 enabled:hover:text-emerald-600 disabled:cursor-default disabled:opacity-60">
                 {m.status === "COMPLETED" ? <CheckCircle2 className="size-5 text-emerald-500" /> : <Circle className="size-5" />}
               </button>
               <div className="min-w-0 flex-1">
@@ -75,7 +86,7 @@ export function MilestonesPanel({ projectId, milestones, canManage, people }: { 
               {canManage ? (
                 <div className="flex shrink-0 gap-1">
                   <button onClick={() => openEdit(m)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><Pencil className="size-3.5" /></button>
-                  <button onClick={() => remove(m.id)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600"><Trash2 className="size-3.5" /></button>
+                  <button disabled={rowBusy} onClick={() => remove(m.id)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600 disabled:opacity-50"><Trash2 className="size-3.5" /></button>
                 </div>
               ) : null}
             </li>

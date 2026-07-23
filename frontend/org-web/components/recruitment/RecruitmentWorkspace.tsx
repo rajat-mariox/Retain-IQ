@@ -6,6 +6,7 @@ import { Briefcase, KanbanSquare, Plus, Users2 } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { cn } from "@/lib/cn";
+import { useSubmitLock } from "@/lib/hooks";
 import type {
   OrgDepartment,
   OrgDesignation,
@@ -254,10 +255,13 @@ function RequisitionsTab({
   onSaved: () => void;
 }) {
   const [edit, setEdit] = useState<RecRequisition | null>(null);
+  const { busy, run } = useSubmitLock();
   async function setStatus(r: RecRequisition, status: string) {
-    const res = await call(`/api/recruitment/requisitions/${r.id}`, "PATCH", { status });
-    if (res.ok) onSaved();
-    else alert(res.error);
+    await run(async () => {
+      const res = await call(`/api/recruitment/requisitions/${r.id}`, "PATCH", { status });
+      if (res.ok) onSaved();
+      else alert(res.error);
+    });
   }
   return (
     <Card>
@@ -291,12 +295,12 @@ function RequisitionsTab({
                   <div className="flex justify-end gap-2">
                     <button type="button" className={btnGhost} onClick={() => setEdit(r)}>Edit</button>
                     {r.status === "OPEN" ? (
-                      <button type="button" className={btnGhost} onClick={() => setStatus(r, "ON_HOLD")}>Hold</button>
+                      <button type="button" disabled={busy} className={cn(btnGhost, "disabled:opacity-50")} onClick={() => setStatus(r, "ON_HOLD")}>Hold</button>
                     ) : r.status === "ON_HOLD" ? (
-                      <button type="button" className={btnGhost} onClick={() => setStatus(r, "OPEN")}>Reopen</button>
+                      <button type="button" disabled={busy} className={cn(btnGhost, "disabled:opacity-50")} onClick={() => setStatus(r, "OPEN")}>Reopen</button>
                     ) : null}
                     {r.status !== "CLOSED" && r.status !== "FILLED" ? (
-                      <button type="button" className={btnGhost} onClick={() => setStatus(r, "CLOSED")}>Close</button>
+                      <button type="button" disabled={busy} className={cn(btnGhost, "disabled:opacity-50")} onClick={() => setStatus(r, "CLOSED")}>Close</button>
                     ) : null}
                   </div>
                 </td>
@@ -610,6 +614,9 @@ function ApplicationDetail({
   const [showInterview, setShowInterview] = useState(false);
   const [showOffer, setShowOffer] = useState(false);
   const [showHire, setShowHire] = useState(false);
+  // One action at a time: the star rating in particular fires a PATCH per star,
+  // so clicking "4" would otherwise send four concurrent writes.
+  const { busy, run } = useSubmitLock();
 
   const load = async () => {
     setLoading(true);
@@ -622,20 +629,26 @@ function ApplicationDetail({
   useMemoLoad(applicationId, load);
 
   async function move(stage: string) {
-    const res = await call(`/api/recruitment/applications/${applicationId}`, "PATCH", { stage });
-    if (res.ok) { await load(); onChanged(); }
-    else alert(res.error);
+    await run(async () => {
+      const res = await call(`/api/recruitment/applications/${applicationId}`, "PATCH", { stage });
+      if (res.ok) { await load(); onChanged(); }
+      else alert(res.error);
+    });
   }
   async function rate(rating: number) {
-    const res = await call(`/api/recruitment/applications/${applicationId}`, "PATCH", { rating });
-    if (res.ok) { await load(); onChanged(); }
-    else alert(res.error);
+    await run(async () => {
+      const res = await call(`/api/recruitment/applications/${applicationId}`, "PATCH", { rating });
+      if (res.ok) { await load(); onChanged(); }
+      else alert(res.error);
+    });
   }
   async function reject() {
     const reason = window.prompt("Reason for rejecting (optional):") ?? "";
-    const res = await call(`/api/recruitment/applications/${applicationId}`, "PATCH", { stage: "REJECTED", rejectedReason: reason || null });
-    if (res.ok) { await load(); onChanged(); }
-    else alert(res.error);
+    await run(async () => {
+      const res = await call(`/api/recruitment/applications/${applicationId}`, "PATCH", { stage: "REJECTED", rejectedReason: reason || null });
+      if (res.ok) { await load(); onChanged(); }
+      else alert(res.error);
+    });
   }
 
   const canAct = app && app.stage !== "HIRED" && app.stage !== "REJECTED";
@@ -657,7 +670,7 @@ function ApplicationDetail({
               <span className={pill(REQ_STATUS_TINT, "OPEN")}>{STAGE_LABEL[app.stage] ?? app.stage}</span>
               <div className="mt-1 text-sm text-amber-500">
                 {[1, 2, 3, 4, 5].map((n) => (
-                  <button key={n} type="button" onClick={() => rate(n)} className={n <= (app.rating ?? 0) ? "text-amber-500" : "text-slate-300"}>★</button>
+                  <button key={n} type="button" disabled={busy} onClick={() => rate(n)} className={cn(n <= (app.rating ?? 0) ? "text-amber-500" : "text-slate-300", "disabled:opacity-50")}>★</button>
                 ))}
               </div>
             </div>
@@ -666,11 +679,11 @@ function ApplicationDetail({
           {/* stage actions */}
           {canAct && (
             <div className="flex flex-wrap gap-2">
-              {next && <button type="button" className={btnPrimary} onClick={() => move(next)}>Move to {STAGE_LABEL[next]}</button>}
+              {next && <button type="button" disabled={busy} className={cn(btnPrimary, "disabled:opacity-50")} onClick={() => move(next)}>Move to {STAGE_LABEL[next]}</button>}
               <button type="button" className={btnGhost} onClick={() => setShowInterview(true)}>Schedule interview</button>
               <button type="button" className={btnGhost} onClick={() => setShowOffer(true)}>Make offer</button>
               <button type="button" className={cn(btn, "bg-emerald-600 text-white hover:bg-emerald-500")} onClick={() => setShowHire(true)}>Hire</button>
-              <button type="button" className={cn(btn, "border border-rose-200 text-rose-600 hover:bg-rose-50")} onClick={reject}>Reject</button>
+              <button type="button" disabled={busy} className={cn(btn, "border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50")} onClick={reject}>Reject</button>
             </div>
           )}
           {app.stage === "HIRED" && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700">Hired — an employee record was created from this candidate.</p>}
@@ -775,10 +788,13 @@ function OutcomeSelect({ interviewId, value, onChanged }: { interviewId: string;
 }
 
 function OfferActions({ offerId, status, onChanged }: { offerId: string; status: string; onChanged: () => void }) {
+  const { busy, run } = useSubmitLock();
   async function set(next: string) {
-    const res = await call(`/api/recruitment/offers/${offerId}`, "PATCH", { status: next });
-    if (res.ok) onChanged();
-    else alert(res.error);
+    await run(async () => {
+      const res = await call(`/api/recruitment/offers/${offerId}`, "PATCH", { status: next });
+      if (res.ok) onChanged();
+      else alert(res.error);
+    });
   }
   const actions: [string, string][] = [];
   if (status === "DRAFT") actions.push(["Send", "SENT"]);
@@ -787,7 +803,7 @@ function OfferActions({ offerId, status, onChanged }: { offerId: string; status:
   return (
     <div className="mt-1.5 flex gap-2">
       {actions.map(([txt, val]) => (
-        <button key={val} type="button" className={cn(btn, "border border-hairline bg-panel px-2 py-1 text-slate-600 hover:bg-panel")} onClick={() => set(val)}>{txt}</button>
+        <button key={val} type="button" disabled={busy} className={cn(btn, "border border-hairline bg-panel px-2 py-1 text-slate-600 hover:bg-panel disabled:opacity-50")} onClick={() => set(val)}>{txt}</button>
       ))}
     </div>
   );

@@ -6,6 +6,7 @@ import { CheckCircle2, Circle, ClipboardList, MinusCircle, Plus, Trash2, Users }
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { cn } from "@/lib/cn";
+import { useSubmitLock } from "@/lib/hooks";
 import type { OnbItem, OnbJourneyDetail, OnbOverview, OnbTask, OnbTemplate, OnbTemplateSummary } from "@/lib/api";
 
 type Tab = "people" | "templates";
@@ -157,6 +158,9 @@ function JourneyModal({ employeeId, onClose, onChanged }: { employeeId: string; 
   const [detail, setDetail] = useState<OnbJourneyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  // The status circle cycles PENDING→DONE→SKIPPED; a double-click would advance
+  // it twice and skip a state, so serialise the toggle.
+  const { busy: cycling, run } = useSubmitLock();
 
   const load = async () => {
     setLoading(true);
@@ -167,9 +171,11 @@ function JourneyModal({ employeeId, onClose, onChanged }: { employeeId: string; 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [employeeId]);
 
   async function cycle(task: OnbTask) {
-    const next = task.status === "PENDING" ? "DONE" : task.status === "DONE" ? "SKIPPED" : "PENDING";
-    const res = await call(`/api/onboarding/tasks/${task.id}`, "PATCH", { status: next });
-    if (res.ok) { await load(); onChanged(); } else alert(res.error);
+    await run(async () => {
+      const next = task.status === "PENDING" ? "DONE" : task.status === "DONE" ? "SKIPPED" : "PENDING";
+      const res = await call(`/api/onboarding/tasks/${task.id}`, "PATCH", { status: next });
+      if (res.ok) { await load(); onChanged(); } else alert(res.error);
+    });
   }
   async function removeTask(task: OnbTask) {
     if (!confirm(`Remove "${task.title}"?`)) return;
@@ -196,7 +202,7 @@ function JourneyModal({ employeeId, onClose, onChanged }: { employeeId: string; 
           <div className="space-y-2">
             {j.tasks.map((t) => (
               <div key={t.id} className="flex items-start gap-3 rounded-lg border border-hairline bg-panel px-3 py-2">
-                <button type="button" onClick={() => cycle(t)} className="mt-0.5 shrink-0" title="Toggle status">
+                <button type="button" disabled={cycling} onClick={() => cycle(t)} className="mt-0.5 shrink-0 disabled:opacity-60" title="Toggle status">
                   {t.status === "DONE" ? <CheckCircle2 className="size-5 text-emerald-500" /> : t.status === "SKIPPED" ? <MinusCircle className="size-5 text-slate-300" /> : <Circle className="size-5 text-slate-300" />}
                 </button>
                 <div className="min-w-0 flex-1">
@@ -255,9 +261,12 @@ function AddTaskInline({ journeyId, onDone, onCancel }: { journeyId: string; onD
 function TemplatesTab({ templates, onChanged }: { templates: OnbTemplateSummary[]; onChanged: () => void }) {
   const [openNew, setOpenNew] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const { busy, run } = useSubmitLock();
   async function makeDefault(id: string) {
-    const res = await call(`/api/onboarding/templates/${id}`, "PATCH", { isDefault: true });
-    if (res.ok) onChanged(); else alert(res.error);
+    await run(async () => {
+      const res = await call(`/api/onboarding/templates/${id}`, "PATCH", { isDefault: true });
+      if (res.ok) onChanged(); else alert(res.error);
+    });
   }
   async function remove(t: OnbTemplateSummary) {
     if (!confirm(`Delete template "${t.name}"?`)) return;
@@ -276,7 +285,7 @@ function TemplatesTab({ templates, onChanged }: { templates: OnbTemplateSummary[
             </div>
             <div className="flex gap-2">
               <button type="button" className={btnGhost} onClick={() => setEditId(t.id)}>Edit items</button>
-              {!t.isDefault && <button type="button" className={btnGhost} onClick={() => makeDefault(t.id)}>Set default</button>}
+              {!t.isDefault && <button type="button" disabled={busy} className={cn(btnGhost, "disabled:opacity-50")} onClick={() => makeDefault(t.id)}>Set default</button>}
               {!t.isDefault && <button type="button" className={cn(btn, "text-rose-500 hover:bg-rose-50")} onClick={() => remove(t)}><Trash2 className="size-3.5" /></button>}
             </div>
           </div>

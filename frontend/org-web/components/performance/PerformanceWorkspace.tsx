@@ -6,6 +6,7 @@ import { Award, ChevronLeft, Plus, Trash2, Users2 } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { cn } from "@/lib/cn";
+import { useSubmitLock } from "@/lib/hooks";
 import type { PerfCycle, PerfCycleReviews, PerfHistory, PerfReview } from "@/lib/api";
 
 interface EmpLite { id: string; name: string }
@@ -77,9 +78,12 @@ export function PerformanceWorkspace({ cycles, employees }: { cycles: PerfCycle[
 function CyclesList({ cycles, onOpen, onChanged }: { cycles: PerfCycle[]; onOpen: (c: PerfCycle) => void; onChanged: () => void }) {
   const [openNew, setOpenNew] = useState(false);
   const active = cycles.find((c) => c.status === "ACTIVE");
+  const { busy, run } = useSubmitLock();
   async function setStatus(c: PerfCycle, status: string) {
-    const res = await call(`/api/performance/cycles/${c.id}`, "PATCH", { status });
-    if (res.ok) onChanged(); else alert(res.error);
+    await run(async () => {
+      const res = await call(`/api/performance/cycles/${c.id}`, "PATCH", { status });
+      if (res.ok) onChanged(); else alert(res.error);
+    });
   }
   async function remove(c: PerfCycle) {
     if (!confirm(`Delete cycle "${c.name}" and all its reviews?`)) return;
@@ -124,8 +128,8 @@ function CyclesList({ cycles, onOpen, onChanged }: { cycles: PerfCycle[]; onOpen
                   <td className="px-5 py-3 text-right">
                     <div className="flex justify-end gap-2">
                       <button type="button" className={btnPrimary} onClick={() => onOpen(c)}>Open</button>
-                      {c.status === "DRAFT" && <button type="button" className={btnGhost} onClick={() => setStatus(c, "ACTIVE")}>Activate</button>}
-                      {c.status === "ACTIVE" && <button type="button" className={btnGhost} onClick={() => setStatus(c, "CLOSED")}>Close</button>}
+                      {c.status === "DRAFT" && <button type="button" disabled={busy} className={cn(btnGhost, "disabled:opacity-50")} onClick={() => setStatus(c, "ACTIVE")}>Activate</button>}
+                      {c.status === "ACTIVE" && <button type="button" disabled={busy} className={cn(btnGhost, "disabled:opacity-50")} onClick={() => setStatus(c, "CLOSED")}>Close</button>}
                       <button type="button" className={cn(btn, "text-rose-500 hover:bg-rose-50")} onClick={() => remove(c)}><Trash2 className="size-3.5" /></button>
                     </div>
                   </td>
@@ -307,7 +311,10 @@ function ReviewModal({ reviewId, onClose, onChanged }: { reviewId: string; onClo
     if (r1.ok && r2.ok) { await load(); onChanged(); } else alert(r1.error ?? r2.error);
   }
   async function setStatus(status: string) {
+    if (saving) return; // don't let a double-click advance the status twice
+    setSaving(true);
     const res = await call(`/api/performance/reviews/${reviewId}`, "PATCH", { status });
+    setSaving(false);
     if (res.ok) { await load(); onChanged(); } else alert(res.error);
   }
 
@@ -358,7 +365,7 @@ function ReviewModal({ reviewId, onClose, onChanged }: { reviewId: string; onClo
 
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={btnPrimary} disabled={saving} onClick={saveAll}>{saving ? "Saving…" : "Save review"}</button>
-            {nextStatus && <button type="button" className={btnGhost} onClick={() => setStatus(nextStatus)}>Move to {nextStatus.replace("_", " ").toLowerCase()}</button>}
+            {nextStatus && <button type="button" disabled={saving} className={cn(btnGhost, "disabled:opacity-50")} onClick={() => setStatus(nextStatus)}>Move to {nextStatus.replace("_", " ").toLowerCase()}</button>}
           </div>
 
           {/* achievements */}

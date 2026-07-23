@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Coffee, Loader2, LogIn, LogOut, Play } from "lucide-react";
 import { LocalTime } from "@/components/ui/LocalTime";
 import { cn } from "@/lib/cn";
+import { useCoalescedCallback } from "@/lib/hooks";
 
 export type AttendanceAction = "CHECK_IN" | "CHECK_OUT" | "BREAK_START" | "BREAK_END";
 
@@ -85,22 +86,28 @@ export function CheckInOut({ initial }: { initial: AttendanceStatus | null }) {
     if (res.ok) setStatus((await res.json()) as AttendanceStatus);
   }, []);
 
+  // A single check-in from the desktop agent can emit several attendance frames
+  // in quick succession (session + break + roll-up). Coalesce them so a burst
+  // does one status re-read and one server refresh, not one of each per frame —
+  // the refresh in particular re-renders every server card on the page.
+  const sync = useCoalescedCallback(() => {
+    void load();
+    router.refresh();
+  }, 800);
+
   // Live sync: the SSE stream carries attendance events alongside notifications.
   useEffect(() => {
     const es = new EventSource("/api/notifications/stream");
     es.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data) as { type?: string };
-        if (data.type === "attendance") {
-          void load();
-          router.refresh(); // keep the surrounding server-rendered cards honest
-        }
+        if (data.type === "attendance") sync();
       } catch {
         // ignore keep-alive pings and any non-JSON frames
       }
     };
     return () => es.close();
-  }, [load, router]);
+  }, [sync]);
 
   async function act(path: string, key: string) {
     setBusy(key);
