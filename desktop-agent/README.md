@@ -109,6 +109,23 @@ Environment variables (or a saved `agent-state.json` under Electron's userData):
 npm run package    # electron-builder → release/
 ```
 
+Per-OS targets are configured: Windows (`nsis` installer + `portable`), macOS
+(`dmg` + `zip`), Linux (`AppImage` + `deb`). The app icon is `build/icon.png`
+(512×512), from which electron-builder derives the `.ico` / `.icns`. Native
+modules are not rebuilt (`npmRebuild: false`) since `active-win` ships prebuilt
+binaries.
+
+Builds are **unsigned** for now — no code-signing or notarization is configured,
+so macOS Gatekeeper and Windows SmartScreen will warn on first launch. Signing
+and auto-update are the remaining release work and need certificates (Apple
+Developer ID, a Windows code-signing cert) plus an update feed; see
+[ROADMAP.md](./ROADMAP.md).
+
+> On Windows, building the installer locally needs Developer Mode enabled (or an
+> elevated shell): electron-builder unpacks a signing-tool cache that contains
+> symlinks. CI (Linux) is unaffected. The app itself packs fine either way
+> (`release/win-unpacked/`).
+
 ## Screenshots
 
 When `screenshotEnabled` is on (default), the agent captures **every connected

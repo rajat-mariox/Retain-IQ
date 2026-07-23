@@ -101,10 +101,13 @@ onset would double-count idle time.
 Largest and most important for real deployment, but it gates on decisions
 (signing certs, update host) that are ops/business calls, not code.
 
-### 5.1 Per-OS build targets
-- `package.json` build block has appId/files only — no `mac`/`win`/`linux` targets.
-- **Do:** add electron-builder targets (nsis for Windows, dmg/zip for macOS, AppImage/deb for Linux), plus icons and per-OS metadata.
-- **Effort:** ~M.
+### 5.1 Per-OS build targets ✅ DONE
+- **Shipped:** electron-builder now targets Windows (`nsis` + `portable`),
+  macOS (`dmg` + `zip`), Linux (`AppImage` + `deb`), with a 512×512
+  `build/icon.png` and per-OS metadata. `npmRebuild: false` avoids rebuilding
+  `active-win`'s prebuilt native binary. Verified locally: the app packs to
+  `release/win-unpacked/` (installer wrapping needs Windows Developer Mode
+  locally, but is fine on CI).
 
 ### 5.2 Code signing & notarization
 - Without signing, macOS Gatekeeper and Windows SmartScreen block installs.
@@ -117,9 +120,11 @@ Largest and most important for real deployment, but it gates on decisions
 - **Depends on:** 5.1 + 5.2 (updates must be signed).
 - **Effort:** ~M. **Both sides:** needs the hosted feed/release infra.
 
-### 5.4 Agent CI pipeline
-- No CI for the agent (no workflow builds/tests it). Add a workflow that builds + runs tests on push, and (later) produces signed release artifacts.
-- **Effort:** ~S–M.
+### 5.4 Agent CI pipeline ✅ DONE (build + test)
+- **Shipped:** `.github/workflows/desktop-agent.yml` builds and tests the agent
+  on push/PR touching `desktop-agent/**`, scoped to its own path and lockfile
+  (it's outside the monorepo workspaces). Producing signed release artifacts is
+  deferred to 5.2/5.3 (needs certs + an update feed).
 
 ---
 
