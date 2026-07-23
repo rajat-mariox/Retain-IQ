@@ -94,19 +94,29 @@ npm run package    # electron-builder → release/
 
 ## Screenshots
 
-When `screenshotEnabled` is on (default), the agent captures the primary display
-every `screenshotIntervalSeconds` (10 min) while tracking (including idle time,
-so away-from-desk activity is still captured):
-`desktopCapturer` → downscaled JPEG → `POST /v1/storage/screenshots` reserves
-quota + returns a presigned URL → the bytes are PUT directly to object storage →
-an `activity.screenshot.captured` event is logged on the timeline. If the org
-has screenshots disabled or is over quota, the request is refused and the agent
-simply skips (no retries spam). macOS needs Screen-Recording permission.
+When `screenshotEnabled` is on (default), the agent captures **every connected
+display** every `screenshotIntervalSeconds` (10 min) while tracking (including
+idle time, so away-from-desk activity is still captured):
+`desktopCapturer` → downscaled JPEG per screen → `POST /v1/storage/screenshots`
+reserves quota + returns a presigned URL → the bytes are PUT directly to object
+storage → one `activity.screenshot.captured` event per display is logged on the
+timeline, tagged with a `display` index. If the org has screenshots disabled or
+is over quota, the request is refused and the agent simply skips (no retries
+spam). macOS needs Screen-Recording permission.
+
+> Multi-monitor note: N displays produce N images per interval, each reserving
+> its own quota. Whatever uploads is kept even if a later screen is refused.
 
 Config: `RETAINIQ_SCREENSHOTS` (true/false), `RETAINIQ_SCREENSHOT_SECONDS`,
 `RETAINIQ_SCREENSHOT_WIDTH`, `RETAINIQ_SCREENSHOT_QUALITY`.
 
 ## Not yet included (roadmap)
 
-- Break start/stop and focus-block detection.
-- Multi-monitor capture (primary display only today).
+- Focus-block / context-switch detection (the ingestion contract already
+  accepts these event types; the agent doesn't compute them yet).
+- Attendance corrections from the agent (the backend has the full surface;
+  the agent surfaces overtime read-only but can't request a fix yet).
+- Auto-update, code-signing/notarization, and per-OS release builds.
+
+See [ROADMAP.md](./ROADMAP.md) for the full plan. Break start/stop, break-kind
+selection, and multi-monitor capture are now implemented.

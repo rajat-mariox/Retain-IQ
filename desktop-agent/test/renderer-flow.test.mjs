@@ -16,6 +16,7 @@ function makeEl(id) {
     textContent: "",
     innerHTML: "",
     disabled: false,
+    value: id === "breakKind" ? "LUNCH" : "",
     dataset: {},
     classList: {
       add: function (c) { this.owner._classes.add(c); },
@@ -28,7 +29,8 @@ function makeEl(id) {
 const els = {};
 for (const id of ["loginView", "statusView", "attendance", "sub", "who", "org", "state", "app", "site",
   "shots", "queued", "uploaded", "flush", "toggleBtn", "logoutBtn", "err", "email", "password",
-  "remember", "loginBtn", "attState", "attIn", "attOut", "attBreak", "breakBtn", "punchBtn"]) {
+  "remember", "loginBtn", "attState", "attIn", "attOut", "attBreak", "attOtRow", "attOt",
+  "breakKind", "breakBtn", "punchBtn"]) {
   const el = makeEl(id);
   el.classList.owner = el;
   els[id] = el;
@@ -82,12 +84,23 @@ check("status card visible", visible("statusView"), true);
 check("attendance card visible", visible("attendance"), true);
 check("break button enabled", els.breakBtn.disabled, false);
 check("break button label", els.breakBtn.textContent, "Start break");
+// The kind picker is offered before a break, and no overtime row without OT.
+check("break-kind picker visible before a break", visible("breakKind"), true);
+check("overtime row hidden when no overtime", visible("attOtRow"), false);
+
+console.log("\n2b) Overtime measured -> read-only row appears");
+state.attendance = { ...state.attendance, overtimeMinutes: 95 };
+await globalThis.__render();
+await settle();
+check("overtime row visible", visible("attOtRow"), true);
+check("overtime shown as pending", els.attOt.textContent, "1h 35m (pending approval)");
 
 console.log("\n3) On break");
 state.attendance = { ...state.attendance, state: "ON_BREAK", availableActions: ["BREAK_END"], onBreak: true };
 await globalThis.__render();
 await settle();
 check("break button label", els.breakBtn.textContent, "End break");
+check("break-kind picker hidden while on a break", visible("breakKind"), false);
 
 // The sign-out check must run while the attendance card is VISIBLE, otherwise
 // an earlier state that happens to hide it (e.g. the owner case) masks the bug.

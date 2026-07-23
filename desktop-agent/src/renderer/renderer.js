@@ -69,22 +69,36 @@ async function renderAttendance() {
   $("attOut").textContent = a.checkOutAt ? new Date(a.checkOutAt).toLocaleTimeString() : "—";
   $("attBreak").textContent = `${a.breakMinutes} min`;
 
+  // Overtime is measured but not payable until a manager signs it off, so show
+  // it read-only and say so. Only surface it once there's any to show.
+  const ot = a.overtimeMinutes || 0;
+  if (ot > 0) {
+    $("attOtRow").classList.remove("hide");
+    $("attOt").textContent = `${Math.floor(ot / 60)}h ${ot % 60}m (pending approval)`;
+  } else {
+    $("attOtRow").classList.add("hide");
+  }
+
   // Render strictly from the server's list of valid actions, so the agent can
   // never offer something the state machine would reject.
   const actions = a.availableActions || [];
   const breakBtn = $("breakBtn");
   const punchBtn = $("punchBtn");
+  const breakKind = $("breakKind");
 
   if (actions.includes("BREAK_END")) {
     breakBtn.classList.remove("hide");
     breakBtn.disabled = false;
     breakBtn.textContent = "End break";
+    breakKind.classList.add("hide"); // kind is fixed once a break is running
   } else if (actions.includes("BREAK_START")) {
     breakBtn.classList.remove("hide");
     breakBtn.disabled = false;
     breakBtn.textContent = "Start break";
+    breakKind.classList.remove("hide"); // let the person pick the kind first
   } else {
     breakBtn.classList.add("hide");
+    breakKind.classList.add("hide");
   }
 
   if (actions.includes("CHECK_OUT")) {
@@ -128,7 +142,7 @@ $("breakBtn").addEventListener("click", async () => {
   try {
     const a = await window.agent.attendance();
     if (a && (a.availableActions || []).includes("BREAK_END")) await window.agent.breakEnd();
-    else await window.agent.breakStart("BREAK");
+    else await window.agent.breakStart($("breakKind").value || "BREAK");
     await render();
   } finally {
     btn.disabled = false;

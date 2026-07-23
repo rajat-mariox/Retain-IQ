@@ -23,6 +23,7 @@
       .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
       .on { background: var(--brand); } .off { background: #94a3b8; } .idle { background: #d97706; }
       .hide { display: none; }
+      select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; background: #fff; margin-top: 8px; }
     </style>
   </head>
   <body>
@@ -63,6 +64,15 @@
         <div class="row"><span>Checked in</span><span id="attIn">—</span></div>
         <div class="row"><span>Checked out</span><span id="attOut">—</span></div>
         <div class="row"><span>Break today</span><span id="attBreak">0 min</span></div>
+        <div class="row" id="attOtRow"><span>Overtime today</span><span id="attOt">—</span></div>
+        <!-- Break kind is chosen before starting a break; hidden while on one. -->
+        <select id="breakKind" class="hide">
+          <option value="LUNCH">Lunch</option>
+          <option value="TEA">Tea / coffee</option>
+          <option value="PERSONAL">Personal</option>
+          <option value="MEETING">Meeting</option>
+          <option value="OTHER">Other</option>
+        </select>
         <button id="punchBtn" class="secondary hide">Check in</button>
         <button id="breakBtn" class="secondary hide">Start break</button>
       </div>

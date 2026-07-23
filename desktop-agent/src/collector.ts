@@ -124,15 +124,25 @@ export class Collector {
     if (this.queue.length > 0) await this.flush();
   }
 
-  /** Capture + upload a screenshot (even while idle), then log it on the timeline. */
+  /**
+   * Capture + upload a screenshot of every display (even while idle), then log
+   * each on the timeline. A multi-monitor setup produces one event per screen,
+   * tagged with its display index so they can be told apart.
+   */
   private async captureScreenshot(): Promise<void> {
     if (!this.isRunning()) return;
     const eff = this.effShots();
     if (!eff.enabled) return;
-    const key = await captureAndUpload(eff.width, eff.quality);
-    if (key) {
+    const shots = await captureAndUpload(eff.width, eff.quality);
+    if (shots.length > 0) {
       this.lastScreenshotAt = new Date().toISOString();
-      this.enqueue("activity.screenshot.captured", { objectKey: key });
+      for (const shot of shots) {
+        this.enqueue("activity.screenshot.captured", {
+          objectKey: shot.key,
+          display: shot.display,
+          displayCount: shot.displayCount,
+        });
+      }
     }
   }
 
