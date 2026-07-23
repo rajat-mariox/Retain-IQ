@@ -18,6 +18,7 @@ export interface AgentConfig {
   screenshotMaxWidth: number; // downscale width (px) to keep uploads small
   screenshotQuality: number; // JPEG quality 0-100
   policyRefreshSeconds: number; // how often to re-fetch the org monitoring policy
+  focusBlockMinSeconds: number; // uninterrupted time on one app/site to count as a focus block
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -35,4 +36,5 @@ export const DEFAULT_CONFIG: AgentConfig = {
   screenshotMaxWidth: Number(process.env.RETAINIQ_SCREENSHOT_WIDTH ?? 1280),
   screenshotQuality: Number(process.env.RETAINIQ_SCREENSHOT_QUALITY ?? 55),
   policyRefreshSeconds: Number(process.env.RETAINIQ_POLICY_SECONDS ?? 300), // re-check policy every 5 min
+  focusBlockMinSeconds: Number(process.env.RETAINIQ_FOCUS_BLOCK_SECONDS ?? 300), // ≥5 min on one thing = a focus block
 };

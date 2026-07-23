@@ -57,6 +57,11 @@ export class Collector {
   private wasIdle = false;
   private idleStartedAt = 0;
   private lastApp: string | null = null;
+  // Focus tracking: what the person is currently focused on (an app name or a
+  // domain) and when that stretch began. A change is a context switch; a long
+  // enough stretch, once it ends, is a completed focus block.
+  private focusTarget: string | null = null;
+  private focusStartedAt = 0;
   private lastFlushAt: string | null = null;
   private uploadedTotal = 0;
   private lastScreenshotAt: string | null = null;
@@ -160,6 +165,7 @@ export class Collector {
 
   async stop(): Promise<void> {
     if (!this.isRunning()) return;
+    this.endFocusBlock(); // don't lose a block in progress when tracking stops
     this.enqueue("activity.session.ended", {}, `${this.sessionId}-end`);
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.flushTimer) clearInterval(this.flushTimer);
@@ -173,6 +179,8 @@ export class Collector {
     this.sessionId = null;
     this.wasIdle = false;
     this.lastApp = null;
+    this.focusTarget = null;
+    this.focusStartedAt = 0;
   }
 
   private async poll(): Promise<void> {
@@ -183,6 +191,13 @@ export class Collector {
       if (!this.wasIdle) {
         this.wasIdle = true;
         this.idleStartedAt = Date.now() - idleSeconds * 1000;
+        // Going idle interrupts whatever they were focused on.
+        this.endFocusBlock();
+        this.focusTarget = null;
+        // Mark the onset so the timeline shows exactly when idle began. Carries
+        // seconds:0 — the matching idle.ended holds the full duration, and the
+        // scorer adds idleSeconds from BOTH, so a non-zero here would double it.
+        this.enqueue("activity.idle.started", { seconds: 0, at: new Date(this.idleStartedAt).toISOString() });
       }
       return; // don't attribute app time while idle
     }
@@ -215,6 +230,45 @@ export class Collector {
       this.enqueue("activity.website.visited", { domain, url, title: win?.title ?? null, seconds: cfg.pollSeconds });
     } else {
       this.enqueue("activity.app.used", { app, title: win?.title ?? null, seconds: cfg.pollSeconds });
+    }
+
+    // Focus tracking runs off the same sample: the "target" is the domain when
+    // on a site, else the app. Switching targets closes any qualifying focus
+    // block and records a context switch.
+    this.trackFocus(domain ?? app);
+  }
+
+  /**
+   * Update focus state for the current target (a domain or an app name).
+   * Unchanged → the block keeps growing. Changed → close the previous block if
+   * it was long enough, record the switch, and start a new block.
+   */
+  private trackFocus(target: string): void {
+    if (this.focusTarget === null) {
+      this.focusTarget = target;
+      this.focusStartedAt = Date.now();
+      return;
+    }
+    if (target === this.focusTarget) return; // same thing — block continues
+
+    this.endFocusBlock();
+    this.enqueue("activity.context_switch.recorded", { from: this.focusTarget, to: target });
+    this.focusTarget = target;
+    this.focusStartedAt = Date.now();
+  }
+
+  /**
+   * Close the current focus stretch. If it lasted at least the configured
+   * threshold, emit a completed focus block with its duration. Called on a
+   * context switch, when going idle, and on stop, so a block is never left open.
+   */
+  private endFocusBlock(): void {
+    // focusTarget === null is the sole "nothing in progress" signal; don't gate
+    // on focusStartedAt, which is a real timestamp and could legitimately be 0.
+    if (this.focusTarget === null) return;
+    const seconds = Math.round((Date.now() - this.focusStartedAt) / 1000);
+    if (seconds >= getConfig().focusBlockMinSeconds) {
+      this.enqueue("activity.focus.block.completed", { target: this.focusTarget, seconds });
     }
   }
 

@@ -56,7 +56,10 @@ Sign in with an org employee (e.g. a member of your org). The agent resolves the
 | `activity.session.started/ended` | app launch / quit | once per run |
 | `activity.app.used` | foreground app (`active-win`) | every `pollSeconds` (15s) |
 | `activity.website.visited` | active browser URL | every `pollSeconds` |
+| `activity.idle.started` | idle threshold crossed | on going idle |
 | `activity.idle.ended` | `powerMonitor.getSystemIdleTime()` | on return from idle |
+| `activity.context_switch.recorded` | active app/site changed | on each switch |
+| `activity.focus.block.completed` | ≥`focusBlockMinSeconds` on one app/site | when the stretch ends |
 
 For each poll the agent emits **one** event: a `website.visited` when the active
 window is a browser and the current URL is known, otherwise an `app.used`. This
@@ -85,6 +88,10 @@ Environment variables (or a saved `agent-state.json` under Electron's userData):
 | `RETAINIQ_POLL_SECONDS` | `15` | active-window / idle sample rate |
 | `RETAINIQ_FLUSH_SECONDS` | `30` | upload batch interval |
 | `RETAINIQ_IDLE_SECONDS` | `300` | no-input duration that counts as idle |
+| `RETAINIQ_FOCUS_BLOCK_SECONDS` | `300` | uninterrupted time on one app/site to count as a focus block |
+| `RETAINIQ_MAX_QUEUE` | `10000` | cap on locally-buffered events (oldest dropped beyond this) |
+| `RETAINIQ_TAB_PORT` | `7317` | loopback port the browser extension reports tabs to |
+| `RETAINIQ_POLICY_SECONDS` | `300` | how often to re-fetch the org monitoring policy |
 
 ## Packaging
 
@@ -112,12 +119,11 @@ Config: `RETAINIQ_SCREENSHOTS` (true/false), `RETAINIQ_SCREENSHOT_SECONDS`,
 
 ## Not yet included (roadmap)
 
-- Focus-block / context-switch detection (the ingestion contract already
-  accepts these event types; the agent doesn't compute them yet).
 - Real-time push sync (the agent polls status every 3s; the backend has a
   realtime publisher but no agent-facing stream endpoint yet).
 - Auto-update, code-signing/notarization, and per-OS release builds.
 
 See [ROADMAP.md](./ROADMAP.md) for the full plan. Break start/stop, break-kind
-selection, multi-monitor capture, overtime display, and attendance corrections
-(request / view / withdraw from the agent) are now implemented.
+selection, multi-monitor capture, overtime display, attendance corrections
+(request / view / withdraw), and idle-onset / focus-block / context-switch
+signals are now implemented.

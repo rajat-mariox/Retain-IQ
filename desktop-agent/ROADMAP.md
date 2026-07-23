@@ -56,11 +56,15 @@ withdraw).
 
 ---
 
-## Phase 3 — Richer local signals (agent-only, ingestion contract ready)
+## Phase 3 — Richer local signals ✅ DONE
 
 The ingestion schema already accepts these event types
-(`activity-ingestion .../events.ts:59,64-65`); the analytics worker will roll
-them up. Pure agent-side compute.
+(`activity-ingestion .../events.ts:59,64-65`); the analytics worker rolls them
+up. Pure agent-side compute. **Shipped** — idle-onset, focus blocks and
+context switches now emit from the collector; the focus state machine is
+unit-tested (6 cases). Note: `idle.started` carries `seconds:0` because the
+scorer sums idleSeconds from both idle.started and idle.ended, so a non-zero
+onset would double-count idle time.
 
 ### 3.1 Emit `activity.idle.started`
 - Today only `idle.ended` is emitted; idle onset is inferred from the gap. Emitting the start makes idle spans exact.
