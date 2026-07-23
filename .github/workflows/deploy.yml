@@ -132,6 +132,9 @@ jobs:
       EKS_CLUSTER_NAME: ${{ vars.STAGING_EKS_CLUSTER_NAME || vars.EKS_CLUSTER_NAME }}
       EKS_NAMESPACE: ${{ vars.STAGING_EKS_NAMESPACE || vars.EKS_NAMESPACE || 'retainiq' }}
       ECR_PREFIX: ${{ vars.STAGING_ECR_PREFIX || vars.ECR_PREFIX || 'retainiq' }}
+      # `secrets` can't be read inside a step `if:`, so surface its presence
+      # as an env flag the condition can test.
+      HAS_DB_PASSWORD: ${{ secrets.DATABASE_PASSWORD != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -146,7 +149,7 @@ jobs:
         run: aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
 
       - name: Provision AWS database infrastructure
-        if: ${{ vars.STAGING_PRIVATE_SUBNET_IDS != '' && vars.STAGING_DATABASE_SECURITY_GROUP_IDS != '' && secrets.DATABASE_PASSWORD != '' }}
+        if: ${{ vars.STAGING_PRIVATE_SUBNET_IDS != '' && vars.STAGING_DATABASE_SECURITY_GROUP_IDS != '' && env.HAS_DB_PASSWORD == 'true' }}
         working-directory: backend/infra/terraform
         env:
           TF_VAR_environment: staging
@@ -199,6 +202,9 @@ jobs:
       EKS_CLUSTER_NAME: ${{ vars.PRODUCTION_EKS_CLUSTER_NAME || vars.EKS_CLUSTER_NAME }}
       EKS_NAMESPACE: ${{ vars.PRODUCTION_EKS_NAMESPACE || vars.EKS_NAMESPACE || 'retainiq' }}
       ECR_PREFIX: ${{ vars.PRODUCTION_ECR_PREFIX || vars.ECR_PREFIX || 'retainiq' }}
+      # `secrets` can't be read inside a step `if:`, so surface its presence
+      # as an env flag the condition can test.
+      HAS_DB_PASSWORD: ${{ secrets.DATABASE_PASSWORD != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -213,7 +219,7 @@ jobs:
         run: aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
 
       - name: Provision AWS database infrastructure
-        if: ${{ vars.PRODUCTION_PRIVATE_SUBNET_IDS != '' && vars.PRODUCTION_DATABASE_SECURITY_GROUP_IDS != '' && secrets.DATABASE_PASSWORD != '' }}
+        if: ${{ vars.PRODUCTION_PRIVATE_SUBNET_IDS != '' && vars.PRODUCTION_DATABASE_SECURITY_GROUP_IDS != '' && env.HAS_DB_PASSWORD == 'true' }}
         working-directory: backend/infra/terraform
         env:
           TF_VAR_environment: production
