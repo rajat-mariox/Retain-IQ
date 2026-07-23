@@ -289,4 +289,9 @@ $("corrSubmit").addEventListener("click", async () => {
 globalThis.__render = render;
 
 render();
-setInterval(render, 3000);
+
+// Live-sync is the primary signal: the main process pushes "attendance changed"
+// off the SSE stream and we refresh at once. The interval is now just a slow
+// fallback for when the stream is down, not the main heartbeat.
+if (window.agent.onAttendanceChanged) window.agent.onAttendanceChanged(render);
+setInterval(render, 15000);

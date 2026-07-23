@@ -18,4 +18,7 @@ contextBridge.exposeInMainWorld("agent", {
   corrections: () => ipcRenderer.invoke("agent:corrections"),
   requestCorrection: (body: unknown) => ipcRenderer.invoke("agent:correction-request", body),
   cancelCorrection: (id: string) => ipcRenderer.invoke("agent:correction-cancel", id),
+  // Live-sync: the main process pushes this when an attendance change arrives on
+  // the SSE stream, so the renderer refreshes at once instead of waiting to poll.
+  onAttendanceChanged: (fn: () => void) => ipcRenderer.on("attendance:changed", () => fn()),
 });

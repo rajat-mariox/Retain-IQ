@@ -11,7 +11,7 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "package": "npm run build && electron-builder",
-    "test": "node test/renderer-flow.test.mjs && node --test test/focus-tracking.test.mjs",
+    "test": "node test/renderer-flow.test.mjs && node --test test/focus-tracking.test.mjs test/sse-parse.test.mjs",
     "test:renderer": "node test/renderer-flow.test.mjs"
   },
   "dependencies": {

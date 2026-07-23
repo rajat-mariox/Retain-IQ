@@ -44,6 +44,15 @@ export async function login(email: string, password: string, remember = true): P
   return session;
 }
 
+/**
+ * Exchange the refresh token for a fresh access token, persisting it. Exported
+ * as refreshAccessToken so the attendance SSE loop can re-auth on a 401 the same
+ * way identityFetch does.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
+  return refresh();
+}
+
 async function refresh(): Promise<string | null> {
   const { identityUrl } = getConfig();
   const session = getSession();

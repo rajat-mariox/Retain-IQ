@@ -19,10 +19,20 @@ import {
 } from "./api.js";
 import { clearSession, getConfig, getSession } from "./store.js";
 import { startTabServer, stopTabServer } from "./tabserver.js";
+import { startAttendanceStream, stopAttendanceStream } from "./attendance-stream.js";
 
 const collector = new Collector();
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
+
+/**
+ * Live-sync: when an attendance change arrives on the SSE stream, tell the
+ * renderer to re-read. This replaces the 3s poll as the primary signal; the
+ * poll stays on at a slower cadence as a fallback if the stream is down.
+ */
+function pushAttendanceChanged(): void {
+  win?.webContents.send("attendance:changed");
+}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -83,6 +93,7 @@ ipcMain.handle("agent:login", async (_e, email: string, password: string, rememb
   const session = await login(email, password, remember !== false);
   void collector.replayPending(); // send anything buffered before this login
   collector.start(); // auto-start tracking after login
+  startAttendanceStream(pushAttendanceChanged); // live-sync attendance changes
   // Signing in to the agent IS arriving at work: mark the employee present.
   // Awaited so the first render already shows the right state rather than
   // flashing "not checked in". Owners aren't tracked — a 403 here is expected.
@@ -124,6 +135,7 @@ ipcMain.handle("agent:stop", async () => {
   return collector.status();
 });
 ipcMain.handle("agent:logout", async () => {
+  stopAttendanceStream();
   await collector.stop();
   await agentCheckOut(); // close the day before the session is dropped
   clearSession();
@@ -137,6 +149,7 @@ void app.whenReady().then(() => {
   if (getSession()) {
     void collector.replayPending(); // upload anything left over from a previous run
     collector.start(); // resume tracking on relaunch
+    startAttendanceStream(pushAttendanceChanged); // resume live-sync too
     // Relaunching with a remembered session is the same as arriving at work —
     // without this, someone whose agent auto-starts each morning would never be
     // marked present. Check-in is idempotent, so a same-day restart is a no-op.
@@ -157,6 +170,7 @@ app.on("window-all-closed", () => {
 let checkoutOnQuitDone = false;
 app.on("before-quit", (event) => {
   (app as unknown as { isQuitting?: boolean }).isQuitting = true;
+  stopAttendanceStream();
   if (checkoutOnQuitDone || !getSession()) {
     stopTabServer();
     return;

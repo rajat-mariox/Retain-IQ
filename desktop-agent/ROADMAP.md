@@ -78,13 +78,21 @@ onset would double-count idle time.
 
 ---
 
-## Phase 4 — Real-time sync (both sides)
+## Phase 4 — Real-time sync ✅ DONE
 
-### 4.1 Replace 3s polling with a push channel
-- **Problem:** the renderer polls `/attendance/status` every 3s (`renderer.js:173`) + a 5s tray refresh (`main.ts:72`). The backend has a `RealtimePublisher` (`attendance.service.ts:7`) the agent can't consume — there is no agent-facing subscribe endpoint.
-- **Do:** expose an SSE/WebSocket status stream on the backend for the authenticated employee, consume it in the agent, and fall back to polling if the stream drops. Keeps the server as source of truth while cutting steady-state request volume.
-- **Touches:** backend (new stream endpoint), `api.ts`, `main.ts`.
-- **Effort:** ~M–L. **Risk:** med. **Do only after Phase 1–2** — polling works fine; this is an efficiency upgrade, not a gap.
+### 4.1 Replace polling with a push channel
+- **Turned out agent-only, not both-sides:** attendance changes are already
+  published on the user's notification channel, and identity already exposes it
+  as an SSE stream (`/v1/notifications/stream`) — the same one the web app's
+  CheckInOut consumes. No new backend endpoint was needed.
+- **Shipped:** the main process opens that stream (`attendance-stream.ts`) with
+  the Bearer token, and on each attendance frame pushes an IPC nudge to the
+  renderer, which re-reads at once. Reconnects with capped backoff, re-auths on
+  a 401 via refreshAccessToken, and the renderer poll drops to a 15s fallback so
+  a dead stream degrades gracefully. SSE frame parsing is unit-tested (6 cases,
+  covering split reads / multiple frames / ping filtering / malformed JSON), and
+  the full chain was live-verified: a check-in produced a
+  `{"type":"attendance","event":"checked-in",…}` frame on the stream.
 
 ---
 

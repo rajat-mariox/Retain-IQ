@@ -77,6 +77,16 @@ classified **productive / neutral / distracting** by the analytics worker.
 Events are queued and uploaded in batches every `flushSeconds` (30s); a failed
 upload is retried on the next tick, and a 401 triggers a token refresh.
 
+### Live attendance sync
+
+Attendance changes (from the web app, another device, or the auto-checkout
+sweep) are pushed to the agent over Server-Sent Events, so its attendance panel
+updates the moment something changes rather than on a poll. The main process
+opens the identity service's notification stream (which already carries
+attendance frames), and on each one nudges the renderer to re-read. The stream
+reconnects with capped backoff on any drop, and a slow renderer poll (15s) stays
+on as a fallback, so a dead stream degrades gracefully instead of going stale.
+
 ## Configuration
 
 Environment variables (or a saved `agent-state.json` under Electron's userData):
@@ -119,11 +129,9 @@ Config: `RETAINIQ_SCREENSHOTS` (true/false), `RETAINIQ_SCREENSHOT_SECONDS`,
 
 ## Not yet included (roadmap)
 
-- Real-time push sync (the agent polls status every 3s; the backend has a
-  realtime publisher but no agent-facing stream endpoint yet).
 - Auto-update, code-signing/notarization, and per-OS release builds.
 
 See [ROADMAP.md](./ROADMAP.md) for the full plan. Break start/stop, break-kind
 selection, multi-monitor capture, overtime display, attendance corrections
-(request / view / withdraw), and idle-onset / focus-block / context-switch
-signals are now implemented.
+(request / view / withdraw), idle-onset / focus-block / context-switch signals,
+and live SSE attendance sync are now implemented.
