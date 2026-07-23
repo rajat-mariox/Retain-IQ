@@ -10,6 +10,6 @@ backend/packages/database/prisma/generated
 # Working artifact from the task-tracker generator, not a deliverable.
 docs/*.backup.xlsx
 
-# Task-tracker generator and its output — kept local, not versioned.
+# Task-tracker generator and its output (xlsx, csv, …) — kept local, not versioned.
 docs/build_task_tracker.py
-docs/RetainIQ-Task-Tracker*.xlsx
+docs/RetainIQ-Task-Tracker.*
