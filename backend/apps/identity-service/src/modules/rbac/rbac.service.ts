@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, type OnModuleInit } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, type OnModuleInit } from "@nestjs/common";
+import { allPermissions, permissions, type Permission } from "@retainiq/authz";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { PermissionBundleService } from "../../common/security/permission-bundle.service.js";
@@ -11,6 +12,84 @@ interface CreateGrantInput {
   roleId: string;
   scopeType: ScopeType;
   scopeId?: string | null;
+}
+
+interface RoleInput {
+  name: string;
+  description?: string | null;
+  permissions: string[];
+}
+
+const KNOWN_PERMISSIONS = new Set<string>(allPermissions);
+
+/**
+ * Every permission described the way a non-technical admin would read it,
+ * grouped by area. `key` is the real permission string sent back to the API;
+ * `label`/`hint` are what the UI shows. Kept here so the wording lives with the
+ * permissions themselves and stays in one place.
+ */
+const PERMISSION_CATALOG: {
+  group: string;
+  items: { key: string; label: string; hint: string }[];
+}[] = [
+  {
+    group: "People",
+    items: [
+      { key: permissions.employeeRead, label: "See the team directory", hint: "View the list of people and their details." },
+      { key: permissions.employeeWrite, label: "Add & edit people", hint: "Add new members and change employee details." },
+    ],
+  },
+  {
+    group: "Attendance & Time",
+    items: [
+      { key: permissions.attendanceRead, label: "See attendance", hint: "View who's checked in, hours and the roster." },
+      { key: permissions.attendanceApprove, label: "Approve attendance fixes & overtime", hint: "Decide on correction requests and sign off overtime." },
+    ],
+  },
+  {
+    group: "Projects",
+    items: [
+      { key: permissions.projectRead, label: "See projects", hint: "View projects, tasks and boards." },
+      { key: permissions.projectWrite, label: "Manage projects", hint: "Create and edit projects, tasks and teams." },
+    ],
+  },
+  {
+    group: "Monitoring & Screenshots",
+    items: [
+      { key: permissions.screenshotsRead, label: "See screenshots", hint: "View captured screenshots." },
+      { key: permissions.screenshotsDownload, label: "Download screenshots", hint: "Save screenshots to your device." },
+      { key: permissions.screenshotsDelete, label: "Delete screenshots", hint: "Remove captured screenshots." },
+      { key: permissions.aiRiskRead, label: "See AI risk insights", hint: "View burnout and engagement signals." },
+    ],
+  },
+  {
+    group: "Payroll",
+    items: [
+      { key: permissions.payrollRead, label: "See payroll & salaries", hint: "View pay runs and what people are paid." },
+      { key: permissions.payrollApprove, label: "Run & approve payroll", hint: "Start pay runs and approve them." },
+    ],
+  },
+  {
+    group: "Company Administration",
+    items: [
+      { key: permissions.billingManage, label: "Manage billing & subscription", hint: "Change the plan and payment details." },
+      { key: permissions.securityManage, label: "Manage roles & access", hint: "Create roles and decide who can do what." },
+      { key: permissions.auditRead, label: "See the audit log", hint: "View the record of who did what, for compliance." },
+    ],
+  },
+];
+
+/**
+ * A custom role must include at least one real permission, and every permission
+ * must be one the platform actually defines — you can pick from the known set,
+ * you can't invent new access. Returns the cleaned, de-duplicated list.
+ */
+function validatePermissions(input: string[]): Permission[] {
+  const cleaned = [...new Set(input)];
+  if (cleaned.length === 0) throw new BadRequestException("Pick at least one thing this role can do.");
+  const unknown = cleaned.filter((p) => !KNOWN_PERMISSIONS.has(p));
+  if (unknown.length > 0) throw new BadRequestException(`These access options aren't recognised: ${unknown.join(", ")}.`);
+  return cleaned as Permission[];
 }
 
 /**
@@ -40,10 +119,117 @@ export class RbacService implements OnModuleInit {
     }
   }
 
+  /**
+   * The catalog of things a role can be allowed to do, in plain language and
+   * grouped by area, so an admin building a role picks from readable options
+   * ("See who's in the company") rather than raw permission strings
+   * ("employee.read"). Groups drive the section headings in the UI.
+   */
+  listPermissionCatalog() {
+    return PERMISSION_CATALOG;
+  }
+
   async listRoles() {
     const ctx = requireTenantContext();
     const roles = await this.prisma.role.findMany({ where: { orgId: ctx.orgId }, orderBy: [{ isSystem: "desc" }, { name: "asc" }] });
-    return roles.map((r) => ({ id: r.id, name: r.name, description: r.description, isSystem: r.isSystem, permissionCount: r.permissions.length }));
+    // Count how many people hold each role, so the UI can warn before deleting a
+    // role that's in use (and disable delete when it is).
+    const counts = await this.prisma.roleAssignment.groupBy({
+      by: ["roleId"],
+      where: { orgId: ctx.orgId, status: "ACTIVE" },
+      _count: { _all: true },
+    });
+    const inUse = new Map(counts.map((c) => [c.roleId, c._count._all]));
+    return roles.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      isSystem: r.isSystem,
+      permissions: r.permissions,
+      permissionCount: r.permissions.length,
+      assignedCount: inUse.get(r.id) ?? 0,
+    }));
+  }
+
+  /**
+   * Create a custom role for this org — a named set of the permissions the
+   * platform defines. Built-in roles are seeded separately; these are the ones
+   * an admin authors (e.g. "Finance", "HR").
+   */
+  async createRole(input: RoleInput) {
+    const ctx = requireTenantContext();
+    const name = input.name.trim();
+    if (name.length < 2) throw new BadRequestException("Give the role a name (at least 2 characters).");
+    const perms = validatePermissions(input.permissions);
+
+    const clash = await this.prisma.role.findFirst({ where: { orgId: ctx.orgId, name } });
+    if (clash) throw new ConflictException("A role with that name already exists.");
+
+    const role = await this.prisma.role.create({
+      data: { orgId: ctx.orgId, name, description: input.description?.trim() || null, permissions: perms, isSystem: false },
+    });
+    return { id: role.id, name: role.name, description: role.description, isSystem: role.isSystem, permissions: role.permissions };
+  }
+
+  /**
+   * Edit a custom role's name / description / permissions. Built-in roles are
+   * locked — they're re-synced from code on boot, so an edit here wouldn't
+   * stick and could confuse. Bumps version and clears the cached bundle of
+   * everyone holding the role, so the change takes effect at once.
+   */
+  async updateRole(id: string, input: Partial<RoleInput>) {
+    const ctx = requireTenantContext();
+    const role = await this.prisma.role.findFirst({ where: { id, orgId: ctx.orgId } });
+    if (!role) throw new NotFoundException("Role not found.");
+    if (role.isSystem) throw new ForbiddenException("The built-in Owner, Manager and Employee roles can't be edited.");
+
+    const data: { name?: string; description?: string | null; permissions?: Permission[]; version?: number } = {};
+    if (input.name !== undefined) {
+      const name = input.name.trim();
+      if (name.length < 2) throw new BadRequestException("Give the role a name (at least 2 characters).");
+      const clash = await this.prisma.role.findFirst({ where: { orgId: ctx.orgId, name, id: { not: id } } });
+      if (clash) throw new ConflictException("A role with that name already exists.");
+      data.name = name;
+    }
+    if (input.description !== undefined) data.description = input.description?.trim() || null;
+    if (input.permissions !== undefined) {
+      data.permissions = validatePermissions(input.permissions);
+      data.version = role.version + 1; // signal that effective access changed
+    }
+
+    const updated = await this.prisma.role.update({ where: { id: role.id }, data });
+    if (input.permissions !== undefined) await this.bundles.invalidateRole(ctx.orgId, role.id);
+    return { id: updated.id, name: updated.name, description: updated.description, isSystem: updated.isSystem, permissions: updated.permissions };
+  }
+
+  /**
+   * Delete a custom role. Blocked for built-in roles, and blocked while anyone
+   * still holds it — deleting a role out from under people would silently strip
+   * their access. The caller must reassign those people first.
+   */
+  async deleteRole(id: string) {
+    const ctx = requireTenantContext();
+    const role = await this.prisma.role.findFirst({ where: { id, orgId: ctx.orgId } });
+    if (!role) throw new NotFoundException("Role not found.");
+    if (role.isSystem) throw new ForbiddenException("The built-in Owner, Manager and Employee roles can't be deleted.");
+
+    const [grantCount, memberCount] = await Promise.all([
+      this.prisma.roleAssignment.count({ where: { orgId: ctx.orgId, roleId: id, status: "ACTIVE" } }),
+      this.prisma.organizationMembership.count({ where: { orgId: ctx.orgId, roleId: id, status: "ACTIVE" } }),
+    ]);
+    const total = grantCount + memberCount;
+    if (total > 0) {
+      throw new ConflictException(`This role is still assigned to ${total} ${total === 1 ? "person" : "people"}. Move them to another role before deleting it.`);
+    }
+
+    // No one holds the role now, but past grants that were REVOKED are still on
+    // record and reference it, which would block the delete on a foreign key.
+    // Those rows are only history, so clear them alongside the role.
+    await this.prisma.$transaction([
+      this.prisma.roleAssignment.deleteMany({ where: { orgId: ctx.orgId, roleId: id } }),
+      this.prisma.role.delete({ where: { id: role.id } }),
+    ]);
+    return { id: role.id, deleted: true };
   }
 
   /** Members with access + their active role grants (scope-labelled). Searchable. */

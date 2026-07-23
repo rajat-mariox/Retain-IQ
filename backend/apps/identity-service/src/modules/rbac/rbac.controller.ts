@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { permissions } from "@retainiq/authz";
 import { offsetPaginationQuerySchema } from "@retainiq/contracts";
 import { z } from "zod";
@@ -14,6 +14,18 @@ const createGrantSchema = z.object({
   roleId: z.string().uuid(),
   scopeType: z.enum(["ORG", "DEPARTMENT", "TEAM", "SELF"]),
   scopeId: z.string().uuid().nullable().optional(),
+});
+
+const createRoleSchema = z.object({
+  name: z.string().trim().min(2).max(60),
+  description: z.string().trim().max(200).nullable().optional(),
+  permissions: z.array(z.string()).min(1),
+});
+
+const updateRoleSchema = z.object({
+  name: z.string().trim().min(2).max(60).optional(),
+  description: z.string().trim().max(200).nullable().optional(),
+  permissions: z.array(z.string()).min(1).optional(),
 });
 
 const accessQuerySchema = offsetPaginationQuerySchema.extend({
@@ -33,6 +45,34 @@ export class RbacController {
   @RequirePermissions(permissions.securityManage)
   roles() {
     return this.rbac.listRoles();
+  }
+
+  /** The plain-language catalog of things a role can be allowed to do. */
+  @Get("permissions")
+  @RequirePermissions(permissions.securityManage)
+  permissionCatalog() {
+    return this.rbac.listPermissionCatalog();
+  }
+
+  @Post("roles")
+  @RequirePermissions(permissions.securityManage)
+  createRole(@Body(new ZodValidationPipe(createRoleSchema)) body: z.infer<typeof createRoleSchema>) {
+    return this.rbac.createRole(body);
+  }
+
+  @Patch("roles/:id")
+  @RequirePermissions(permissions.securityManage)
+  updateRole(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(updateRoleSchema)) body: z.infer<typeof updateRoleSchema>,
+  ) {
+    return this.rbac.updateRole(id, body);
+  }
+
+  @Delete("roles/:id")
+  @RequirePermissions(permissions.securityManage)
+  deleteRole(@Param("id", ParseUUIDPipe) id: string) {
+    return this.rbac.deleteRole(id);
   }
 
   @Get("access")

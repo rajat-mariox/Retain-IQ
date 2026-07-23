@@ -63,4 +63,19 @@ export class PermissionBundleService {
   invalidate(orgId: string, userId: string): Promise<void> {
     return this.cache.invalidate(`${orgId}:${userId}`);
   }
+
+  /**
+   * Drops the cached bundle of every user affected by a role — anyone holding it
+   * as a grant or as their membership's primary role. Call after editing a
+   * role's permissions so the change takes effect immediately rather than after
+   * the cache TTL. Users whose bundle isn't cached are simply no-ops.
+   */
+  async invalidateRole(orgId: string, roleId: string): Promise<void> {
+    const [grants, memberships] = await Promise.all([
+      this.prisma.roleAssignment.findMany({ where: { orgId, roleId, status: "ACTIVE" }, select: { userId: true } }),
+      this.prisma.organizationMembership.findMany({ where: { orgId, roleId, status: "ACTIVE" }, select: { userId: true } }),
+    ]);
+    const userIds = new Set([...grants.map((g) => g.userId), ...memberships.map((m) => m.userId)]);
+    await Promise.all([...userIds].map((userId) => this.invalidate(orgId, userId)));
+  }
 }

@@ -3,11 +3,12 @@ import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { PageNav } from "@/components/ui/PageNav";
 import { OrgStructurePanel } from "@/components/settings/OrgStructurePanel";
+import { RolesManager } from "@/components/settings/RolesManager";
 import { AccessRolesPanel } from "@/components/settings/AccessRolesPanel";
 import { MonitoringSettingsPanel } from "@/components/settings/MonitoringSettingsPanel";
 import { ProductivityRulesPanel } from "@/components/settings/ProductivityRulesPanel";
 import { ClientsRatesPanel } from "@/components/settings/ClientsRatesPanel";
-import { getAccess, getBillRates, getClients, getDepartments, getMembers, getMonitoringPolicy, getOrg, getPayrollSettings, getProductivityRules, getProjectPeople, getProjects, getRequisitions, getRoles, getTeams } from "@/lib/api";
+import { getAccess, getBillRates, getClients, getDepartments, getMembers, getMonitoringPolicy, getOrg, getPayrollSettings, getPermissionCatalog, getProductivityRules, getProjectPeople, getProjects, getRequisitions, getRoles, getTeams } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 const PAGE_SIZE = 10;
@@ -23,6 +24,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     getAccess(1, 10).catch(() => ({ items: [], total: 0, page: 1, pageSize: 10 })),
     getRequisitions().catch(() => []),
   ]);
+  // The plain-language access catalog for the role builder. Empty for admins
+  // without the manage-roles permission — the panel simply shows nothing to add.
+  const permissionCatalog = await getPermissionCatalog().catch(() => []);
   const monitoringPolicy = await getMonitoringPolicy().catch(() => ({ screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280, screenshotRetentionDays: 0 }));
   const productivityRules = await getProductivityRules().catch(() => null);
 
@@ -54,6 +58,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </Card>
 
         <OrgStructurePanel departments={departments} teams={teams} requisitions={requisitions} />
+
+        {/* Build your own roles, then assign them to people below. */}
+        {permissionCatalog.length > 0 ? <RolesManager initial={roles} catalog={permissionCatalog} /> : null}
 
         <AccessRolesPanel initial={access} roles={roles} departments={departments} teams={teams} />
 

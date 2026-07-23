@@ -1133,9 +1133,23 @@ export interface OrgRole {
   name: string;
   description: string | null;
   isSystem: boolean;
+  permissions: string[];
   permissionCount: number;
+  assignedCount: number;
 }
 export const getRoles = cache(() => apiFetch<OrgRole[]>("rbac/roles"));
+
+/** The plain-language list of things a role can be allowed to do, grouped by area. */
+export interface PermissionOption {
+  key: string;
+  label: string;
+  hint: string;
+}
+export interface PermissionGroup {
+  group: string;
+  items: PermissionOption[];
+}
+export const getPermissionCatalog = cache(() => apiFetch<PermissionGroup[]>("rbac/permissions"));
 
 export interface AccessGrant {
   id: string;
