@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, type OnModuleInit } from "@nestjs/common";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { PermissionBundleService } from "../../common/security/permission-bundle.service.js";
+import { ensureSystemRoles } from "../../common/security/roles.util.js";
 
 type ScopeType = "ORG" | "DEPARTMENT" | "TEAM" | "SELF";
 
@@ -18,11 +19,26 @@ interface CreateGrantInput {
  * PermissionBundleService); changing a grant busts that user's cached bundle.
  */
 @Injectable()
-export class RbacService {
+export class RbacService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly bundles: PermissionBundleService,
   ) {}
+
+  /**
+   * Re-sync every org's built-in Owner/Manager/Employee roles to the current
+   * definitions on boot. ensureSystemRoles upserts by (orgId, name) and rewrites
+   * the permission set, so a change to what a built-in role includes (e.g.
+   * removing payroll from Manager) propagates to organizations that already
+   * exist, not just newly-created ones. Cached bundles then refresh within their
+   * 60s TTL. Idempotent and safe to run every start-up.
+   */
+  async onModuleInit(): Promise<void> {
+    const orgs = await this.prisma.organization.findMany({ select: { id: true } });
+    for (const org of orgs) {
+      await this.prisma.$transaction((tx) => ensureSystemRoles(tx, org.id));
+    }
+  }
 
   async listRoles() {
     const ctx = requireTenantContext();

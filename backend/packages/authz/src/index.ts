@@ -29,6 +29,10 @@ export const allPermissions: Permission[] = Object.values(permissions);
 /**
  * Department managers (HR / project managers): manage team, projects/tasks,
  * attendance, view insights, and view + DELETE employee screenshots.
+ *
+ * Deliberately NOT payroll: salary is personal data, and managing a team
+ * doesn't require seeing what people are paid. Payroll access is granted only
+ * to the Owner or to a purpose-built role (e.g. Finance / HR) an admin creates.
  */
 export const managerPermissions: Permission[] = [
   permissions.employeeRead,
@@ -38,7 +42,6 @@ export const managerPermissions: Permission[] = [
   permissions.projectRead,
   permissions.projectWrite,
   permissions.aiRiskRead,
-  permissions.payrollRead,
   permissions.screenshotsRead,
   permissions.screenshotsDownload,
   permissions.screenshotsDelete,
