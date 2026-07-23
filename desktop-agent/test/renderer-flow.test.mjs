@@ -12,25 +12,32 @@ import { readFileSync } from "node:fs";
 function makeEl(id) {
   return {
     id,
-    _classes: new Set(id === "statusView" || id === "attendance" ? ["hide"] : []),
+    _classes: new Set(id === "statusView" || id === "attendance" || id === "corrections" || id === "corrForm" ? ["hide"] : []),
     textContent: "",
     innerHTML: "",
     disabled: false,
     value: id === "breakKind" ? "LUNCH" : "",
+    max: "",
+    title: "",
     dataset: {},
     classList: {
       add: function (c) { this.owner._classes.add(c); },
       remove: function (c) { this.owner._classes.delete(c); },
       contains: function (c) { return this.owner._classes.has(c); },
+      toggle: function (c, on) { if (on) this.owner._classes.add(c); else this.owner._classes.delete(c); },
     },
     addEventListener() {},
+    querySelectorAll() { return []; }, // corrList has no rendered rows in the stub
   };
 }
 const els = {};
 for (const id of ["loginView", "statusView", "attendance", "sub", "who", "org", "state", "app", "site",
   "shots", "queued", "uploaded", "flush", "toggleBtn", "logoutBtn", "err", "email", "password",
   "remember", "loginBtn", "attState", "attIn", "attOut", "attBreak", "attOtRow", "attOt",
-  "breakKind", "breakBtn", "punchBtn"]) {
+  "breakKind", "breakBtn", "punchBtn",
+  "corrections", "corrList", "corrNewBtn", "corrForm", "corrDay", "corrType",
+  "corrInWrap", "corrOutWrap", "corrOtWrap", "corrIn", "corrOut", "corrOt",
+  "corrReason", "corrErr", "corrSubmit", "corrCancel"]) {
   const el = makeEl(id);
   el.classList.owner = el;
   els[id] = el;
@@ -47,7 +54,9 @@ globalThis.window = {
     session: async () => state.session,
     status: async () => ({ running: true, idle: false, lastApp: "Code", currentSite: null, queued: 0, uploadedTotal: 0, lastFlushAt: null, screenshotsEnabled: false }),
     attendance: async () => state.attendance,
-    logout: async () => { state.session = null; state.attendance = null; return true; },
+    corrections: async () => state.corrections ?? [],
+    requestCorrection: async () => null, cancelCorrection: async () => true,
+    logout: async () => { state.session = null; state.attendance = null; state.corrections = []; return true; },
     breakStart: async () => {}, breakEnd: async () => {}, login: async () => {}, start: async () => {}, stop: async () => {},
   },
 };
@@ -82,6 +91,7 @@ await globalThis.__render();
 await settle();
 check("status card visible", visible("statusView"), true);
 check("attendance card visible", visible("attendance"), true);
+check("corrections card visible for staff", visible("corrections"), true);
 check("break button enabled", els.breakBtn.disabled, false);
 check("break button label", els.breakBtn.textContent, "Start break");
 // The kind picker is offered before a break; the overtime row is always shown
@@ -114,6 +124,7 @@ await settle();
 check("login card visible", visible("loginView"), true);
 check("status card hidden", visible("statusView"), false);
 check("attendance card hidden", visible("attendance"), false);
+check("corrections card hidden after sign-out", visible("corrections"), false);
 
 console.log("\n5) Owner (not tracked for attendance)");
 state = {
@@ -123,6 +134,7 @@ state = {
 await globalThis.__render();
 await settle();
 check("attendance card hidden for owner", visible("attendance"), false);
+check("corrections card hidden for owner", visible("corrections"), false);
 check("status card still visible", visible("statusView"), true);
 
 console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURE(S)"}`);

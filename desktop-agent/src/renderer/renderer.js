@@ -11,6 +11,7 @@ async function render() {
     loginView.classList.remove("hide");
     statusView.classList.add("hide");
     $("attendance").classList.add("hide");
+    $("corrections").classList.add("hide");
     $("sub").textContent = "Sign in to start activity tracking.";
     return;
   }
@@ -45,12 +46,14 @@ async function renderAttendance() {
   if (!box) return;
   const a = await window.agent.attendance();
 
-  // Owners aren't tracked for attendance — hide the panel entirely.
+  // Owners aren't tracked for attendance — hide both attendance and corrections.
   if (!a || !a.tracksAttendance) {
     box.classList.add("hide");
+    $("corrections").classList.add("hide");
     return;
   }
   box.classList.remove("hide");
+  $("corrections").classList.remove("hide");
 
   const STATE_LABEL = {
     NOT_CHECKED_IN: "Not checked in",
@@ -113,6 +116,68 @@ async function renderAttendance() {
   } else {
     punchBtn.classList.add("hide");
   }
+
+  await renderCorrections();
+}
+
+const STATUS_LABEL = { PENDING: "pending", APPROVED: "approved", REJECTED: "rejected", CANCELLED: "withdrawn" };
+const TYPE_LABEL = {
+  MISSED_CHECK_IN: "Missed check-in",
+  MISSED_CHECK_OUT: "Missed check-out",
+  WRONG_TIME: "Wrong time",
+  OVERTIME: "Overtime",
+  OTHER: "Other",
+};
+
+/**
+ * The employee's correction history. The list is server truth (approvals happen
+ * in the web app), so the agent only renders it and offers withdraw on pending
+ * ones. "Request a fix" is disabled while a request is already awaiting a
+ * decision — the backend allows one open request at a time.
+ */
+async function renderCorrections() {
+  const list = $("corrList");
+  const rows = (await window.agent.corrections()) || [];
+  if (rows.length === 0) {
+    list.innerHTML = `<div style="color:var(--muted); padding:8px 0;">No corrections raised.</div>`;
+  } else {
+    list.innerHTML = rows
+      .map((c) => {
+        const when = new Date(c.day).toLocaleDateString();
+        const type = TYPE_LABEL[c.type] || c.type;
+        const status = STATUS_LABEL[c.status] || c.status.toLowerCase();
+        const canWithdraw = c.status === "PENDING";
+        return `<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--line);">
+          <span>${when} · ${type} <em style="color:var(--muted);">(${status})</em></span>
+          ${canWithdraw ? `<button data-cancel="${c.id}" class="secondary" style="width:auto; margin:0; padding:4px 10px; font-size:12px;">Withdraw</button>` : ""}
+        </div>`;
+      })
+      .join("");
+    // Wire the withdraw buttons this render produced.
+    list.querySelectorAll("[data-cancel]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        await window.agent.cancelCorrection(btn.dataset.cancel);
+        await render();
+      });
+    });
+  }
+
+  // "Request a fix" is blocked while one is already pending (backend rejects it too).
+  const hasPending = rows.some((c) => c.status === "PENDING");
+  $("corrNewBtn").disabled = hasPending;
+  $("corrNewBtn").title = hasPending ? "You already have a request awaiting a decision" : "";
+}
+
+/** Show/hide the time/overtime inputs to match the chosen correction type. */
+function syncCorrectionForm() {
+  const type = $("corrType").value;
+  const needsIn = type === "MISSED_CHECK_IN" || type === "WRONG_TIME";
+  const needsOut = type === "MISSED_CHECK_OUT" || type === "WRONG_TIME";
+  const needsOt = type === "OVERTIME";
+  $("corrInWrap").classList.toggle("hide", !needsIn);
+  $("corrOutWrap").classList.toggle("hide", !needsOut);
+  $("corrOtWrap").classList.toggle("hide", !needsOt);
 }
 
 $("loginBtn").addEventListener("click", async () => {
@@ -171,11 +236,52 @@ $("logoutBtn").addEventListener("click", async () => {
     // leaving stale attendance on screen while that lands is misleading.
     $("statusView").classList.add("hide");
     $("attendance").classList.add("hide");
+    $("corrections").classList.add("hide");
     await window.agent.logout();
   } finally {
     btn.disabled = false;
     btn.textContent = "Sign out";
     await render();
+  }
+});
+
+// ---- corrections form ----
+$("corrNewBtn").addEventListener("click", () => {
+  $("corrDay").max = new Date().toISOString().slice(0, 10);
+  $("corrDay").value = new Date().toISOString().slice(0, 10);
+  $("corrErr").textContent = "";
+  syncCorrectionForm();
+  $("corrForm").classList.remove("hide");
+});
+$("corrCancel").addEventListener("click", () => $("corrForm").classList.add("hide"));
+$("corrType").addEventListener("change", syncCorrectionForm);
+
+$("corrSubmit").addEventListener("click", async () => {
+  const type = $("corrType").value;
+  const day = $("corrDay").value;
+  const reason = $("corrReason").value.trim();
+  const err = $("corrErr");
+  if (reason.length < 3) { err.textContent = "Please give a brief reason (at least 3 characters)."; return; }
+
+  // Build the payload to match the type — a time input is a local wall-clock on
+  // the chosen day, sent as an ISO instant, mirroring the web app.
+  const isoFor = (hhmm) => (hhmm ? new Date(`${day}T${hhmm}:00`).toISOString() : undefined);
+  const body = { day, type, reason };
+  if (type === "MISSED_CHECK_IN" || type === "WRONG_TIME") body.checkInAt = isoFor($("corrIn").value);
+  if (type === "MISSED_CHECK_OUT" || type === "WRONG_TIME") body.checkOutAt = isoFor($("corrOut").value);
+  if (type === "OVERTIME") body.overtimeMinutes = Number($("corrOt").value) || undefined;
+
+  const btn = $("corrSubmit");
+  btn.disabled = true;
+  err.textContent = "";
+  try {
+    const problem = await window.agent.requestCorrection(body);
+    if (problem) { err.textContent = problem; return; }
+    $("corrForm").classList.add("hide");
+    $("corrReason").value = "";
+    await render();
+  } finally {
+    btn.disabled = false;
   }
 });
 

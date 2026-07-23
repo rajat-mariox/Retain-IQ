@@ -76,6 +76,39 @@
         <button id="punchBtn" class="secondary hide">Check in</button>
         <button id="breakBtn" class="secondary hide">Start break</button>
       </div>
+
+      <!-- Attendance corrections: raise a fix for a day the clock got wrong.
+           The request goes to the employee's manager; nothing here edits the
+           record. Hidden for owners (same as the attendance card). -->
+      <div id="corrections" class="card hide" style="margin-top:14px;">
+        <div class="row" style="border-bottom:0; padding-bottom:2px;">
+          <span style="font-weight:600;">Corrections</span>
+          <button id="corrNewBtn" class="secondary" style="width:auto; margin:0; padding:6px 12px; font-size:13px;">Request a fix</button>
+        </div>
+        <div id="corrList" style="font-size:13px;"></div>
+
+        <!-- Request form (hidden until "Request a fix"). -->
+        <div id="corrForm" class="hide" style="border-top:1px solid var(--line); margin-top:10px; padding-top:12px;">
+          <label>Day</label>
+          <input id="corrDay" type="date" />
+          <label>What happened</label>
+          <select id="corrType">
+            <option value="MISSED_CHECK_IN">I forgot to check in</option>
+            <option value="MISSED_CHECK_OUT" selected>I forgot to check out</option>
+            <option value="WRONG_TIME">The recorded time is wrong</option>
+            <option value="OVERTIME">Claim overtime I worked</option>
+            <option value="OTHER">Something else</option>
+          </select>
+          <div id="corrInWrap"><label>Actual check-in time</label><input id="corrIn" type="time" /></div>
+          <div id="corrOutWrap"><label>Actual check-out time</label><input id="corrOut" type="time" /></div>
+          <div id="corrOtWrap"><label>Overtime minutes</label><input id="corrOt" type="number" min="1" max="1440" value="60" /></div>
+          <label>Why</label>
+          <input id="corrReason" type="text" placeholder="e.g. Client meeting ran late" />
+          <div class="err" id="corrErr"></div>
+          <button id="corrSubmit">Send to my manager</button>
+          <button id="corrCancel" class="secondary">Cancel</button>
+        </div>
+      </div>
     </div>
     <script src="renderer.js"></script>
   </body>

@@ -14,4 +14,8 @@ contextBridge.exposeInMainWorld("agent", {
   checkOut: () => ipcRenderer.invoke("agent:check-out"),
   breakStart: (kind?: string) => ipcRenderer.invoke("agent:break-start", kind),
   breakEnd: () => ipcRenderer.invoke("agent:break-end"),
+  // Attendance corrections — raise a fix for a mis-recorded day; approval is web-only.
+  corrections: () => ipcRenderer.invoke("agent:corrections"),
+  requestCorrection: (body: unknown) => ipcRenderer.invoke("agent:correction-request", body),
+  cancelCorrection: (id: string) => ipcRenderer.invoke("agent:correction-cancel", id),
 });

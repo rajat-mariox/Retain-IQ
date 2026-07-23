@@ -114,9 +114,10 @@ Config: `RETAINIQ_SCREENSHOTS` (true/false), `RETAINIQ_SCREENSHOT_SECONDS`,
 
 - Focus-block / context-switch detection (the ingestion contract already
   accepts these event types; the agent doesn't compute them yet).
-- Attendance corrections from the agent (the backend has the full surface;
-  the agent surfaces overtime read-only but can't request a fix yet).
+- Real-time push sync (the agent polls status every 3s; the backend has a
+  realtime publisher but no agent-facing stream endpoint yet).
 - Auto-update, code-signing/notarization, and per-OS release builds.
 
 See [ROADMAP.md](./ROADMAP.md) for the full plan. Break start/stop, break-kind
-selection, and multi-monitor capture are now implemented.
+selection, multi-monitor capture, overtime display, and attendance corrections
+(request / view / withdraw from the agent) are now implemented.

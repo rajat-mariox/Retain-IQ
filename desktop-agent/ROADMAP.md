@@ -35,10 +35,13 @@ Small, self-contained, no backend changes. Each is independently shippable.
 
 ---
 
-## Phase 2 — Attendance corrections (agent-only, backend ready, higher value)
+## Phase 2 — Attendance corrections ✅ DONE
 
 The single highest-value gap: a missed/incorrect punch can't be fixed from the
-agent today, even though the backend has the whole surface.
+agent today, even though the backend has the whole surface. **Shipped** — the
+agent can request a fix, see its own history, and withdraw a pending request;
+approval stays in the web app. Live-verified end to end (create → list →
+withdraw).
 
 ### 2.1 Correction request + status in the agent
 - **Backend already exists:** `POST /attendance/corrections`, `GET /corrections/me`,

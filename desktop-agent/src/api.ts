@@ -127,6 +127,62 @@ export async function agentEndBreak(): Promise<boolean> {
   return Boolean(res?.ok);
 }
 
+// ---- attendance corrections (employee side) ----
+// A correction is how an employee asks for a day the clock got wrong to be
+// fixed; it goes to their approver and only an approval edits the record. The
+// agent surfaces the request + status; approving stays in the web app.
+
+export type CorrectionType = "MISSED_CHECK_IN" | "MISSED_CHECK_OUT" | "WRONG_TIME" | "OVERTIME" | "OTHER";
+
+export interface CorrectionRequest {
+  day: string; // YYYY-MM-DD
+  type: CorrectionType;
+  reason: string;
+  checkInAt?: string; // ISO instant
+  checkOutAt?: string;
+  overtimeMinutes?: number;
+}
+
+export interface Correction {
+  id: string;
+  day: string;
+  type: string;
+  reason: string;
+  requestedCheckInAt: string | null;
+  requestedCheckOutAt: string | null;
+  requestedOvertimeMinutes: number | null;
+  status: string; // PENDING | APPROVED | REJECTED | CANCELLED
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string;
+}
+
+/** Raise a correction. Returns the server's error message on failure, else null. */
+export async function requestCorrection(body: CorrectionRequest): Promise<string | null> {
+  const res = await identityFetch("/attendance/corrections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res?.ok) return null;
+  if (!res) return "Not signed in.";
+  const data = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+  return data.error?.message ?? "Could not raise the request.";
+}
+
+/** The caller's own correction history (most recent first). */
+export async function myCorrections(): Promise<Correction[]> {
+  const res = await identityFetch("/attendance/corrections/me");
+  if (!res?.ok) return [];
+  return (await res.json()) as Correction[];
+}
+
+/** Withdraw a still-pending request. */
+export async function cancelCorrection(id: string): Promise<boolean> {
+  const res = await identityFetch(`/attendance/corrections/${id}/cancel`, { method: "POST" });
+  return Boolean(res?.ok);
+}
+
 /** Current attendance state — used to keep the agent UI in step with the web app. */
 export async function fetchAttendanceStatus(): Promise<AttendanceStatus | null> {
   const res = await identityFetch("/attendance/status");

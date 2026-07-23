@@ -10,8 +10,12 @@ import {
   agentCheckOut,
   agentEndBreak,
   agentStartBreak,
+  cancelCorrection,
   fetchAttendanceStatus,
   login,
+  myCorrections,
+  requestCorrection,
+  type CorrectionRequest,
 } from "./api.js";
 import { clearSession, getConfig, getSession } from "./store.js";
 import { startTabServer, stopTabServer } from "./tabserver.js";
@@ -106,6 +110,11 @@ ipcMain.handle("agent:break-end", async () => {
   if (getSession()) collector.start();
   return fetchAttendanceStatus();
 });
+
+// ---- attendance corrections (employee side; the approver decides in the web app) ----
+ipcMain.handle("agent:corrections", () => myCorrections());
+ipcMain.handle("agent:correction-request", (_e, body: CorrectionRequest) => requestCorrection(body));
+ipcMain.handle("agent:correction-cancel", (_e, id: string) => cancelCorrection(id));
 ipcMain.handle("agent:start", () => {
   if (getSession()) collector.start();
   return collector.status();
