@@ -49,6 +49,59 @@ npm start
 Sign in with an org employee (e.g. a member of your org). The agent resolves the
 `employeeId` via `/v1/auth/me`, starts a work session, and begins sampling.
 
+## Platform setup
+
+The agent runs on Windows, macOS and Linux, but each OS needs a little setup
+before window/website tracking and screenshots work. Windows needs nothing
+extra. macOS and Linux are below.
+
+### macOS
+
+`active-win` ships prebuilt binaries for both Apple Silicon (`arm64`) and Intel
+(`x64`), so no native toolchain is needed. Two OS permissions must be granted on
+first use — the agent keeps running without them, it just can't capture what
+they gate:
+
+1. **Accessibility** — required to read the active window / app name.
+   *System Settings → Privacy & Security → Accessibility* → enable the agent (or
+   your terminal / Electron, when running from source).
+2. **Screen Recording** — required for screenshots. Without it, capture returns
+   nothing and the agent simply skips screenshots; everything else still works.
+   *System Settings → Privacy & Security → Screen Recording* → enable the agent.
+
+After toggling either permission, quit and reopen the app so macOS re-reads it.
+
+Website URLs are read natively from the browser on macOS (no extension needed),
+though the [browser extension](./browser-extension/) still works as a fallback.
+
+> **Unsigned build:** releases aren't code-signed or notarized yet, so Gatekeeper
+> blocks the first launch ("can't be opened because it is from an unidentified
+> developer"). Right-click the app → **Open** → **Open**, once, to allow it —
+> or `xattr -dr com.apple.quarantine "/Applications/RetainIQ Agent.app"`.
+
+### Linux
+
+`active-win` on Linux is **not** a native binary — it shells out to the X11
+tools `xprop` and `xwininfo`, which must be installed, and it works on **X11
+only** (under Wayland you need an XWayland session):
+
+```bash
+# Debian / Ubuntu
+sudo apt install x11-utils          # provides xprop and xwininfo
+# Fedora
+sudo dnf install xorg-x11-utils
+# Arch
+sudo pacman -S xorg-xprop xorg-xwininfo
+```
+
+Without these, active-window and app tracking silently return nothing (idle,
+screenshots and attendance still work). Linux does not expose the browser URL
+to the OS, so **website tracking needs the [browser extension](./browser-extension/)**,
+which reports the active tab to the agent's loopback receiver.
+
+Screenshots use Electron's `desktopCapturer`, which works on X11; on Wayland,
+capture may be restricted by the compositor's portal permissions.
+
 ## What it captures
 
 | Event | Source | Interval |
