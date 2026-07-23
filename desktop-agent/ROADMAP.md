@@ -128,15 +128,24 @@ Largest and most important for real deployment, but it gates on decisions
 
 ---
 
-## Phase 6 — Test coverage (agent-only)
+## Phase 6 — Test coverage ✅ DONE (core covered)
 
-Only `test/renderer-flow.test.mjs` exists. Add unit tests for the untested core:
-- `collector` — poll → event shaping, idle transitions, screenshot cadence.
-- `api` — 401 → refresh-and-retry, batch upload.
-- `store` — queue persistence/restore across restart, cap/drop-oldest.
-- `screenshot` — capture-null on denied permission, multi-display (after 1.2).
-- attendance IPC — check-in/out/break flows.
-- **Effort:** ~M, incremental. Pairs naturally with each feature above (add tests as you touch each module).
+Grew from one test file to five, 28 cases in total:
+- `renderer-flow` — card show/hide across signed-out / staff / owner / on-break,
+  break-kind picker, overtime line, corrections card.
+- `focus-tracking` — focus blocks, context switches, idle onset (6).
+- `sse-parse` — SSE framing: split reads, multiple frames, ping filtering,
+  malformed JSON (6).
+- `queue-logic` — backlog cap (drop-oldest) and flush batch-slicing / retry (7).
+- `store` — real-fs round-trip of the event queue and session persistence,
+  including the security-critical "remember me off" path that must never leave a
+  session on disk (9). Made possible by having store honour RETAINIQ_DATA_DIR and
+  load Electron lazily, so it's testable without an Electron runtime.
+
+Still uncovered (needs an Electron harness, lower value): the collector's live
+poll loop and screenshot capture, and the api layer's real network calls. The
+pure logic inside each — event shaping, batching, focus, SSE, persistence — is
+now tested.
 
 ---
 

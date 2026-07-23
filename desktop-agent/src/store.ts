@@ -2,10 +2,20 @@
  * Tiny JSON-file persistence for the agent's session (tokens + employeeId) and
  * config, stored under Electron's per-user userData directory. No external deps.
  */
-import { app } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type AgentConfig } from "./config.js";
+
+/**
+ * Electron's userData path, loaded lazily. Kept out of the module's top level so
+ * that when RETAINIQ_DATA_DIR is set (tests, tooling) the store works without
+ * pulling in Electron at all.
+ */
+function userDataDir(): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { app } = require("electron") as typeof import("electron");
+  return app.getPath("userData");
+}
 
 export interface Session {
   accessToken: string;
@@ -21,7 +31,9 @@ interface Persisted {
 }
 
 function dataDir(): string {
-  const dir = app.getPath("userData");
+  // RETAINIQ_DATA_DIR lets tests point persistence at a scratch directory
+  // without loading Electron; in the app it's unset and we use userData.
+  const dir = process.env.RETAINIQ_DATA_DIR ?? userDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }
