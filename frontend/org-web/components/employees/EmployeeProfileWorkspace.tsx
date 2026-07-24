@@ -123,7 +123,8 @@ export function EmployeeProfileWorkspace({ profile, history, documents, canManag
           <Card>
             <CardHeader title="Personal details" />
             <CardBody className="grid grid-cols-2 gap-x-6 gap-y-3">
-              <Field k="Email" v={profile.email ?? "—"} />
+              <Field k="Work email" v={profile.email ?? "—"} />
+              <Field k="Personal email" v={profile.personalEmail ?? "—"} />
               <Field k="Phone" v={profile.phone ?? "—"} />
               <Field k="Date of birth" v={profile.dateOfBirth ? formatDate(profile.dateOfBirth) : "—"} />
               <Field k="Gender" v={profile.gender ?? "—"} />
@@ -224,7 +225,7 @@ function Field({ k, v, full }: { k: string; v: string; full?: boolean }) {
 function EditModal({ profile, options, onClose }: { profile: EmployeeProfile; options: Options; onClose: () => void }) {
   const router = useRouter();
   const [f, setF] = useState({
-    firstName: profile.firstName, lastName: profile.lastName, email: profile.email ?? "", employeeCode: profile.employeeCode ?? "",
+    firstName: profile.firstName, lastName: profile.lastName, email: profile.email ?? "", personalEmail: profile.personalEmail ?? "", employeeCode: profile.employeeCode ?? "",
     title: profile.title ?? "", designationId: profile.designationId ?? "", departmentId: profile.departmentId ?? "", teamId: profile.teamId ?? "",
     shiftId: profile.shiftId ?? "", managerId: profile.managerId ?? "", status: profile.status, employmentType: profile.employmentType ?? "",
     joinedAt: profile.joinedAt?.slice(0, 10) ?? "", phone: profile.phone ?? "", dateOfBirth: profile.dateOfBirth?.slice(0, 10) ?? "",
@@ -233,12 +234,16 @@ function EditModal({ profile, options, onClose }: { profile: EmployeeProfile; op
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set after a work-email change: the new sign-in credentials to hand over.
+  const [issued, setIssued] = useState<{ email: string; tempPassword: string } | null>(null);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
+
+  const workEmailChanged = (f.email.trim() || null) !== (profile.email ?? null);
 
   async function save() {
     setBusy(true); setError(null);
     const payload = {
-      firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim() || null, employeeCode: f.employeeCode.trim() || null,
+      firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim() || null, personalEmail: f.personalEmail.trim() || null, employeeCode: f.employeeCode.trim() || null,
       title: f.title.trim() || null, designationId: f.designationId || null, departmentId: f.departmentId || null, teamId: f.teamId || null,
       shiftId: f.shiftId || null, managerId: f.managerId || null, status: f.status, employmentType: f.employmentType || null,
       joinedAt: toIso(f.joinedAt), phone: f.phone.trim() || null, dateOfBirth: toIso(f.dateOfBirth), gender: f.gender.trim() || null,
@@ -246,20 +251,51 @@ function EditModal({ profile, options, onClose }: { profile: EmployeeProfile; op
     };
     try {
       const res = await fetch(`/api/employees/${profile.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      if (!res.ok) { const d = (await res.json().catch(() => ({}))) as { error?: string }; setError(d.error ?? "Could not save."); return; }
+      const d = (await res.json().catch(() => ({}))) as { error?: string; issuedTempPassword?: string };
+      if (!res.ok) { setError(d.error ?? "Could not save."); return; }
+      // A work-email change re-issues login credentials — show them once so the
+      // admin can pass them on, then close on acknowledgement.
+      if (d.issuedTempPassword) {
+        setIssued({ email: payload.email ?? "", tempPassword: d.issuedTempPassword });
+        router.refresh();
+        return;
+      }
       onClose();
       router.refresh();
     } finally { setBusy(false); }
   }
 
+  if (issued) {
+    return (
+      <Modal open onClose={onClose} title="New sign-in details" size="lg">
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">The work email was changed, so this person now signs in with new credentials. Share these — they'll be asked to set a new password on first sign-in.</p>
+          <div className="rounded-lg border border-hairline bg-slate-50 p-3 text-sm">
+            <div className="flex justify-between gap-4 py-1"><span className="text-slate-500">Work email</span><span className="font-medium text-slate-900">{issued.email}</span></div>
+            <div className="flex justify-between gap-4 py-1"><span className="text-slate-500">Temporary password</span><span className="font-mono font-medium text-slate-900">{issued.tempPassword}</span></div>
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end border-t border-hairline pt-4">
+          <button onClick={onClose} className="rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-soft">Done</button>
+        </div>
+      </Modal>
+    );
+  }
+
   return (
     <Modal open onClose={onClose} title="Edit employee" size="lg">
-      <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+      <div className="space-y-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Identity</p>
         <div className="grid grid-cols-2 gap-3">
           <div><label className={label}>First name</label><input className={input} value={f.firstName} onChange={set("firstName")} /></div>
           <div><label className={label}>Last name</label><input className={input} value={f.lastName} onChange={set("lastName")} /></div>
-          <div><label className={label}>Email</label><input className={input} value={f.email} onChange={set("email")} /></div>
+          <div className="col-span-2">
+            <label className={label}>Work email <span className="font-normal text-slate-400">· used to sign in</span></label>
+            <input className={input} value={f.email} onChange={set("email")} />
+            {workEmailChanged ? (
+              <p className="mt-1 text-xs text-amber-600">Changing this changes how they sign in — they'll get a new temporary password to log in with.</p>
+            ) : null}
+          </div>
           <div><label className={label}>Employee code</label><input className={input} value={f.employeeCode} onChange={set("employeeCode")} /></div>
         </div>
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Job</p>
@@ -276,6 +312,7 @@ function EditModal({ profile, options, onClose }: { profile: EmployeeProfile; op
         </div>
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Personal</p>
         <div className="grid grid-cols-2 gap-3">
+          <div className="col-span-2"><label className={label}>Personal email <span className="font-normal text-slate-400">· personal contact, not used to sign in</span></label><input className={input} value={f.personalEmail} onChange={set("personalEmail")} /></div>
           <div><label className={label}>Phone</label><input className={input} value={f.phone} onChange={set("phone")} /></div>
           <div><label className={label}>Date of birth</label><input type="date" className={input} value={f.dateOfBirth} onChange={set("dateOfBirth")} /></div>
           <div><label className={label}>Gender</label><input className={input} value={f.gender} onChange={set("gender")} /></div>

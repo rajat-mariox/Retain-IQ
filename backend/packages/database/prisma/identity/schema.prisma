@@ -314,7 +314,11 @@ model Employee {
   id           String         @id @default(uuid()) @db.Uuid
   orgId        String         @db.Uuid
   employeeCode String?
-  email        String?
+  // Work email = the person's sign-in address; kept in lockstep with the linked
+  // User.email. Changing it re-issues login credentials. personalEmail is an HR
+  // profile field only (personal contact) and has no bearing on authentication.
+  email          String?
+  personalEmail  String?
   firstName    String
   lastName     String
   department     String?

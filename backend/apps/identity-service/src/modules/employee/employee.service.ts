@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import type { Prisma } from "@retainiq/database/identity";
 import type { CreateEmployeeInput } from "@retainiq/contracts";
 import { AuditService } from "../../common/audit/audit.service.js";
@@ -9,12 +9,15 @@ import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { SeatLimitService } from "../../common/seat-limit/seat-limit.service.js";
 import { AccessScopeService } from "../../common/access-scope/access-scope.service.js";
 import { permissions } from "@retainiq/authz";
+import { hashPassword } from "../../common/crypto/password.util.js";
+import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
 import { EmployeeRepository } from "./employee.repository.js";
 
 export type EmployeeUpdateInput = {
   firstName?: string;
   lastName?: string;
   email?: string | null;
+  personalEmail?: string | null;
   employeeCode?: string | null;
   title?: string | null;
   designationId?: string | null;
@@ -149,14 +152,31 @@ export class EmployeeService {
       if (!m) throw new NotFoundException("Manager not found.");
     }
 
+    // The work email is the sign-in address (mirrored on the linked User), so it
+    // is NOT a plain scalar edit — changing it re-issues login credentials. The
+    // personal email is ordinary HR profile data. Everything else is a scalar.
     const scalarKeys = [
-      "firstName", "lastName", "email", "employeeCode", "title", "designationId", "departmentId", "teamId", "shiftId", "managerId",
+      "firstName", "lastName", "personalEmail", "employeeCode", "title", "designationId", "departmentId", "teamId", "shiftId", "managerId",
       "status", "phone", "gender", "location", "employmentType", "address", "emergencyContactName", "emergencyContactPhone",
     ] as const;
     const data: Record<string, unknown> = {};
     for (const k of scalarKeys) if (input[k] !== undefined) data[k] = input[k];
     if (input.dateOfBirth !== undefined) data.dateOfBirth = input.dateOfBirth ? new Date(input.dateOfBirth) : null;
     if (input.joinedAt !== undefined) data.joinedAt = input.joinedAt ? new Date(input.joinedAt) : null;
+
+    // Work-email change: sync the login account and re-issue a temporary password
+    // so the person signs in with the new address. Returns the temp password to
+    // the caller (an admin with employee.write) to hand over — same shape as an
+    // invite. Skipped when the email is unchanged.
+    let issuedTempPassword: string | null = null;
+    const nextWorkEmail = input.email !== undefined ? input.email?.toLowerCase().trim() || null : undefined;
+    const workEmailChanged = nextWorkEmail !== undefined && nextWorkEmail !== (existing.email ?? null);
+    if (workEmailChanged) {
+      if (!nextWorkEmail) throw new BadRequestException("A work email is required to sign in — it can't be cleared.");
+      // Persists Employee.email + the linked User.email together in one tx, so
+      // the login and the profile can never drift apart again.
+      issuedTempPassword = await this.changeWorkEmail(employeeId, context.orgId, nextWorkEmail);
+    }
 
     const updated = await this.employeeRepository.update(context, employeeId, data);
 
@@ -169,7 +189,47 @@ export class EmployeeService {
     for (const e of events) await this.recordEvent(this.prisma, context.orgId, employeeId, context.userId, e.type, e.title);
 
     await this.audit.record({ orgId: context.orgId, action: "employee.updated", resourceType: "employee", resourceId: employeeId, before: existing, after: updated });
-    return updated;
+    // Surface the temp password only on a work-email change, so the admin can
+    // pass the new sign-in credentials along. null on every other update.
+    return issuedTempPassword ? { ...updated, issuedTempPassword } : updated;
+  }
+
+  /**
+   * Point the employee's login (their linked User) at a new work email and force
+   * a fresh temporary password. Returns that password for hand-off. Fails if the
+   * employee has no login account, or the address already belongs to someone.
+   */
+  private async changeWorkEmail(employeeId: string, orgId: string, newEmail: string): Promise<string> {
+    const membership = await this.prisma.organizationMembership.findFirst({
+      where: { employeeId, orgId },
+      select: { userId: true },
+    });
+    if (!membership?.userId) {
+      throw new BadRequestException("This employee has no sign-in account, so there's no work email to change.");
+    }
+
+    const clash = await this.prisma.user.findUnique({ where: { email: newEmail }, select: { id: true } });
+    if (clash && clash.id !== membership.userId) {
+      throw new ConflictException("Another account already uses this email.");
+    }
+
+    const tempPassword = generateTempPassword();
+    const passwordHash = await hashPassword(tempPassword);
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: membership.userId },
+        data: {
+          email: newEmail,
+          passwordHash,
+          mustChangePassword: true, // force a reset on next sign-in with the new address
+          // Any pending reset for the old address is void now.
+          passwordResetTokenHash: null,
+          passwordResetTokenExpiresAt: null,
+        },
+      }),
+      this.prisma.employee.update({ where: { id: employeeId }, data: { email: newEmail } }),
+    ]);
+    return tempPassword;
   }
 
   /**

@@ -729,6 +729,7 @@ export const getMyTimesheets = cache(() => apiFetch<MyTimesheet[]>("time/timeshe
 // ---- HR: employee profile / documents / history / org chart ----
 export interface EmployeeProfile extends EmployeeRow {
   updatedAt: string;
+  personalEmail: string | null;
   phone: string | null;
   dateOfBirth: string | null;
   gender: string | null;

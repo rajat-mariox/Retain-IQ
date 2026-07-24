@@ -24,7 +24,8 @@ const updateEmployeeSchema = z
   .object({
     firstName: z.string().min(1).max(80),
     lastName: z.string().min(1).max(80),
-    email: z.string().email().nullable(),
+    email: z.string().email().nullable(), // work email (sign-in)
+    personalEmail: z.string().email().nullable(),
     employeeCode: z.string().max(64).nullable(),
     designationId: z.string().uuid().nullable(),
     departmentId: z.string().uuid().nullable(),

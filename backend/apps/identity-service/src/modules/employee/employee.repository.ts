@@ -31,6 +31,7 @@ const LIST_SELECT = {
 const PROFILE_SELECT = {
   ...LIST_SELECT,
   updatedAt: true,
+  personalEmail: true,
   phone: true,
   dateOfBirth: true,
   gender: true,
