@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Post, UseGuards } from "@nestjs/common";
-import { ThrottlerGuard } from "@nestjs/throttler";
+import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 import {
   changePasswordSchema,
   forgotPasswordSchema,
@@ -31,8 +31,15 @@ import { IdentityService } from "./identity.service.js";
 export class IdentityController {
   constructor(private readonly identityService: IdentityService) {}
 
+  // Register must signal a genuinely new account (a new org has to know sign-up
+  // succeeded), so the 409 for a taken email is distinguishable from success and
+  // the endpoint can't be made fully opaque like forgot/reset. To keep that from
+  // being an email-enumeration oracle, hold register to a stricter per-IP budget
+  // than the shared auth default — a handful of attempts per minute is plenty for
+  // a real signup but makes probing the user table impractical.
   @Post("register")
   @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @PublicRoute("sign up a new organization — pre-auth")
   register(@Body(new ZodValidationPipe(registerOrgSchema)) body: RegisterOrgInput) {
     return this.identityService.register(body);

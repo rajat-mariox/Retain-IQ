@@ -72,8 +72,6 @@ export class MembersService implements OnModuleInit {
     const ctx = requireTenantContext();
     const email = input.email.toLowerCase();
 
-    await this.seatLimit.assertCanAddEmployee(ctx.orgId); // 409 if at the licensed seat count
-
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {
       throw new ConflictException("A user with this email already exists.");
@@ -104,6 +102,9 @@ export class MembersService implements OnModuleInit {
     const passwordHash = await hashPassword(tempPassword);
 
     const created = await this.prisma.$transaction(async (tx) => {
+      // Seat check inside the tx (advisory-locked) so concurrent adds can't both
+      // pass and overshoot the cap. 409 if at the licensed seat count.
+      await this.seatLimit.assertCanAddEmployeeTx(tx, ctx.orgId);
       const systemRoles = await ensureSystemRoles(tx, ctx.orgId);
       // Prefer an explicit roleId (any org role); fall back to the legacy role name.
       let roleId = input.roleId ?? null;

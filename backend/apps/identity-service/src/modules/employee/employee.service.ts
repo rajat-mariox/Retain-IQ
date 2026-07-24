@@ -49,6 +49,22 @@ export class EmployeeService {
     private readonly accessScope: AccessScopeService,
   ) {}
 
+  /**
+   * ABAC gate for by-ID access. listEmployees filters at the query, but the
+   * single-record paths look an employee up by id and would otherwise see any
+   * employee in the org. A department/team-scoped manager may only touch people
+   * inside their scope (their unit + their own record + direct reports); org-tier
+   * callers pass through. Throws NotFound (not Forbidden) to avoid leaking that
+   * an out-of-scope employee exists, matching the existing not-found contract.
+   */
+  private async assertEmployeeInScope(employeeId: string, permission: string): Promise<void> {
+    const context = requireTenantContext();
+    const scope = await this.accessScope.resolveScope(context.orgId, context.userId, permission);
+    if (scope.tier === "org") return;
+    const visible = await this.accessScope.visibleEmployeeIds(context.orgId, scope);
+    if (visible !== null && !visible.includes(employeeId)) throw new NotFoundException("Employee not found.");
+  }
+
   async listEmployees(query: { page: number; pageSize: number; q?: string; lifecycleStage?: string; departmentId?: string; teamId?: string; managerId?: string; designationId?: string; status?: string }) {
     const context = requireTenantContext();
     // ABAC: a department/team-scoped manager sees only their unit; org tier sees all.
@@ -65,6 +81,7 @@ export class EmployeeService {
 
   async getEmployee(employeeId: string) {
     const context = requireTenantContext();
+    await this.assertEmployeeInScope(employeeId, permissions.employeeRead);
     const employee = await this.employeeRepository.findById(context, employeeId);
     if (!employee) throw new NotFoundException("Employee not found.");
 
@@ -87,6 +104,7 @@ export class EmployeeService {
   /** Employment history timeline (newest first). */
   async history(employeeId: string) {
     const context = requireTenantContext();
+    await this.assertEmployeeInScope(employeeId, permissions.employeeRead);
     const rows = await this.prisma.employmentEvent.findMany({
       where: { orgId: context.orgId, employeeId },
       orderBy: [{ effectiveDate: "desc" }, { createdAt: "desc" }],
@@ -98,6 +116,7 @@ export class EmployeeService {
   /** Add a manual note to an employee's history. */
   async addEvent(employeeId: string, input: { type?: string; title: string; detail?: string; effectiveDate?: string }) {
     const context = requireTenantContext();
+    await this.assertEmployeeInScope(employeeId, permissions.employeeWrite);
     const emp = await this.prisma.employee.findFirst({ where: { id: employeeId, orgId: context.orgId }, select: { id: true } });
     if (!emp) throw new NotFoundException("Employee not found.");
     await this.prisma.employmentEvent.create({
@@ -139,6 +158,7 @@ export class EmployeeService {
   /** Update an employee's job + personal profile; records history for job changes. */
   async updateEmployee(employeeId: string, input: EmployeeUpdateInput) {
     const context = requireTenantContext();
+    await this.assertEmployeeInScope(employeeId, permissions.employeeWrite);
     const existing = await this.employeeRepository.findById(context, employeeId);
     if (!existing) throw new NotFoundException("Employee not found.");
 
@@ -238,6 +258,7 @@ export class EmployeeService {
    */
   async transition(employeeId: string, input: { action: "start_probation" | "confirm" | "exit"; probationEndsAt?: string; exitedAt?: string }) {
     const context = requireTenantContext();
+    await this.assertEmployeeInScope(employeeId, permissions.employeeWrite);
     const existing = await this.employeeRepository.findById(context, employeeId);
     if (!existing) throw new NotFoundException("Employee not found.");
     if (existing.lifecycleStage === "EXITED") throw new ConflictException("This employee has already exited.");
@@ -283,12 +304,14 @@ export class EmployeeService {
 
   async createEmployee(input: CreateEmployeeInput, idempotencyKey?: string) {
     const context = requireTenantContext();
-    await this.seatLimit.assertCanAddEmployee(context.orgId); // 409 if at the licensed seat count
 
     const run = async () => {
       try {
         // Persist the employee and its domain event atomically (transactional outbox).
         const employee = await this.prisma.$transaction(async (tx) => {
+          // Seat check inside the tx (advisory-locked) so concurrent creates can't
+          // both pass and overshoot the cap. 409 if at the licensed seat count.
+          await this.seatLimit.assertCanAddEmployeeTx(tx, context.orgId);
           const created = await this.employeeRepository.create(tx, context, input);
           await this.recordEvent(tx, context.orgId, created.id, context.userId, "JOINED", "Joined the organization", created.title ?? undefined);
           await this.outbox.enqueue(tx, {

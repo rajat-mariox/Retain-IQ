@@ -4,6 +4,7 @@ import { requireTenantContext } from "../../common/context/request-context.store
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { AttendancePolicyService } from "./attendance-policy.service.js";
+import { AttendanceRecomputeService } from "./attendance-recompute.service.js";
 
 const startOfUtcDay = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 
@@ -27,6 +28,7 @@ export class AttendanceCorrectionService {
     private readonly approvals: ApprovalService,
     private readonly policies: AttendancePolicyService,
     private readonly outbox: OutboxService,
+    private readonly recompute: AttendanceRecomputeService,
   ) {}
 
   /** Raise a correction for one of the caller's own days. */
@@ -219,17 +221,12 @@ export class AttendanceCorrectionService {
           });
         }
 
-        const sessions = await tx.attendanceSession.findMany({ where: { attendanceId: record.id } });
-        const gross = sessions.reduce((a, s) => a + (s.endedAt ? Math.max(0, Math.round((s.endedAt.getTime() - s.startedAt.getTime()) / 60000)) : 0), 0);
-        await tx.attendanceRecord.update({
-          where: { id: record.id },
-          data: {
-            checkInAt: newIn,
-            checkOutAt: newOut,
-            workMinutes: Math.max(0, gross - record.unpaidBreakMinutes),
-            state: newOut ? "COMPLETED" : "WORKING",
-          },
-        });
+        // Re-derive EVERY roll-up field (totals, overtime, late, early-exit,
+        // state, status) from the now-corrected sessions — the same recompute the
+        // normal checkout runs — so a fixed time never leaves OT/late/status
+        // stale. Runs inside this transaction so the rewrite and roll-up commit
+        // together.
+        await this.recompute.recomputeDay(correction.orgId, correction.employeeId, correction.day, undefined, tx);
       }
 
       await tx.attendanceCorrection.update({

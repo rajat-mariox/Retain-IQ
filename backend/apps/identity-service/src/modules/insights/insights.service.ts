@@ -1,7 +1,9 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
+import { permissions } from "@retainiq/authz";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { AnalyticsReadPrismaService } from "../../common/database/analytics-prisma.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { AccessScopeService } from "../../common/access-scope/access-scope.service.js";
 import { classifyApp, classifyDomain, type ProductivityRules } from "../../common/productivity/classify.js";
 import { ProductivitySettingsService } from "../../common/productivity/productivity-settings.service.js";
 
@@ -17,6 +19,7 @@ export class InsightsService {
     private readonly prisma: PrismaService,
     private readonly analytics: AnalyticsReadPrismaService,
     private readonly productivity: ProductivitySettingsService,
+    private readonly accessScope: AccessScopeService,
   ) {}
 
   private windowStart(): Date {
@@ -24,7 +27,7 @@ export class InsightsService {
   }
 
   /** Productive seconds per employee (org-configurable classification of app/site usage). */
-  private async productiveSecondsByEmployee(where: { orgId: string; day: { gte: Date; lt?: Date }; employeeId?: string }, rules: ProductivityRules): Promise<Map<string, number>> {
+  private async productiveSecondsByEmployee(where: { orgId: string; day: { gte: Date; lt?: Date }; employeeId?: string | { in: string[] } }, rules: ProductivityRules): Promise<Map<string, number>> {
     const [apps, sites] = await Promise.all([
       this.analytics.appUsageDaily.findMany({ where, select: { employeeId: true, appName: true, seconds: true } }),
       this.analytics.websiteUsageDaily.findMany({ where, select: { employeeId: true, domain: true, seconds: true } }),
@@ -171,6 +174,13 @@ export class InsightsService {
     const since = this.windowStart();
     const half = new Date(Date.now() - 15 * DAY_MS);
 
+    // Dashboard analytics are scope-aware, not permission-gated: an Owner (org
+    // tier) sees the whole org; a department/team-scoped manager sees their unit;
+    // a plain employee sees only themselves. `visible` is the set of employee ids
+    // the caller may see, or null for org-wide (no restriction).
+    const scope = await this.accessScope.resolveScope(ctx.orgId, ctx.userId, permissions.employeeRead);
+    const visible = await this.accessScope.visibleEmployeeIds(ctx.orgId, scope);
+
     // Owner/admin accounts are provisioned as Employee records but are NOT part of
     // the workforce — exclude them from the headcount metrics.
     const admins = await this.prisma.organizationMembership.findMany({
@@ -178,7 +188,18 @@ export class InsightsService {
       select: { employeeId: true },
     });
     const excludeIds = admins.map((a) => a.employeeId).filter((x): x is string => Boolean(x));
-    const empWhere = excludeIds.length > 0 ? { orgId: ctx.orgId, id: { notIn: excludeIds } } : { orgId: ctx.orgId };
+
+    // Employee-table filter: org tier → just exclude admins; scoped/self → restrict
+    // to the visible id set (minus admins).
+    const scopedIds = visible === null ? null : visible.filter((id) => !excludeIds.includes(id));
+    const empWhere: { orgId: string; id?: { in?: string[]; notIn?: string[] } } =
+      scopedIds === null
+        ? excludeIds.length > 0
+          ? { orgId: ctx.orgId, id: { notIn: excludeIds } }
+          : { orgId: ctx.orgId }
+        : { orgId: ctx.orgId, id: { in: scopedIds } };
+    // Fact/attendance filter keyed by employeeId (analytics + attendance rows).
+    const factEmp = visible === null ? {} : { employeeId: { in: visible } };
 
     const rules = await this.productivity.getRules(ctx.orgId);
     const [statusGroups, newJoinees, byEmployee, attendanceGroups, recentActive, priorActive, openReqs, prodAll, prodRecent, prodPrior] = await Promise.all([
@@ -186,18 +207,22 @@ export class InsightsService {
       this.prisma.employee.count({ where: { ...empWhere, createdAt: { gte: since } } }),
       this.analytics.employeeDayFact.groupBy({
         by: ["employeeId"],
-        where: { orgId: ctx.orgId, day: { gte: since } },
+        where: { orgId: ctx.orgId, day: { gte: since }, ...factEmp },
         _avg: { focusScore: true },
         _sum: { activeSeconds: true },
         _count: { _all: true },
       }),
-      this.prisma.attendanceRecord.groupBy({ by: ["status"], where: { orgId: ctx.orgId, day: { gte: since } }, _count: { _all: true } }),
-      this.analytics.employeeDayFact.aggregate({ _sum: { activeSeconds: true }, where: { orgId: ctx.orgId, day: { gte: half } } }),
-      this.analytics.employeeDayFact.aggregate({ _sum: { activeSeconds: true }, where: { orgId: ctx.orgId, day: { gte: since, lt: half } } }),
-      this.prisma.requisition.aggregate({ _sum: { openings: true }, where: { orgId: ctx.orgId, status: "OPEN" } }),
-      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since } }, rules),
-      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: half } }, rules),
-      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since, lt: half } }, rules),
+      this.prisma.attendanceRecord.groupBy({ by: ["status"], where: { orgId: ctx.orgId, day: { gte: since }, ...factEmp }, _count: { _all: true } }),
+      this.analytics.employeeDayFact.aggregate({ _sum: { activeSeconds: true }, where: { orgId: ctx.orgId, day: { gte: half }, ...factEmp } }),
+      this.analytics.employeeDayFact.aggregate({ _sum: { activeSeconds: true }, where: { orgId: ctx.orgId, day: { gte: since, lt: half }, ...factEmp } }),
+      // Open requisitions are an org-level figure; only surface it at org tier so a
+      // scoped viewer doesn't see org-wide hiring numbers outside their reach.
+      visible === null
+        ? this.prisma.requisition.aggregate({ _sum: { openings: true }, where: { orgId: ctx.orgId, status: "OPEN" } })
+        : Promise.resolve({ _sum: { openings: 0 } }),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since }, ...factEmp }, rules),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: half }, ...factEmp }, rules),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since, lt: half }, ...factEmp }, rules),
     ]);
 
     // --- Workforce Overview (real headcount) ---

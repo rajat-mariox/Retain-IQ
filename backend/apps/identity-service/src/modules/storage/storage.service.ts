@@ -103,21 +103,19 @@ export class StorageService implements OnModuleInit {
   async createUpload(input: {
     orgId: string;
     membershipId: string;
-    employeeId?: string | null;
     contentType: string;
     sizeBytes: number;
     capturedAt: Date;
   }): Promise<{ key: string; uploadUrl: string; expiresInSeconds: number }> {
-    // Attribute the screenshot to the uploading employee by default, so their
-    // own-scoped list shows it. An explicit employeeId (e.g. an admin tool) wins.
-    let employeeId = input.employeeId ?? null;
-    if (!employeeId) {
-      const m = await this.prisma.organizationMembership.findUnique({
-        where: { id: input.membershipId },
-        select: { employeeId: true },
-      });
-      employeeId = m?.employeeId ?? null;
-    }
+    // The screenshot is ALWAYS attributed to the caller's own membership — the
+    // upload is issued to the authenticated employee's agent, so a client can't
+    // attribute a capture to someone else. Derived from membershipId, never trusted
+    // from the request body.
+    const m = await this.prisma.organizationMembership.findUnique({
+      where: { id: input.membershipId },
+      select: { employeeId: true },
+    });
+    const employeeId = m?.employeeId ?? null;
 
     const [used, limit] = await Promise.all([this.usedBytes(input.orgId), this.planLimit(input.orgId)]);
     if (limit.limitBytes != null && used + input.sizeBytes > limit.limitBytes) {
@@ -225,6 +223,49 @@ export class StorageService implements OnModuleInit {
         id: r.id,
         employeeId: r.employeeId,
         employeeName: r.employeeId ? (nameById.get(r.employeeId) ?? "Unknown") : "Unassigned",
+        sizeBytes: Number(r.sizeBytes),
+        contentType: r.contentType,
+        capturedAt: r.capturedAt.toISOString(),
+        viewUrl: await getSignedUrl(this.presignS3, new GetObjectCommand({ Bucket: this.bucket, Key: r.key }), { expiresIn: UPLOAD_URL_TTL_SECONDS }),
+      })),
+    );
+    return { items, total, page: input.page, pageSize: input.pageSize };
+  }
+
+  /**
+   * A person's OWN screenshots — always hard-scoped to the caller's own employee
+   * record (resolved from their membership), never a query param and never
+   * anyone else's. This is the employee self-view: it needs no screenshots.read
+   * permission (that permission is the manager/admin gallery), so an employee can
+   * see their own captured activity for transparency without being able to browse
+   * the surveillance gallery of the whole org.
+   */
+  async listOwnScreenshots(input: { orgId: string; membershipId: string; page: number; pageSize: number }) {
+    const membership = await this.prisma.organizationMembership.findFirst({
+      where: { id: input.membershipId, orgId: input.orgId },
+      select: { employeeId: true },
+    });
+    // No linked employee (e.g. an Owner-only account) has no personal captures.
+    if (!membership?.employeeId) {
+      return { items: [], total: 0, page: input.page, pageSize: input.pageSize };
+    }
+    const where: Prisma.ScreenshotObjectWhereInput = { orgId: input.orgId, employeeId: membership.employeeId };
+
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.screenshotObject.findMany({
+        where,
+        orderBy: { capturedAt: "desc" },
+        skip: (input.page - 1) * input.pageSize,
+        take: input.pageSize,
+        select: { id: true, employeeId: true, key: true, sizeBytes: true, contentType: true, capturedAt: true },
+      }),
+      this.prisma.screenshotObject.count({ where }),
+    ]);
+
+    const items = await Promise.all(
+      rows.map(async (r) => ({
+        id: r.id,
+        employeeId: r.employeeId,
         sizeBytes: Number(r.sizeBytes),
         contentType: r.contentType,
         capturedAt: r.capturedAt.toISOString(),

@@ -136,18 +136,23 @@ export class PayrollService {
       usable = entries.filter((e) => approvedWeeks.has(`${e.employeeId}:${iso(weekStartOf(e.date))}`));
     }
 
-    // Bucket by employee → ISO week, so overtime is assessed against the week
-    // the hours were actually worked in.
-    type WeekBucket = { minutes: number; billable: number; dates: Date[] };
+    // Bucket by employee → ISO week → day, so overtime is assessed against the
+    // week the hours were worked in, while the day grain is preserved for
+    // pricing each day at its own effective-dated rate (rates can change
+    // mid-period; the whole week must not inherit the newest one).
+    type DayBucket = { minutes: number; billable: number };
+    type WeekBucket = { days: Map<string, DayBucket> };
     const byEmployee = new Map<string, Map<string, WeekBucket>>();
     for (const e of usable) {
       const wk = iso(weekStartOf(e.date));
+      const day = iso(e.date);
       const weeks = byEmployee.get(e.employeeId) ?? new Map<string, WeekBucket>();
-      const bucket: WeekBucket = weeks.get(wk) ?? { minutes: 0, billable: 0, dates: [] };
+      const week: WeekBucket = weeks.get(wk) ?? { days: new Map<string, DayBucket>() };
+      const bucket: DayBucket = week.days.get(day) ?? { minutes: 0, billable: 0 };
       bucket.minutes += e.minutes;
       if (e.billable) bucket.billable += e.minutes;
-      bucket.dates.push(e.date);
-      weeks.set(wk, bucket);
+      week.days.set(day, bucket);
+      weeks.set(wk, week);
       byEmployee.set(e.employeeId, weeks);
     }
 
@@ -162,20 +167,54 @@ export class PayrollService {
       let regular = 0;
       let overtime = 0;
       let billable = 0;
-      for (const [, b] of weeks) {
-        const ot = Math.max(0, b.minutes - settings.overtimeAfterMins);
-        regular += b.minutes - ot;
-        overtime += ot;
-        billable += b.billable;
+      let regularPay = 0;
+      let overtimePay = 0;
+      // Weighted numerator/denominator for the blended DISPLAY rate below.
+      let rateWeightNumerator = 0;
+      let rateWeightMinutes = 0;
+      const missingRateDates: string[] = [];
+
+      // Overtime is a WEEKLY property (max(0, weekMinutes − threshold)), but
+      // pricing is a DAILY property (each day at its own effective rate). So we
+      // decide OT per week, then walk that week's days in chronological order:
+      // the first `overtimeAfterMins` minutes of the week are regular, every
+      // minute after that is overtime — a deterministic chronological split, so
+      // a mid-week rate change lands the OT on the days it was actually worked.
+      for (const [, week] of weeks) {
+        const days = [...week.days.entries()].sort(([a], [b]) => a.localeCompare(b));
+        const weekMinutes = days.reduce((s, [, d]) => s + d.minutes, 0);
+        const weekRegularCap = Math.max(0, weekMinutes - Math.max(0, weekMinutes - settings.overtimeAfterMins));
+        let regularConsumed = 0; // regular minutes already attributed earlier in the week
+
+        for (const [dayIso, d] of days) {
+          billable += d.billable;
+
+          // Split this day's minutes into regular vs OT by position in the week.
+          const dayRegular = Math.max(0, Math.min(d.minutes, weekRegularCap - regularConsumed));
+          const dayOvertime = d.minutes - dayRegular;
+          regularConsumed += dayRegular;
+          regular += dayRegular;
+          overtime += dayOvertime;
+
+          if (d.minutes === 0) continue;
+
+          // Price this day at ITS OWN effective-dated cost rate.
+          const { costRateCents: dayRate } = await this.rates.resolveCostRate(employeeId, parseDate(dayIso));
+          if (dayRate == null) {
+            missingRateDates.push(dayIso);
+            continue;
+          }
+          regularPay += cents((dayRegular / 60) * dayRate);
+          overtimePay += cents((dayOvertime / 60) * dayRate * (settings.overtimeMultiplier / 100));
+          rateWeightNumerator += dayRate * d.minutes;
+          rateWeightMinutes += d.minutes;
+        }
       }
 
-      // Rate as of the LAST day worked in the period: if someone was paid two
-      // rates mid-period the split would need per-week lines, which the MVP
-      // doesn't model — so this is deliberately the later (better-for-them) one.
-      const lastDate = [...weeks.values()].flatMap((b) => b.dates).reduce((a, b) => (a > b ? a : b), periodStart);
-      const { costRateCents } = await this.rates.resolveCostRate(employeeId, lastDate);
-
-      if (costRateCents == null) {
+      // Any worked day without a resolvable rate excludes the WHOLE employee —
+      // pricing part of their week would silently underpay them.
+      if (missingRateDates.length > 0) {
+        const dates = [...new Set(missingRateDates)].sort();
         lines.push({
           employeeId,
           employeeName: nameOf.get(employeeId) ?? "Unknown",
@@ -186,13 +225,16 @@ export class PayrollService {
           regularPayCents: 0,
           overtimePayCents: 0,
           grossPayCents: 0,
-          problem: "No cost rate is set for this employee on the period's dates.",
+          problem: `No cost rate is set for this employee on: ${dates.join(", ")}.`,
         });
         continue;
       }
 
-      const regularPay = cents((regular / 60) * costRateCents);
-      const overtimePay = cents((overtime / 60) * costRateCents * (settings.overtimeMultiplier / 100));
+      // costRateCents is a DISPLAY aggregate only — the pay fields above are the
+      // authoritative money, each priced at its own day's rate. We surface the
+      // minutes-weighted average of the day rates so the single number shown next
+      // to a multi-rate line is representative rather than arbitrary.
+      const costRateCents = rateWeightMinutes > 0 ? Math.round(rateWeightNumerator / rateWeightMinutes) : null;
       lines.push({
         employeeId,
         employeeName: nameOf.get(employeeId) ?? "Unknown",

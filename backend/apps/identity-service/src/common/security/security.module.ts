@@ -11,6 +11,7 @@ import { TenantGuard } from "../guards/tenant.guard.js";
 import { PermissionBundleService } from "./permission-bundle.service.js";
 import { InMemoryPermissionCache, PermissionCache } from "./permission-cache.js";
 import { RedisPermissionCache } from "./redis-permission-cache.js";
+import { OrgStatusService } from "./org-status.service.js";
 
 const config = loadConfig();
 
@@ -35,6 +36,7 @@ const config = loadConfig();
     TenantGuard,
     PermissionGuard,
     PermissionBundleService,
+    OrgStatusService,
     AuditService,
     {
       provide: PermissionCache,
@@ -73,6 +75,7 @@ const config = loadConfig();
     TenantGuard,
     PermissionGuard,
     PermissionBundleService,
+    OrgStatusService,
     AuditService,
     TokenDenylist,
   ],

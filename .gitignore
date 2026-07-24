@@ -13,3 +13,6 @@ docs/*.backup.xlsx
 # Task-tracker generator and its output (xlsx, csv, …) — kept local, not versioned.
 docs/build_task_tracker.py
 docs/RetainIQ-Task-Tracker.*
+
+# QA findings & fix plans (internal, not committed)
+docs/qa/

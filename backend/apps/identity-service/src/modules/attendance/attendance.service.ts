@@ -6,6 +6,7 @@ import { OrgRolesService } from "../../common/org-roles/org-roles.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { RealtimePublisher } from "../../common/realtime/realtime-publisher.service.js";
 import { AttendancePolicyService } from "./attendance-policy.service.js";
+import { AttendanceRecomputeService } from "./attendance-recompute.service.js";
 import {
   availableActions,
   can,
@@ -22,20 +23,6 @@ import {
 export type AttendanceSource = "web" | "agent";
 
 const minutesBetween = (from: Date, to: Date): number => Math.max(0, Math.round((to.getTime() - from.getTime()) / 60000));
-
-/** Minutes late past the shift start + grace, in the org's timezone. */
-function lateBy(checkInAt: Date, tz: string, shift: ShiftLike | null, graceMinutes: number): number {
-  if (!shift) return 0;
-  const local = minuteOfDayInTz(checkInAt, tz);
-  const allowed = shift.startMinute + (shift.graceMinutes ?? graceMinutes);
-  return Math.max(0, local - allowed);
-}
-
-/** Minutes left before the shift ended, in the org's timezone. */
-function earlyExitBy(checkOutAt: Date, tz: string, shift: ShiftLike): number {
-  const local = minuteOfDayInTz(checkOutAt, tz);
-  return Math.max(0, shift.endMinute - local);
-}
 
 // Fallback threshold when an employee has no shift and the org has no default:
 // checking out before 17:00 is an early exit.
@@ -54,9 +41,51 @@ function startOfUtcDay(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
+/**
+ * The org-local calendar date of an instant, returned as a UTC-midnight Date so
+ * it keys the `AttendanceRecord.day` column consistently (that column stores a
+ * date, not an instant). Uses the same `Intl.DateTimeFormat` technique as
+ * `minuteOfDayInTz`: format the instant in the org tz, then rebuild the Y/M/D at
+ * UTC midnight. This is what makes an after-midnight-IST check-in bucket under
+ * the correct local date instead of drifting a day back to UTC.
+ */
+function attendanceDayFor(instant: Date, tz: string): Date {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(instant);
+    const y = Number(parts.find((p) => p.type === "year")?.value);
+    const m = Number(parts.find((p) => p.type === "month")?.value);
+    const d = Number(parts.find((p) => p.type === "day")?.value);
+    if (!y || !m || !d) return startOfUtcDay(instant);
+    return new Date(Date.UTC(y, m - 1, d));
+  } catch {
+    return startOfUtcDay(instant);
+  }
+}
+
 /** A shift whose end is at or before its start spans midnight (e.g. 22:00–06:00). */
 function isOvernight(shift: ShiftLike): boolean {
   return shift.endMinute <= shift.startMinute;
+}
+
+/**
+ * The calendar-day bucket for an attendance action, in the org timezone.
+ *
+ * For an overnight shift (e.g. 22:00–06:00) the whole session must land on ONE
+ * row keyed to the shift's START local date, so an after-midnight check-in/out
+ * doesn't split across two rows. When the instant's local time-of-day is already
+ * past the shift start we're on the start date; when it's before the shift start
+ * (i.e. after midnight, in the tail of the shift) we belong to the PREVIOUS
+ * local date.
+ */
+function shiftDayFor(instant: Date, tz: string, shift: ShiftLike | null): Date {
+  const localDay = attendanceDayFor(instant, tz);
+  if (!shift || !isOvernight(shift)) return localDay;
+  const mod = minuteOfDayInTz(instant, tz);
+  if (mod < shift.startMinute) {
+    // After midnight, in the tail of the overnight shift → belongs to yesterday's start date.
+    return new Date(localDay.getTime() - 86_400_000);
+  }
+  return localDay;
 }
 
 /** Minute-of-day (0–1439) of an instant, evaluated in the given IANA timezone. */
@@ -127,6 +156,7 @@ export class AttendanceService {
     private readonly orgRoles: OrgRolesService,
     private readonly realtime: RealtimePublisher,
     private readonly policies: AttendancePolicyService,
+    private readonly recompute: AttendanceRecomputeService,
   ) {}
 
   /** Resolve the calling user's employee record via their org membership. */
@@ -140,6 +170,17 @@ export class AttendanceService {
       throw new BadRequestException("Your account is not linked to an employee record.");
     }
     return { orgId: membership.orgId, employeeId: membership.employeeId };
+  }
+
+  /**
+   * The tz-aware "current" attendance day bucket for this employee, plus the tz
+   * and shift used to derive it (so callers can reuse them). For an overnight
+   * shift the whole session keys to the shift's start local date. New records
+   * only — historical UTC-bucketed rows are left untouched (no backfill).
+   */
+  private async resolveToday(orgId: string, employeeId: string, at = new Date()): Promise<{ day: Date; tz: string; shift: ShiftLike | null }> {
+    const { tz, shift } = await this.resolveShift(orgId, employeeId);
+    return { day: shiftDayFor(at, tz, shift), tz, shift };
   }
 
   /** The employee's own shift (assigned → org default) + the org timezone. */
@@ -227,47 +268,7 @@ export class AttendanceService {
    * summary can never drift from the underlying events.
    */
   private async recomputeDay(orgId: string, employeeId: string, day: Date, policy: PolicyShape) {
-    const { record, sessions, breaks, snapshot, tz, shift } = await this.loadDay(orgId, employeeId, day);
-    if (!record) return null;
-
-    const now = new Date();
-    // Open sessions count up to "now" so live totals tick along with the day.
-    const grossMinutes = sessions.reduce((acc, s) => {
-      const end = s.endedAt ?? now;
-      return acc + Math.max(0, Math.round((end.getTime() - s.startedAt.getTime()) / 60000));
-    }, 0);
-    const breakMinutes = breaks.reduce((acc, b) => {
-      const end = b.endedAt ?? now;
-      return acc + (b.endedAt ? b.minutes : Math.max(0, Math.round((end.getTime() - b.startedAt.getTime()) / 60000)));
-    }, 0);
-
-    const shiftMinutes = shift ? Math.max(0, shift.endMinute - shift.startMinute) : 0;
-    const totals = computeTotals({ grossMinutes, breakMinutes, shiftMinutes, policy });
-
-    const first = sessions[0] ?? null;
-    const lastClosed = [...sessions].reverse().find((s) => s.endedAt !== null) ?? null;
-    const lateMinutes = first ? lateBy(first.startedAt, tz, shift, policy.graceMinutes) : 0;
-    const earlyExitMinutes = lastClosed && shift ? earlyExitBy(lastClosed.endedAt!, tz, shift) : 0;
-    const state = deriveState(snapshot, policy);
-    const status = deriveStatus({ workMinutes: totals.workMinutes, lateMinutes, policy, hasAnySession: sessions.length > 0 });
-
-    return this.prisma.attendanceRecord.update({
-      where: { id: record.id },
-      data: {
-        checkInAt: first?.startedAt ?? null,
-        checkOutAt: lastClosed?.endedAt ?? null,
-        source: first?.startSource ?? "web",
-        checkOutSource: lastClosed?.endSource ?? null,
-        workMinutes: totals.workMinutes,
-        breakMinutes: totals.breakMinutes,
-        unpaidBreakMinutes: totals.unpaidBreakMinutes,
-        overtimeMinutes: totals.overtimeMinutes,
-        lateMinutes,
-        earlyExitMinutes,
-        state,
-        status,
-      },
-    });
+    return this.recompute.recomputeDay(orgId, employeeId, day, policy);
   }
 
   /** Append to the audit trail. Never blocks the action it describes. */
@@ -312,7 +313,7 @@ export class AttendanceService {
     const { orgId, employeeId } = await this.caller();
     await this.assertTracksAttendance(orgId, employeeId);
     const policy = await this.policies.get(orgId);
-    const day = startOfUtcDay();
+    const { day } = await this.resolveToday(orgId, employeeId);
 
     const before = await this.loadDay(orgId, employeeId, day);
     this.assertAllowed("CHECK_IN", before.snapshot, policy);
@@ -355,7 +356,7 @@ export class AttendanceService {
     const { orgId, employeeId } = await this.caller();
     await this.assertTracksAttendance(orgId, employeeId);
     const policy = await this.policies.get(orgId);
-    const day = startOfUtcDay();
+    const { day } = await this.resolveToday(orgId, employeeId);
 
     const before = await this.loadDay(orgId, employeeId, day);
     this.assertAllowed("CHECK_OUT", before.snapshot, policy);
@@ -398,7 +399,7 @@ export class AttendanceService {
     const { orgId, employeeId } = await this.caller();
     await this.assertTracksAttendance(orgId, employeeId);
     const policy = await this.policies.get(orgId);
-    const day = startOfUtcDay();
+    const { day } = await this.resolveToday(orgId, employeeId);
 
     const before = await this.loadDay(orgId, employeeId, day);
     this.assertAllowed("BREAK_START", before.snapshot, policy);
@@ -432,7 +433,7 @@ export class AttendanceService {
     const { orgId, employeeId } = await this.caller();
     await this.assertTracksAttendance(orgId, employeeId);
     const policy = await this.policies.get(orgId);
-    const day = startOfUtcDay();
+    const { day } = await this.resolveToday(orgId, employeeId);
 
     const before = await this.loadDay(orgId, employeeId, day);
     this.assertAllowed("BREAK_END", before.snapshot, policy);
@@ -474,7 +475,7 @@ export class AttendanceService {
    */
   async liveStatus() {
     const { orgId, employeeId } = await this.caller();
-    const day = startOfUtcDay();
+    const { day } = await this.resolveToday(orgId, employeeId);
     const isOwner = await this.orgRoles.isOwnerEmployee(orgId, employeeId);
     const policy = await this.policies.get(orgId);
     const { record, sessions, breaks, openSession, openBreak, snapshot, shift } = await this.loadDay(orgId, employeeId, day);
@@ -570,8 +571,8 @@ export class AttendanceService {
 
   async me() {
     const { orgId, employeeId } = await this.caller();
-    const day = startOfUtcDay();
-    const since = startOfUtcDay(new Date(Date.now() - 14 * 86_400_000));
+    const { day, tz } = await this.resolveToday(orgId, employeeId);
+    const since = attendanceDayFor(new Date(Date.now() - 14 * 86_400_000), tz);
     const [today, history] = await Promise.all([
       this.prisma.attendanceRecord.findUnique({ where: { orgId_employeeId_day: { orgId, employeeId, day } } }),
       this.prisma.attendanceRecord.findMany({ where: { orgId, employeeId, day: { gte: since } }, orderBy: { day: "desc" } }),
@@ -579,10 +580,21 @@ export class AttendanceService {
     return { today, history };
   }
 
+  /** The org's IANA timezone (defaults to UTC), for report day/month boundaries. */
+  private async orgTz(orgId: string): Promise<string> {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { timezone: true } });
+    return org?.timezone || "UTC";
+  }
+
+  /** Today's calendar day in the org timezone, keyed as UTC-midnight (matches record buckets). */
+  private async orgToday(orgId: string): Promise<Date> {
+    return attendanceDayFor(new Date(), await this.orgTz(orgId));
+  }
+
   /** Org-wide attendance metrics for today (admin view) — owner excluded, absentees counted. */
   async today() {
     const ctx = requireTenantContext();
-    const day = startOfUtcDay();
+    const day = await this.orgToday(ctx.orgId);
     const rows = await this.dayRoster(ctx.orgId, day);
     const summary = this.summarize(rows);
     return { day: day.toISOString().slice(0, 10), totalEmployees: summary.total, ...summary };
@@ -683,8 +695,10 @@ export class AttendanceService {
     };
   }
 
-  private resolveDay(dayStr?: string): Date {
-    if (!dayStr) return startOfUtcDay();
+  // An explicit YYYY-MM-DD is a date-only value keyed at UTC midnight (matching
+  // the record buckets); only the "today" default needs the org timezone.
+  private async resolveDay(orgId: string, dayStr?: string): Promise<Date> {
+    if (!dayStr) return this.orgToday(orgId);
     const d = new Date(`${dayStr}T00:00:00.000Z`);
     if (Number.isNaN(d.getTime())) throw new BadRequestException("Invalid day.");
     return startOfUtcDay(d);
@@ -696,7 +710,7 @@ export class AttendanceService {
    */
   async roster() {
     const ctx = requireTenantContext();
-    const day = startOfUtcDay();
+    const day = await this.orgToday(ctx.orgId);
     const rows = await this.dayRoster(ctx.orgId, day);
     return { day: day.toISOString().slice(0, 10), summary: this.summarize(rows), rows };
   }
@@ -704,7 +718,7 @@ export class AttendanceService {
   /** Daily Attendance report — per-employee attendance for any day (defaults to today). */
   async reportDaily(dayStr?: string) {
     const ctx = requireTenantContext();
-    const day = this.resolveDay(dayStr);
+    const day = await this.resolveDay(ctx.orgId, dayStr);
     const rows = await this.dayRoster(ctx.orgId, day);
     return { day: day.toISOString().slice(0, 10), summary: this.summarize(rows), rows };
   }
@@ -712,7 +726,7 @@ export class AttendanceService {
   /** Department Attendance report — attendance grouped by department for a day. */
   async reportDepartment(dayStr?: string) {
     const ctx = requireTenantContext();
-    const day = this.resolveDay(dayStr);
+    const day = await this.resolveDay(ctx.orgId, dayStr);
     const rows = await this.dayRoster(ctx.orgId, day);
 
     const groups = new Map<string, { departmentId: string | null; name: string; rows: typeof rows }>();
@@ -735,9 +749,11 @@ export class AttendanceService {
    */
   async reportMonthly(monthStr?: string) {
     const ctx = requireTenantContext();
-    const now = new Date();
-    let year = now.getUTCFullYear();
-    let month = now.getUTCMonth() + 1;
+    // "Today" and the default month are keyed to the org timezone so month
+    // boundaries agree with the tz-bucketed record days.
+    const today = await this.orgToday(ctx.orgId);
+    let year = today.getUTCFullYear();
+    let month = today.getUTCMonth() + 1;
     if (monthStr) {
       const [y, m] = monthStr.split("-").map(Number);
       if (!y || !m || m < 1 || m > 12) throw new BadRequestException("Invalid month (expected YYYY-MM).");
@@ -746,7 +762,6 @@ export class AttendanceService {
     }
     const start = new Date(Date.UTC(year, month - 1, 1));
     const end = new Date(Date.UTC(year, month, 1)); // exclusive
-    const today = startOfUtcDay();
 
     const rangeEnd = end.getTime() < today.getTime() + 86_400_000 ? end : new Date(today.getTime() + 86_400_000); // min(end, today+1)
     const exclude = await this.orgRoles.ownerEmployeeIds(ctx.orgId);

@@ -3,7 +3,10 @@ import { ChevronRight, HardDrive, Images } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody } from "@/components/ui/Card";
-import { getScreenshotEmployees, getStorageUsage } from "@/lib/api";
+import { PageNav } from "@/components/ui/PageNav";
+import { LocalTime } from "@/components/ui/LocalTime";
+import { ScreenshotThumb } from "@/components/screenshots/ScreenshotThumb";
+import { getMyScreenshots, getScreenshotEmployees, getSession, getStorageUsage } from "@/lib/api";
 import { formatBytes, formatCompact, timeAgo } from "@/lib/format";
 
 function initials(name: string): string {
@@ -18,7 +21,51 @@ function initials(name: string): string {
   );
 }
 
-export default async function ScreenshotsPage() {
+const PAGE_SIZE = 24;
+
+export default async function ScreenshotsPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  const session = await getSession().catch(() => null);
+  // Managers/admins (screenshots.read) get the org gallery grouped by employee;
+  // everyone else sees only their OWN screenshots (self-view, no permission).
+  const canSeeGallery = Boolean(session?.role.permissions.includes("screenshots.read"));
+
+  if (!canSeeGallery) {
+    const page = Math.max(1, Number((await searchParams).page) || 1);
+    const mine = await getMyScreenshots(page, PAGE_SIZE).catch(() => ({ items: [], total: 0, page, pageSize: PAGE_SIZE }));
+    return (
+      <>
+        <Topbar title="Screenshots" subtitle="Your own captured activity" />
+        <PageBody>
+          {mine.items.length === 0 ? (
+            <Card>
+              <p className="px-5 py-12 text-center text-sm text-slate-500">No screenshots of your activity yet.</p>
+            </Card>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+                {mine.items.map((shot) => (
+                  <div key={shot.id} className="group relative overflow-hidden rounded-xl border border-hairline bg-panel">
+                    <div className="aspect-video w-full bg-panel-2">
+                      <ScreenshotThumb src={shot.viewUrl} alt={`Screenshot from ${shot.capturedAt.slice(0, 10)}`} />
+                    </div>
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-slate-500">
+                      <span className="truncate"><LocalTime iso={shot.capturedAt} mode="datetime" /></span>
+                      <span className="shrink-0 tabular-nums">{formatBytes(shot.sizeBytes)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <Card>
+                <PageNav page={mine.page} pageSize={mine.pageSize} total={mine.total} basePath="/screenshots" />
+              </Card>
+            </>
+          )}
+        </PageBody>
+      </>
+    );
+  }
+
   const [groups, usage] = await Promise.all([
     getScreenshotEmployees().catch(() => ({ items: [] })),
     getStorageUsage().catch(() => null),

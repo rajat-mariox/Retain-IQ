@@ -13,7 +13,6 @@ import { RequireFeature } from "../../common/settings/require-feature.decorator.
 import { StorageService } from "./storage.service.js";
 
 const uploadSchema = z.object({
-  employeeId: z.string().uuid().optional(),
   contentType: z.enum(["image/jpeg", "image/png", "image/webp"]).default("image/jpeg"),
   sizeBytes: z.coerce.number().int().positive().max(50 * 1024 * 1024), // 50MB/screenshot ceiling
   capturedAt: z.coerce.date().optional(),
@@ -50,11 +49,22 @@ export class StorageController {
     return this.storage.createUpload({
       orgId: ctx.orgId,
       membershipId: ctx.membershipId,
-      employeeId: body.employeeId,
       contentType: body.contentType,
       sizeBytes: body.sizeBytes,
       capturedAt: body.capturedAt ?? new Date(),
     });
+  }
+
+  /**
+   * The caller's OWN screenshots (employee self-view). No screenshots.read
+   * needed — that permission is the manager/admin gallery. Always hard-scoped to
+   * the caller, so an employee sees only their own captures, never anyone else's.
+   */
+  @Get("screenshots/mine")
+  @PublicRoute("a person's own screenshots, hard-scoped to the caller")
+  myScreenshots(@Query(new ZodValidationPipe(offsetPaginationQuerySchema)) query: z.infer<typeof offsetPaginationQuerySchema>) {
+    const ctx = requireTenantContext();
+    return this.storage.listOwnScreenshots({ orgId: ctx.orgId, membershipId: ctx.membershipId, page: query.page, pageSize: query.pageSize });
   }
 
   /** Gallery folders: screenshots grouped by employee (RBAC-scoped). */

@@ -1,7 +1,8 @@
 import "@retainiq/config/env"; // load .env for host/dev runs (no-op in prod) — must be first
 import { parseKafkaBrokers } from "@retainiq/config";
 import { PrismaClient } from "@retainiq/database/billing";
-import { createBroker, STREAMS, type StreamMessage } from "@retainiq/messaging";
+import { randomUUID } from "node:crypto";
+import { createBroker, STREAMS, type EventPublisher, type StreamMessage } from "@retainiq/messaging";
 import {
   createLogger,
   createMetrics,
@@ -33,6 +34,32 @@ installProcessErrorHandlers(logger);
 
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "P2002";
+}
+
+// Set once the broker is initialized (see main). Lets HTTP handlers (plan-api)
+// and event consumers publish domain events back onto the shared stream.
+let publisher: EventPublisher | null = null;
+
+/**
+ * Publish a domain event onto the shared domain-events stream, mirroring the
+ * envelope identity's transactional outbox emits (eventType / orgId / payload),
+ * so cross-service consumers (e.g. identity's plan-cache invalidator) can read
+ * billing-originated events the same way they read identity's.
+ */
+async function publishDomainEvent(eventType: string, orgId: string, payload: Record<string, unknown>): Promise<void> {
+  if (!publisher) return; // broker not ready (boot / shutdown) — BillingEvent row still recorded
+  const now = new Date().toISOString();
+  const envelope = {
+    eventId: randomUUID(),
+    eventType,
+    schemaVersion: 1,
+    orgId,
+    source: "billing-service",
+    occurredAt: now,
+    ingestedAt: now,
+    payload,
+  };
+  await publisher.publish(STREAMS.domainEvents, envelope);
 }
 
 function startOfUtcMonth(d = new Date()): Date {
@@ -151,6 +178,99 @@ async function handleOrganizationHeadcount(event: Record<string, unknown>): Prom
   logger.info({ orgId, activeSeats: next }, "Reconciled active seats from headcount");
 }
 
+/**
+ * org deleted -> cancel the subscription. Idempotent: a CANCELED sub is left
+ * untouched (no-op, no duplicate BillingEvent). "now" comes from the event's
+ * occurredAt when present, else the consumer's wall clock (a redelivery lands
+ * on the idempotency guard before the timestamp matters).
+ */
+async function handleOrganizationDeleted(event: Record<string, unknown>): Promise<void> {
+  const orgId = typeof event.orgId === "string" ? event.orgId : null;
+  if (!orgId) {
+    eventsSkipped.inc({ reason: "missing_fields" });
+    return;
+  }
+  const now = eventTime(event);
+  const sub = await prisma.subscription.findUnique({ where: { orgId }, select: { status: true } });
+  if (!sub) {
+    eventsSkipped.inc({ reason: "no_subscription" });
+    return;
+  }
+  if (sub.status === "CANCELED") {
+    eventsSkipped.inc({ reason: "already_canceled" });
+    return;
+  }
+  await prisma.subscription.update({ where: { orgId }, data: { status: "CANCELED", canceledAt: now } });
+  await prisma.billingEvent.create({
+    data: { orgId, type: "subscription.canceled", summary: "Canceled (org deleted)" },
+  });
+  logger.info({ orgId }, "Canceled subscription (org deleted)");
+}
+
+/**
+ * org suspended -> suspend the subscription. Idempotent; refuses to downgrade a
+ * CANCELED sub (terminal) or re-suspend an already-SUSPENDED one.
+ */
+async function handleOrganizationSuspended(event: Record<string, unknown>): Promise<void> {
+  const orgId = typeof event.orgId === "string" ? event.orgId : null;
+  if (!orgId) {
+    eventsSkipped.inc({ reason: "missing_fields" });
+    return;
+  }
+  const sub = await prisma.subscription.findUnique({ where: { orgId }, select: { status: true } });
+  if (!sub) {
+    eventsSkipped.inc({ reason: "no_subscription" });
+    return;
+  }
+  if (sub.status === "CANCELED" || sub.status === "SUSPENDED") {
+    eventsSkipped.inc({ reason: "not_suspendable" });
+    return;
+  }
+  await prisma.subscription.update({ where: { orgId }, data: { status: "SUSPENDED" } });
+  await prisma.billingEvent.create({
+    data: { orgId, type: "subscription.suspended", summary: "Suspended (org suspended)" },
+  });
+  logger.info({ orgId }, "Suspended subscription (org suspended)");
+}
+
+/**
+ * org reactivated -> restore an org-suspended subscription to ACTIVE, but only
+ * while its paid period is still current. A CANCELED sub stays terminal, and an
+ * expired period is left for the billing lifecycle to renew. Idempotent.
+ */
+async function handleOrganizationReactivated(event: Record<string, unknown>): Promise<void> {
+  const orgId = typeof event.orgId === "string" ? event.orgId : null;
+  if (!orgId) {
+    eventsSkipped.inc({ reason: "missing_fields" });
+    return;
+  }
+  const now = eventTime(event);
+  const sub = await prisma.subscription.findUnique({ where: { orgId }, select: { status: true, currentPeriodEnd: true } });
+  if (!sub) {
+    eventsSkipped.inc({ reason: "no_subscription" });
+    return;
+  }
+  if (sub.status !== "SUSPENDED" || sub.currentPeriodEnd <= now) {
+    eventsSkipped.inc({ reason: "not_reactivatable" });
+    return;
+  }
+  await prisma.subscription.update({ where: { orgId }, data: { status: "ACTIVE" } });
+  await prisma.billingEvent.create({
+    data: { orgId, type: "subscription.reactivated", summary: "Reactivated (org reactivated)" },
+  });
+  logger.info({ orgId }, "Reactivated subscription (org reactivated)");
+}
+
+/** "now" for a consumer: the event's occurredAt when valid, else wall clock. */
+function eventTime(event: Record<string, unknown>): Date {
+  const raw = typeof event.occurredAt === "string" ? event.occurredAt : null;
+  if (raw) {
+    const t = new Date(raw);
+    if (!Number.isNaN(t.getTime())) return t;
+  }
+  return new Date();
+}
+
 function handler(message: StreamMessage): Promise<void> {
   const event = message.event;
   const eventType = typeof event.eventType === "string" ? event.eventType : "unknown";
@@ -160,6 +280,15 @@ function handler(message: StreamMessage): Promise<void> {
   if (eventType === "organization.headcount") {
     return handleOrganizationHeadcount(event);
   }
+  if (eventType === "organization.deleted") {
+    return handleOrganizationDeleted(event);
+  }
+  if (eventType === "organization.suspended") {
+    return handleOrganizationSuspended(event);
+  }
+  if (eventType === "organization.reactivated") {
+    return handleOrganizationReactivated(event);
+  }
   eventsSkipped.inc({ reason: "irrelevant" });
   return Promise.resolve();
 }
@@ -168,6 +297,7 @@ async function main(): Promise<void> {
   await prisma.$connect();
   await seedPlans();
   await broker.init();
+  publisher = broker.publisher();
 
   const consumer = broker.consumer({
     stream: STREAMS.domainEvents,
@@ -190,7 +320,13 @@ async function main(): Promise<void> {
   });
 
   // Platform-admin plan-CRUD HTTP API (billing-service owns the Plan table).
-  const planApi = await startPlanApi({ prisma, port: config.API_PORT, jwtSecret: config.PLATFORM_JWT_SECRET, logger });
+  const planApi = await startPlanApi({
+    prisma,
+    port: config.API_PORT,
+    jwtSecret: config.PLATFORM_JWT_SECRET,
+    logger,
+    publishEvent: publishDomainEvent,
+  });
 
   // Recurring-billing lifecycle: run on boot, then on an interval.
   const billingCycle = () =>

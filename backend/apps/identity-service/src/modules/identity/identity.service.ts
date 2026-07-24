@@ -358,7 +358,9 @@ export class IdentityService {
   /** Returns the current principal's identity, membership, and permissions. */
   async me(userId: string, membershipId: string) {
     const membership = await this.prisma.organizationMembership.findFirst({
-      where: { id: membershipId, userId, status: "ACTIVE" },
+      // Also require an ACTIVE org: a suspended/soft-deleted tenant's sessions
+      // must not resolve, matching the TenantGuard live-status enforcement.
+      where: { id: membershipId, userId, status: "ACTIVE", org: { status: "ACTIVE" } },
       select: {
         id: true,
         status: true,

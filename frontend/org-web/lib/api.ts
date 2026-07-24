@@ -1289,6 +1289,11 @@ export const getScreenshots = cache((employeeId: string | undefined, page = 1, p
   ),
 );
 
+/** The signed-in person's OWN screenshots (self-view — no screenshots.read needed). */
+export const getMyScreenshots = cache((page = 1, pageSize = 24) =>
+  apiFetch<OffsetPage<Screenshot>>(`storage/screenshots/mine?page=${page}&pageSize=${pageSize}`),
+);
+
 export interface StorageUsage {
   usedBytes: number;
   limitBytes: number | null;

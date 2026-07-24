@@ -48,8 +48,19 @@ interface PlatformClaims {
  * NOTE: verifies signature + scope + expiry only; logout-denylist revocation is a
  * future hardening (would couple this to Redis, which kafka-mode deployments lack).
  */
-export async function startPlanApi(opts: { prisma: PrismaClient; port: number; jwtSecret: string; logger: Logger }): Promise<FastifyInstance> {
-  const { prisma, port, jwtSecret, logger } = opts;
+export async function startPlanApi(opts: {
+  prisma: PrismaClient;
+  port: number;
+  jwtSecret: string;
+  logger: Logger;
+  /**
+   * Publishes a domain event onto the shared stream so other services can react
+   * (e.g. identity busts its plan cache). Best-effort: a publish failure must not
+   * fail the HTTP write — the BillingEvent row is the durable record.
+   */
+  publishEvent?: (eventType: string, orgId: string, payload: Record<string, unknown>) => Promise<void>;
+}): Promise<FastifyInstance> {
+  const { prisma, port, jwtSecret, logger, publishEvent } = opts;
   const app = Fastify({ logger: false });
 
   app.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
@@ -126,20 +137,56 @@ export async function startPlanApi(opts: { prisma: PrismaClient; port: number; j
 
     const updated = await prisma.subscription.update({ where: { orgId: req.params.orgId }, data, include: { plan: true } });
 
-    const changes: string[] = [];
-    if (planId && planId !== sub.planId) changes.push(`plan ${sub.plan.name} → ${target.name}`);
-    if (seats !== undefined && seats !== sub.seats) changes.push(`seats ${sub.seats} → ${seats}`);
-    if (autoRenew !== undefined && autoRenew !== sub.autoRenew) changes.push(`auto-renew ${autoRenew ? "on" : "off"}`);
-    if (changes.length > 0) {
+    // Emit one BillingEvent per changed dimension (append-only model), each with
+    // its own distinct type + targeted summary, so the activity feed and any
+    // consumers can tell a plan change from a seat or renewal change.
+    const planChanged = Boolean(planId) && planId !== sub.planId;
+    const seatsChanged = seats !== undefined && seats !== sub.seats;
+    const renewalChanged = autoRenew !== undefined && autoRenew !== sub.autoRenew;
+    const mrr = updated.activeSeats * target.pricePerSeat;
+
+    if (planChanged) {
       await prisma.billingEvent.create({
         data: {
           orgId: req.params.orgId,
           type: "subscription.plan_changed",
-          summary: `Subscription updated: ${changes.join(", ")}`,
+          summary: `Plan changed: ${sub.plan.name} → ${target.name}`,
           planId: updated.planId,
-          amountCents: updated.activeSeats * target.pricePerSeat,
+          amountCents: mrr,
         },
       });
+    }
+    if (seatsChanged) {
+      await prisma.billingEvent.create({
+        data: {
+          orgId: req.params.orgId,
+          type: "subscription.seats_changed",
+          summary: `Seats changed: ${sub.seats} → ${updated.seats}`,
+          planId: updated.planId,
+          amountCents: mrr,
+        },
+      });
+    }
+    if (renewalChanged) {
+      await prisma.billingEvent.create({
+        data: {
+          orgId: req.params.orgId,
+          type: "subscription.renewal_changed",
+          summary: `Auto-renew turned ${updated.autoRenew ? "on" : "off"}`,
+          planId: updated.planId,
+        },
+      });
+    }
+
+    // F1.2: a plan or seat change alters the org's entitlements, so publish a
+    // domain event to the shared stream for identity to bust its plan cache.
+    // Best-effort — the BillingEvent rows above are the durable source of truth.
+    if ((planChanged || seatsChanged) && publishEvent) {
+      try {
+        await publishEvent("subscription.plan_changed", req.params.orgId, { orgId: req.params.orgId, planId: updated.planId });
+      } catch (err) {
+        logger.warn({ orgId: req.params.orgId, err: String(err) }, "failed to publish subscription.plan_changed domain event");
+      }
     }
 
     return {

@@ -37,9 +37,15 @@ export class InsightsController {
     return this.insights.team();
   }
 
-  /** Executive Overview: workforce headcount, health score, attrition, productivity. */
+  /**
+   * Dashboard overview: workforce headcount, health score, attrition,
+   * productivity — SCOPE-AWARE. Available to any member; the data is filtered by
+   * the caller's RBAC/ABAC scope (Owner → whole org, scoped manager → their
+   * department/reports, employee → only themselves), so no permission gate is
+   * needed — breadth is enforced in the service, not the route.
+   */
   @Get("executive")
-  @RequirePermissions(permissions.employeeRead)
+  @PublicRoute("a scope-limited dashboard overview every member gets")
   executive() {
     return this.insights.executiveOverview();
   }

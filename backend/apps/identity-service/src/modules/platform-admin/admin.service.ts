@@ -12,6 +12,7 @@ import { PlatformSettingsService } from "../../common/settings/platform-settings
 import { RealtimePublisher } from "../../common/realtime/realtime-publisher.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { ensureSystemRoles } from "../../common/security/roles.util.js";
+import { OrgStatusService } from "../../common/security/org-status.service.js";
 import type {
   AdminActivityFeed,
   AdminActivityItem,
@@ -62,8 +63,33 @@ const DEFAULT_SEATS = 10;
 // every dashboard load. Mutations (create-org) clear it.
 const CACHE_TTL_MS = 30_000;
 
+// Audit/activity feeds fetch `page * pageSize` rows from ~4 sources, then merge +
+// sort in memory before slicing the page. That cost grows linearly with the page
+// number, so deep offset paging pulls thousands of rows per request. Until the
+// deferred keyset/cursor rewrite lands, cap the effective offset depth and steer
+// admins to narrow with filters / a date range instead of paging into the tail.
+const MAX_OFFSET_DEPTH = 1000;
+
 function startOfUtcDay(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/**
+ * The org-local calendar date of an instant, keyed as a UTC-midnight Date so it
+ * matches how AttendanceRecord.day is bucketed (tz-aware, in the org timezone).
+ * Falls back to UTC-day if the timezone is unusable.
+ */
+function attendanceDayFor(instant: Date, tz: string): Date {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(instant);
+    const y = Number(parts.find((p) => p.type === "year")?.value);
+    const m = Number(parts.find((p) => p.type === "month")?.value);
+    const d = Number(parts.find((p) => p.type === "day")?.value);
+    if (!y || !m || !d) return startOfUtcDay(instant);
+    return new Date(Date.UTC(y, m - 1, d));
+  } catch {
+    return startOfUtcDay(instant);
+  }
 }
 
 /**
@@ -90,6 +116,7 @@ export class AdminService {
     private readonly outbox: OutboxService,
     private readonly settings: PlatformSettingsService,
     private readonly realtime: RealtimePublisher,
+    private readonly orgStatus: OrgStatusService,
   ) {}
 
   private readonly cache = new Map<string, { at: number; value: unknown }>();
@@ -243,7 +270,9 @@ export class AdminService {
       throw new NotFoundException("Organization not found.");
     }
 
-    const today = startOfUtcDay();
+    // Attendance days are bucketed in the org timezone, so "today" for this org's
+    // attendance rollup must be the org-local calendar date, not UTC midnight.
+    const today = attendanceDayFor(new Date(), org.timezone || "UTC");
     const [employees, memberCount, lastSession, factByEmployee, attendance, subscription, storageAgg] = await Promise.all([
       this.prisma.employee.findMany({
         where: { orgId: id },
@@ -351,7 +380,9 @@ export class AdminService {
           seats: subscription.seats,
           activeSeats: subscription.activeSeats,
           pricePerSeat: subscription.plan.pricePerSeat,
-          mrr: subscription.activeSeats * subscription.plan.pricePerSeat,
+          // Canonical MRR (cents): paying + live only; trials contribute $0 — same
+          // helper the billing page uses, so the two surfaces agree on unit + trials.
+          mrr: this.billableMrrCents(subscription.status, subscription.activeSeats, subscription.plan.pricePerSeat, true),
           autoRenew: subscription.autoRenew,
           currentPeriodEnd: subscription.currentPeriodEnd.toISOString(),
           trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
@@ -523,13 +554,35 @@ export class AdminService {
    * the org's subscription in billing-db.
    */
   async setOrganizationStatus(id: string, status: "ACTIVE" | "SUSPENDED" | "DELETED"): Promise<{ id: string; status: string }> {
-    await this.ensureLiveOrg(id);
-    const org = await this.prisma.organization.update({
-      where: { id },
-      data: { status },
-      select: { id: true, status: true, name: true },
+    const before = await this.prisma.organization.findUnique({ where: { id }, select: { status: true } });
+    if (!before || before.status === "DELETED") {
+      throw new NotFoundException("Organization not found.");
+    }
+
+    // Update the status and emit a lifecycle event atomically (transactional
+    // outbox), so billing-service can cancel/suspend/reactivate the subscription.
+    // Without this a deleted/suspended org keeps counting toward platform revenue.
+    const org = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.organization.update({
+        where: { id },
+        data: { status },
+        select: { id: true, status: true, name: true },
+      });
+      const eventType =
+        status === "DELETED" ? "organization.deleted" : status === "SUSPENDED" ? "organization.suspended" : "organization.reactivated";
+      await this.outbox.enqueue(tx, {
+        eventType,
+        aggregateType: "organization",
+        aggregateId: id,
+        orgId: id,
+        payload: { orgId: id, previousStatus: before.status, newStatus: status },
+      });
+      return updated;
     });
+
     this.cache.clear();
+    // Also drop cached org status so session lockout / re-activation is immediate.
+    this.orgStatus.invalidate(id);
     const verb = status === "SUSPENDED" ? "suspended" : status === "DELETED" ? "deleted" : "activated";
     this.recordEvent(`org.${verb}`, id, `Organization "${org.name}" ${verb}`);
     return { id: org.id, status: org.status };
@@ -563,34 +616,59 @@ export class AdminService {
     return this.cached("billing", () => this.computeBilling());
   }
 
+  /**
+   * The set of orgIds whose subscriptions should count toward revenue/usage —
+   * i.e. the org is still live in identity (ACTIVE or SUSPENDED, never DELETED).
+   * billing-db can't know an org's identity lifecycle, so the rollups intersect
+   * against this to avoid counting a soft-deleted org's stale subscription.
+   */
+  private async liveOrgIds(): Promise<Set<string>> {
+    const rows = await this.prisma.organization.findMany({
+      where: { status: { not: "DELETED" } },
+      select: { id: true },
+    });
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * Canonical monthly recurring revenue for one subscription, in CENTS.
+   * Revenue is recognised only for a paying subscription (ACTIVE/PAST_DUE) whose
+   * org is live; trials and non-live orgs contribute $0. Single source of truth
+   * so the billing page and the org-detail page never disagree on unit or trials.
+   */
+  private billableMrrCents(status: string, activeSeats: number, pricePerSeat: number, orgLive: boolean): number {
+    const paying = status === "ACTIVE" || status === "PAST_DUE";
+    return paying && orgLive ? activeSeats * pricePerSeat : 0;
+  }
+
   private async computeBilling(): Promise<AdminBilling> {
-    // Aggregate in the DB: one groupBy over subscriptions (one row per org) +
-    // one SUM-by-month over invoices — never load every invoice/sub into Node.
-    const [plans, subAgg] = await Promise.all([
+    // Load plans + every subscription (one row per org — small), then drop subs
+    // whose org is soft-deleted in identity so a dead org never inflates revenue.
+    const [plans, allSubs, live] = await Promise.all([
       this.billing.plan.findMany({ orderBy: { sortOrder: "asc" } }),
-      this.billing.subscription.groupBy({
-        by: ["planId", "status"],
-        _sum: { activeSeats: true },
-        _count: { _all: true },
-      }),
+      this.billing.subscription.findMany({ select: { orgId: true, planId: true, status: true, activeSeats: true } }),
+      this.liveOrgIds(),
     ]);
+    const subs = allSubs.filter((s) => live.has(s.orgId));
     const priceByPlan = new Map(plans.map((p) => [p.id, p.pricePerSeat]));
     const paying = (s: string) => s === "ACTIVE" || s === "PAST_DUE";
+    const mrrCentsOf = (s: { status: string; activeSeats: number; planId: string }) =>
+      this.billableMrrCents(s.status, s.activeSeats, priceByPlan.get(s.planId) ?? 0, true); // already live-filtered
 
-    // Plan distribution (orgs/seats/MRR per plan, MRR in whole dollars).
+    // Plan distribution (orgs/seats/MRR per plan; MRR in whole dollars).
     const planDist: AdminPlanDist[] = plans.map((p) => {
-      const rows = subAgg.filter((r) => r.planId === p.id);
-      const orgs = rows.reduce((sum, r) => sum + r._count._all, 0);
-      const seats = rows.reduce((sum, r) => sum + (r._sum.activeSeats ?? 0), 0);
-      const payingSeats = rows.filter((r) => paying(r.status)).reduce((sum, r) => sum + (r._sum.activeSeats ?? 0), 0);
-      return { plan: p.id, name: p.name, orgs, seats, mrr: Math.round((payingSeats * p.pricePerSeat) / 100), color: p.color };
+      const rows = subs.filter((s) => s.planId === p.id);
+      const orgs = rows.length;
+      const seats = rows.reduce((sum, s) => sum + s.activeSeats, 0);
+      const planMrrCents = rows.reduce((sum, s) => sum + mrrCentsOf(s), 0);
+      return { plan: p.id, name: p.name, orgs, seats, mrr: Math.round(planMrrCents / 100), color: p.color };
     });
 
-    const payingRows = subAgg.filter((r) => paying(r.status));
-    const mrr = Math.round(payingRows.reduce((sum, r) => sum + (r._sum.activeSeats ?? 0) * (priceByPlan.get(r.planId) ?? 0), 0) / 100);
-    const payingOrgs = payingRows.reduce((sum, r) => sum + r._count._all, 0);
-    const totalSeats = payingRows.reduce((sum, r) => sum + (r._sum.activeSeats ?? 0), 0);
-    const totalOrgs = subAgg.reduce((sum, r) => sum + r._count._all, 0);
+    const payingSubs = subs.filter((s) => paying(s.status));
+    const mrr = Math.round(subs.reduce((sum, s) => sum + mrrCentsOf(s), 0) / 100);
+    const payingOrgs = payingSubs.length;
+    const totalSeats = payingSubs.reduce((sum, s) => sum + s.activeSeats, 0);
+    const totalOrgs = subs.length;
 
     // 12-month trend: SUM PAID invoices by month in SQL, not in Node.
     const since = new Date();
@@ -638,19 +716,15 @@ export class AdminService {
       totalSeats,
     };
 
-    // Top paying customers — per-org MRR (paying subs), ranked. Org count is
-    // small, so loading the paying subs + joining names is cheap.
+    // Top paying customers — per-org MRR (paying + live subs), ranked. Reuse the
+    // already-loaded, live-filtered subs so the same MRR definition applies.
     const planNameById = new Map(plans.map((p) => [p.id, p.name]));
-    const paidSubs = await this.billing.subscription.findMany({
-      where: { status: { in: ["ACTIVE", "PAST_DUE"] } },
-      select: { orgId: true, planId: true, activeSeats: true },
-    });
-    const ranked = paidSubs
+    const ranked = payingSubs
       .map((s) => ({
         orgId: s.orgId,
         plan: planNameById.get(s.planId) ?? s.planId,
         seats: s.activeSeats,
-        mrr: Math.round((s.activeSeats * (priceByPlan.get(s.planId) ?? 0)) / 100),
+        mrr: Math.round(mrrCentsOf(s) / 100),
       }))
       .sort((a, b) => b.mrr - a.mrr)
       .slice(0, 10);
@@ -710,6 +784,18 @@ export class AdminService {
     if (!this.settings.isTenantFeature(input.feature)) {
       throw new BadRequestException(`"${input.feature}" is a platform-console feature and can't be set per organization.`);
     }
+    // Don't persist an inert "on" override for a premium feature the org's plan
+    // doesn't include: the plan gate nullifies it now, but it would silently
+    // switch the feature ON the moment the org upgraded. Reject up front.
+    // (Disabling and resetting stay allowed — you can always turn something off.)
+    if (input.enabled === true && this.settings.isPremiumFeature(input.feature)) {
+      const granted = await this.settings.orgHasPlanFeature(orgId, input.feature);
+      if (!granted) {
+        throw new BadRequestException(
+          `"${input.feature}" is a premium feature not included in ${org.name}'s current plan. Upgrade the plan to enable it.`,
+        );
+      }
+    }
 
     await this.settings.setOrgFeature({ orgId, feature: input.feature, enabled: input.enabled, reason: input.reason });
 
@@ -745,7 +831,7 @@ export class AdminService {
     return result;
   }
 
-  /** One feature across every org — answers "who has this turned on?". */
+  /** One feature across every org — answers "who really has this on?". */
   async featureMatrix(feature: string) {
     if (!this.settings.isKnownFeature(feature)) {
       throw new BadRequestException(`Unknown feature "${feature}".`);
@@ -758,19 +844,43 @@ export class AdminService {
     const globalEnabled = globals[feature] !== false;
     const overrideBy = new Map(overrides.map((o) => [o.orgId, o]));
 
+    // Premium features are gated by each org's subscription plan, exactly as the
+    // runtime guard resolves them. Without this the matrix reports premium
+    // features as ON for orgs whose plan doesn't include them. Batch the plan
+    // lookup in one billing-db read to avoid an N+1 across orgs.
+    const planFeature = this.settings.planFeatureFor(feature);
+    const isPremium = this.settings.isPremiumFeature(feature);
+    const planByOrg = isPremium ? await this.settings.orgsPlanFeatures(orgs.map((o) => o.id)) : null;
+
     return {
       feature,
       globalEnabled,
       organizations: orgs.map((o) => {
         const ov = overrideBy.get(o.id);
-        const enabled = !globalEnabled ? false : (ov?.enabled ?? true);
+        // Precedence mirrors PlatformSettingsService.resolveFeatureFlags:
+        //   kill switch > plan > org override > global.
+        let enabled: boolean;
+        let source: "kill_switch" | "plan" | "org" | "global";
+        if (!globalEnabled) {
+          enabled = false;
+          source = "kill_switch";
+        } else if (isPremium && planFeature && !(planByOrg?.get(o.id)?.has(planFeature) ?? false)) {
+          enabled = false;
+          source = "plan";
+        } else if (ov !== undefined) {
+          enabled = ov.enabled;
+          source = "org";
+        } else {
+          enabled = true;
+          source = "global";
+        }
         return {
           orgId: o.id,
           orgName: o.name,
           status: o.status,
           override: ov ? ov.enabled : null,
           enabled,
-          source: !globalEnabled ? "kill_switch" : ov ? "org" : "global",
+          source,
           reason: ov?.reason ?? null,
         };
       }),
@@ -795,6 +905,11 @@ export class AdminService {
    */
   async activity(query: { page: number; pageSize: number; orgId?: string; type?: string; from?: string; to?: string }): Promise<AdminActivityFeed> {
     const take = query.page * query.pageSize; // enough from each source to cover the page after merge
+    // Deep offset paging pulls `take` rows from every source, then merges + sorts
+    // in memory — cost grows with the page. Cap it (see MAX_OFFSET_DEPTH).
+    if (take > MAX_OFFSET_DEPTH) {
+      throw new BadRequestException("That page is too deep to load efficiently. Narrow the results with a filter or a from/to date range instead of paging further.");
+    }
 
     const createdAt =
       query.from || query.to
@@ -859,6 +974,11 @@ export class AdminService {
   async auditLogs(query: { category: AuditCategory | "all"; page: number; pageSize: number }): Promise<AdminAuditPage> {
     const { category, page, pageSize } = query;
     const take = page * pageSize; // enough from each source to cover the page after merge
+    // Deep offset paging pulls `take` rows from every source, then merges + sorts
+    // in memory — cost grows with the page. Cap it (see MAX_OFFSET_DEPTH).
+    if (take > MAX_OFFSET_DEPTH) {
+      throw new BadRequestException("That page is too deep to load efficiently. Narrow the results with a category filter instead of paging further.");
+    }
     const want = (c: AuditCategory) => category === "all" || category === c;
 
     const [sessions, adminSessions, orgEvents, billingEvents, sCount, aCount, oCount, bSubCount, bPlanCount] = await Promise.all([
@@ -999,11 +1119,14 @@ export class AdminService {
     const agg = await this.prisma.screenshotObject.aggregate({ _sum: { sizeBytes: true }, _count: { _all: true } });
     const orgRows = await this.prisma.screenshotObject.findMany({ distinct: ["orgId"], select: { orgId: true } });
 
-    // Sum plan storage limits across live subscriptions; any unlimited plan makes the total unbounded.
-    const [subs, plans] = await Promise.all([
-      this.billing.subscription.findMany({ where: { status: { in: ["ACTIVE", "TRIALING", "PAST_DUE"] } }, select: { planId: true } }),
+    // Sum plan storage limits across live subscriptions; any unlimited plan makes
+    // the total unbounded. Exclude subs whose org is soft-deleted in identity.
+    const [rawSubs, plans, live] = await Promise.all([
+      this.billing.subscription.findMany({ where: { status: { in: ["ACTIVE", "TRIALING", "PAST_DUE"] } }, select: { orgId: true, planId: true } }),
       this.billing.plan.findMany({ select: { id: true, storageLimitMb: true } }),
+      this.liveOrgIds(),
     ]);
+    const subs = rawSubs.filter((s) => live.has(s.orgId));
     const limitByPlan = new Map(plans.map((p) => [p.id, p.storageLimitMb]));
     let limitBytes: number | null = 0;
     for (const s of subs) {
@@ -1153,13 +1276,21 @@ export class AdminService {
     // The desktop agent runs on Node and identifies itself as "node".
     const AGENT_UA = "node%";
 
+    // A browser mints a Session every ~15 min on silent refresh, so counting rows
+    // over-reports "logins". Count DISTINCT users per day instead — one human = one
+    // sign-in for the day — consistent with the `users` series below.
+    const distinctSignInsSince = async (since: Date): Promise<number> => {
+      const rows = await this.prisma.session.findMany({ where: { createdAt: { gte: since }, userAgent: { startsWith: "Mozilla/" } }, distinct: ["userId"], select: { userId: true } });
+      return rows.length;
+    };
+
     const [dau, wau, mau, signInsToday, trendRows, agentTrendRows, featureUsage] = await Promise.all([
       distinctActive(DAY_MS),
       distinctActive(7 * DAY_MS),
       distinctActive(30 * DAY_MS),
-      this.prisma.session.count({ where: { createdAt: { gte: startToday }, userAgent: { startsWith: "Mozilla/" } } }),
+      distinctSignInsSince(startToday),
       this.prisma.$queryRaw<{ d: Date; logins: bigint; users: bigint }[]>`
-        SELECT date_trunc('day', "createdAt") AS d, count(*) AS logins, count(DISTINCT "userId") AS users
+        SELECT date_trunc('day', "createdAt") AS d, count(DISTINCT "userId") AS logins, count(DISTINCT "userId") AS users
         FROM "Session"
         WHERE "createdAt" >= ${since30} AND "userAgent" LIKE ${HUMAN_UA}
         GROUP BY 1 ORDER BY 1`,
@@ -1404,11 +1535,14 @@ export class AdminService {
 
     const count = (s: string) => statusGroups.find((g) => g.status === s)?._count._all ?? 0;
 
+    // Only surface subscriptions whose org is still live in identity — a
+    // soft-deleted org shouldn't appear in renewals/failed-payments queues.
     const orgIds = [...new Set([...upcomingSubs, ...failedSubs].map((s) => s.orgId))];
-    const orgs = await this.prisma.organization.findMany({ where: { id: { in: orgIds } }, select: { id: true, name: true } });
+    const orgs = await this.prisma.organization.findMany({ where: { id: { in: orgIds }, status: { not: "DELETED" } }, select: { id: true, name: true } });
     const nameById = new Map(orgs.map((o) => [o.id, o.name]));
+    const isLive = (orgId: string) => nameById.has(orgId);
 
-    const upcoming: AdminSubLifecycleRow[] = upcomingSubs.map((s) => ({
+    const upcoming: AdminSubLifecycleRow[] = upcomingSubs.filter((s) => isLive(s.orgId)).map((s) => ({
       orgId: s.orgId,
       orgName: nameById.get(s.orgId) ?? "Unknown",
       plan: s.plan.name,
@@ -1418,7 +1552,7 @@ export class AdminService {
       daysLeft: Math.ceil((s.currentPeriodEnd.getTime() - now.getTime()) / DAY_MS),
     }));
 
-    const failed: AdminFailedPaymentRow[] = failedSubs.map((s) => {
+    const failed: AdminFailedPaymentRow[] = failedSubs.filter((s) => isLive(s.orgId)).map((s) => {
       const inv = s.invoices[0];
       return {
         orgId: s.orgId,

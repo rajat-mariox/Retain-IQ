@@ -151,27 +151,85 @@ export class PlatformSettingsService {
   /**
    * The plan-feature keys an org's subscription includes (e.g. "time_tracking",
    * "ai_analytics"). Empty when the org has no subscription — then only baseline
-   * features are available. Read-only from billing-db, cached. On a billing-db
-   * error it fails OPEN by returning EVERY known plan feature, so a transient
-   * outage never strips premium modules an org has paid for.
+   * features are available. Read-only from billing-db, cached.
+   *
+   * Failure handling (safe, not fully open): on a billing-db error we serve the
+   * org's LAST-KNOWN-GOOD plan features if we have them (without extending their
+   * lease, so a transient blip doesn't mask a real change) — never all-premium.
+   * With no prior value (cold cache), we fall back to baseline-only (empty set)
+   * and do NOT cache the guess, so recovery is immediate. This prevents a
+   * transient outage from silently granting every premium feature to every org.
    */
   private async orgPlanFeatures(orgId: string): Promise<Set<string>> {
     const hit = this.planCache.get(orgId);
     if (hit && Date.now() - hit.at < PLAN_CACHE_TTL_MS) return hit.value;
 
-    let value = new Set<string>();
     try {
       const sub = await this.billing.subscription.findUnique({
         where: { orgId },
         select: { plan: { select: { features: true } } },
       });
-      value = new Set(sub?.plan?.features ?? []);
+      const value = new Set(sub?.plan?.features ?? []);
+      this.planCache.set(orgId, { at: Date.now(), value });
+      return value;
     } catch {
-      // billing-db unreachable — don't strip premium features on a transient error.
-      value = new Set(Object.values(FEATURE_META).map((m) => m.planFeature).filter((x): x is string => Boolean(x)));
+      // billing-db unreachable. Prefer last-known-good (do not refresh its lease);
+      // otherwise baseline-only, uncached, so we recover the moment billing is back.
+      if (hit) return hit.value;
+      return new Set<string>();
     }
-    this.planCache.set(orgId, { at: Date.now(), value });
-    return value;
+  }
+
+  /**
+   * Drop cached plan features for an org (or all orgs). Call when a plan or
+   * subscription changes so entitlements reflect it promptly rather than after
+   * the cache TTL. Plan changes originate in billing-service, so this is driven
+   * by a subscription-change event consumer.
+   */
+  invalidatePlan(orgId?: string): void {
+    if (orgId) this.planCache.delete(orgId);
+    else this.planCache.clear();
+  }
+
+  // ---- Plan-feature accessors (shared by featureMatrix, override validation) --
+
+  /** The plan-catalog key that unlocks a premium feature, or undefined for baseline. */
+  planFeatureFor(feature: string): string | undefined {
+    return FEATURE_META[feature]?.planFeature;
+  }
+
+  /** True when a feature is premium (its access is gated by the subscription plan). */
+  isPremiumFeature(feature: string): boolean {
+    return FEATURE_META[feature]?.tier === "premium";
+  }
+
+  /** Whether an org's plan grants a specific premium feature (by flag key). */
+  async orgHasPlanFeature(orgId: string, feature: string): Promise<boolean> {
+    const planFeature = this.planFeatureFor(feature);
+    if (!planFeature) return true; // baseline features are always granted
+    const features = await this.orgPlanFeatures(orgId);
+    return features.has(planFeature);
+  }
+
+  /**
+   * Batched plan-feature membership for many orgs in ONE billing-db read — avoids
+   * N+1 when resolving a feature across every org (e.g. the admin feature matrix).
+   * Returns orgId → set of plan-feature keys. Missing orgs map to an empty set.
+   */
+  async orgsPlanFeatures(orgIds: string[]): Promise<Map<string, Set<string>>> {
+    const out = new Map<string, Set<string>>();
+    for (const id of orgIds) out.set(id, new Set());
+    if (orgIds.length === 0) return out;
+    try {
+      const subs = await this.billing.subscription.findMany({
+        where: { orgId: { in: orgIds } },
+        select: { orgId: true, plan: { select: { features: true } } },
+      });
+      for (const s of subs) out.set(s.orgId, new Set(s.plan?.features ?? []));
+    } catch {
+      // billing-db unreachable — leave all as empty (baseline-only), never all-open.
+    }
+    return out;
   }
 
   /** An org's raw overrides (only features that diverge from global). Cached. */

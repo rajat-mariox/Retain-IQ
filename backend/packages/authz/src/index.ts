@@ -48,10 +48,10 @@ export const managerPermissions: Permission[] = [
 ];
 
 /**
- * Standard employee: read projects, and view their OWN screenshots (the API
- * scopes the screenshot list to the caller for non-managers). Cannot delete.
+ * Standard employee: read projects. Employees see their OWN productivity via
+ * /insights/me — NOT a screenshot gallery — so they get no screenshots.read.
  */
-export const employeePermissions: Permission[] = [permissions.projectRead, permissions.screenshotsRead];
+export const employeePermissions: Permission[] = [permissions.projectRead];
 
 export interface SystemRole {
   name: string;
