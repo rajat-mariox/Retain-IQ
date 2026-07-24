@@ -6,12 +6,17 @@ import { AlertTriangle, Check, Loader2, Pencil, Plus, Trash2 } from "lucide-reac
 import { Modal } from "@/components/ui/Modal";
 import type { AdminPlan } from "@/lib/plans-api";
 
-// Known features that can be mapped onto a plan. The plan stores the keys.
-const FEATURES: { key: string; label: string }[] = [
+// Features that can be mapped onto a plan. `unlocks` ones actually gate a
+// product feature — a plan must include them for the org to use that feature
+// (time_tracking → Time Tracking, ai_analytics → AI Insights). The rest are
+// descriptive (shown on the plan, no enforcement).
+const FEATURES: { key: string; label: string; unlocks?: string }[] = [
   { key: "core", label: "Core" },
-  { key: "time_tracking", label: "Time tracking" },
+  { key: "time_tracking", label: "Time tracking", unlocks: "Time Tracking" },
+  { key: "ai_analytics", label: "AI analytics", unlocks: "AI Insights" },
+  { key: "monitoring", label: "Employee monitoring", unlocks: "Employee Monitoring" },
+  { key: "recruitment", label: "HR Suite", unlocks: "HR Suite (Hiring, Onboarding, Performance)" },
   { key: "attendance", label: "Attendance" },
-  { key: "ai_analytics", label: "AI analytics" },
   { key: "screenshots", label: "Screenshots" },
   { key: "sso", label: "SSO" },
   { key: "priority_support", label: "Priority support" },
@@ -247,6 +252,9 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
 
           {/* Feature mapping */}
           <Field label="Features">
+            <p className="mb-2 text-xs text-slate-500">
+              A ★ feature actually unlocks a product module for orgs on this plan — without it, they can't turn that module on. The rest describe the plan.
+            </p>
             <div className="flex flex-wrap gap-2">
               {FEATURES.map((f) => {
                 const on = form.features.includes(f.key);
@@ -254,12 +262,13 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
                   <button
                     key={f.key}
                     type="button"
+                    title={f.unlocks ? `Unlocks "${f.unlocks}" for orgs on this plan` : "Descriptive — shown on the plan"}
                     onClick={() => toggleFeature(f.key)}
                     className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                       on ? "border-brand/30 bg-brand/10 text-brand" : "border-hairline bg-panel-2 text-slate-500 hover:text-slate-700"
                     }`}
                   >
-                    {on ? <Check className="size-3.5" /> : <Plus className="size-3.5" />} {f.label}
+                    {on ? <Check className="size-3.5" /> : <Plus className="size-3.5" />} {f.unlocks ? "★ " : ""}{f.label}
                   </button>
                 );
               })}

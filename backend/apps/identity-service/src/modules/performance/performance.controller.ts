@@ -5,6 +5,7 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { PerformanceService } from "./performance.service.js";
 
@@ -30,6 +31,7 @@ const ratingsSchema = z.object({ ratings: z.array(z.object({ competency: z.strin
 const achievementSchema = z.object({ title: z.string().min(1).max(160), description: z.string().max(1000).optional(), category: z.string().max(40).optional(), awardedOn: z.string().datetime().optional() });
 
 @Controller("performance")
+@RequireFeature("recruitment")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class PerformanceController {
   constructor(private readonly svc: PerformanceService) {}

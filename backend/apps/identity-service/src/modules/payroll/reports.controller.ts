@@ -6,6 +6,7 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { ReportsService } from "./reports.service.js";
 
@@ -20,6 +21,7 @@ const exportSchema = z.object({
 
 /** Payroll dashboard, reports and CSV exports. Read-only — payroll.read. */
 @Controller("payroll")
+@RequireFeature("payroll")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}

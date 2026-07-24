@@ -5,6 +5,7 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { OnboardingService } from "./onboarding.service.js";
 
@@ -20,6 +21,7 @@ const taskStatusSchema = z.object({ status: z.enum(["PENDING", "DONE", "SKIPPED"
 const addTaskSchema = z.object({ title: z.string().min(1).max(200), description: z.string().max(1000).optional(), category, assignee, required: z.boolean().optional() });
 
 @Controller("onboarding")
+@RequireFeature("recruitment")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class OnboardingController {
   constructor(private readonly svc: OnboardingService) {}

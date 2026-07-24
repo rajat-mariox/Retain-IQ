@@ -30,7 +30,7 @@ const createRequestSchema = z.object({
 const decisionSchema = z.object({ approve: z.boolean(), note: z.string().max(500).optional() });
 
 @Controller("leave")
-@RequireFeature("attendance")
+@RequireFeature("leave")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class LeaveController {
   constructor(private readonly leave: LeaveService) {}

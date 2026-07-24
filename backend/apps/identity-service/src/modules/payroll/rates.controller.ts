@@ -5,6 +5,7 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { RatesService } from "./rates.service.js";
 
@@ -50,6 +51,7 @@ const settingsSchema = z
  * is payroll.approve (Owner only), since a rate change moves money.
  */
 @Controller("payroll/rates")
+@RequireFeature("payroll")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class RatesController {
   constructor(private readonly rates: RatesService) {}

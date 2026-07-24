@@ -1,10 +1,12 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "../database/prisma.service.js";
+import { BillingReadPrismaService } from "../database/billing-prisma.service.js";
 import type { FeatureFlags, GlobalNotification, MaintenanceMode, PlatformBranding, PlatformSettings } from "../../modules/platform-admin/admin.dto.js";
 
 const SECTIONS = ["branding", "notification", "featureFlags", "maintenance"] as const;
 const CACHE_TTL_MS = 15_000; // guards read this per-request — cache to spare the DB
 const ORG_CACHE_TTL_MS = 15_000; // per-org overrides, same hot path as the guard
+const PLAN_CACHE_TTL_MS = 15_000; // an org's plan features — same hot path
 
 /** A partial update — each section optional, and section fields themselves optional. */
 export interface SettingsPatch {
@@ -26,8 +28,12 @@ const DEFAULTS: PlatformSettings = {
     activityFeed: true,
     timeTracking: true,
     attendance: true,
+    leave: true,
     projects: true,
     screenshots: true,
+    payroll: true,
+    monitoring: true,
+    recruitment: true,
     aiInsights: true,
     billing: true,
   },
@@ -35,38 +41,65 @@ const DEFAULTS: PlatformSettings = {
 };
 
 /**
- * What each feature is and where it applies. `scope` decides whether a feature
- * is toggled per-org (tenant product features) or only globally (super-admin
- * console modules). The per-org "Feature access" screen shows only tenant ones —
- * toggling an admin-console module for a single org is meaningless.
+ * What each feature is and where it applies.
+ *
+ *  scope — "tenant" features are toggled per-org; "adminConsole" ones are
+ *          super-admin modules, global-only. The per-org "Feature access"
+ *          screen shows only tenant ones.
+ *  tier  — "baseline" features are included in every plan; "premium" ones are
+ *          unlocked by the org's subscription plan. `planFeature` is the key the
+ *          plan catalog uses for that premium feature (the plan and the flag are
+ *          named differently, so this is the bridge between the two).
+ *
+ * A premium feature is available to an org only if its plan lists the matching
+ * planFeature — that's how the subscription actually gates access.
  */
 export type FeatureScope = "tenant" | "adminConsole";
-export const FEATURE_META: Record<string, { scope: FeatureScope; label: string }> = {
-  customerSuccess: { scope: "adminConsole", label: "Customer Success" },
-  platformHealth: { scope: "adminConsole", label: "Platform Health" },
-  activityFeed: { scope: "tenant", label: "Activity Feed" },
-  timeTracking: { scope: "tenant", label: "Time Tracking" },
-  attendance: { scope: "tenant", label: "Attendance" },
-  projects: { scope: "tenant", label: "Projects & Teams" },
-  screenshots: { scope: "tenant", label: "Screenshots" },
-  aiInsights: { scope: "tenant", label: "AI Insights" },
-  billing: { scope: "tenant", label: "Billing" },
+export type FeatureTier = "baseline" | "premium";
+export const FEATURE_META: Record<string, { scope: FeatureScope; label: string; tier: FeatureTier; planFeature?: string }> = {
+  customerSuccess: { scope: "adminConsole", label: "Customer Success", tier: "baseline" },
+  platformHealth: { scope: "adminConsole", label: "Platform Health", tier: "baseline" },
+  activityFeed: { scope: "tenant", label: "Activity Feed", tier: "baseline" },
+  attendance: { scope: "tenant", label: "Attendance", tier: "baseline" },
+  leave: { scope: "tenant", label: "Leave", tier: "baseline" },
+  projects: { scope: "tenant", label: "Projects & Teams", tier: "baseline" },
+  screenshots: { scope: "tenant", label: "Screenshots", tier: "baseline" },
+  payroll: { scope: "tenant", label: "Payroll", tier: "baseline" },
+  billing: { scope: "tenant", label: "Billing", tier: "baseline" },
+  // Premium — unlocked by the subscription plan (plan-catalog keys on the right).
+  timeTracking: { scope: "tenant", label: "Time Tracking", tier: "premium", planFeature: "time_tracking" },
+  aiInsights: { scope: "tenant", label: "AI Insights", tier: "premium", planFeature: "ai_analytics" },
+  monitoring: { scope: "tenant", label: "Employee Monitoring", tier: "premium", planFeature: "monitoring" },
+  // One flag for the whole premium HR suite: hiring/ATS, onboarding, performance
+  // and HR analytics. Only the core Employees directory stays outside it.
+  recruitment: { scope: "tenant", label: "HR Suite (Hiring, Onboarding, Performance)", tier: "premium", planFeature: "recruitment" },
 };
 
 /** One feature's state for one org, plus where the decision came from. */
 export interface ResolvedFlag {
   enabled: boolean;
-  /** "global" = inherited; "org" = an override decided it; "kill_switch" = global OFF wins. */
-  source: "global" | "org" | "kill_switch";
+  /**
+   * Why the feature is in this state:
+   *  "global"      — inherited from the platform default
+   *  "org"         — a per-org override decided it
+   *  "kill_switch" — global OFF, outranks everything
+   *  "plan"        — off because the org's subscription plan doesn't include it
+   */
+  source: "global" | "org" | "kill_switch" | "plan";
 }
 
 @Injectable()
 export class PlatformSettingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly billing: BillingReadPrismaService,
+  ) {}
 
   private cache: { at: number; value: PlatformSettings } | null = null;
   /** Per-org overrides, keyed by orgId. Invalidated on write — never left to expire. */
   private orgCache = new Map<string, { at: number; value: Record<string, boolean> }>();
+  /** An org's plan feature keys (from its subscription), keyed by orgId. */
+  private planCache = new Map<string, { at: number; value: Set<string> }>();
 
   async getSettings(): Promise<PlatformSettings> {
     const rows = await this.prisma.platformSetting.findMany();
@@ -115,6 +148,32 @@ export class PlatformSettingsService {
     return FEATURE_META[feature]?.scope === "tenant";
   }
 
+  /**
+   * The plan-feature keys an org's subscription includes (e.g. "time_tracking",
+   * "ai_analytics"). Empty when the org has no subscription — then only baseline
+   * features are available. Read-only from billing-db, cached. On a billing-db
+   * error it fails OPEN by returning EVERY known plan feature, so a transient
+   * outage never strips premium modules an org has paid for.
+   */
+  private async orgPlanFeatures(orgId: string): Promise<Set<string>> {
+    const hit = this.planCache.get(orgId);
+    if (hit && Date.now() - hit.at < PLAN_CACHE_TTL_MS) return hit.value;
+
+    let value = new Set<string>();
+    try {
+      const sub = await this.billing.subscription.findUnique({
+        where: { orgId },
+        select: { plan: { select: { features: true } } },
+      });
+      value = new Set(sub?.plan?.features ?? []);
+    } catch {
+      // billing-db unreachable — don't strip premium features on a transient error.
+      value = new Set(Object.values(FEATURE_META).map((m) => m.planFeature).filter((x): x is string => Boolean(x)));
+    }
+    this.planCache.set(orgId, { at: Date.now(), value });
+    return value;
+  }
+
   /** An org's raw overrides (only features that diverge from global). Cached. */
   private async orgOverrides(orgId: string): Promise<Record<string, boolean>> {
     const hit = this.orgCache.get(orgId);
@@ -128,18 +187,33 @@ export class PlatformSettingsService {
   }
 
   /**
-   * Resolve every feature for one org.
+   * Resolve every feature for one org. Precedence, highest first:
    *
-   *   global OFF → off for everyone. An org override CANNOT re-enable it; this
-   *                is the emergency kill switch and outranks everything.
-   *   global ON  → the org's override decides; no override means inherit ON.
+   *   global OFF   → off for everyone (emergency kill switch); nothing re-enables it.
+   *   plan         → a PREMIUM feature the org's plan doesn't include is off, and
+   *                  a per-org override can't re-enable it — you can't turn on
+   *                  what the subscription doesn't grant. Baseline features skip
+   *                  this check (every plan has them).
+   *   org override → within what's allowed, the per-org toggle decides.
+   *   global ON    → no override means inherit ON.
    */
   async resolveFeatureFlags(orgId: string): Promise<Record<string, ResolvedFlag>> {
-    const [{ featureFlags }, overrides] = await Promise.all([this.getSettingsCached(), this.orgOverrides(orgId)]);
+    const [{ featureFlags }, overrides, planFeatures] = await Promise.all([
+      this.getSettingsCached(),
+      this.orgOverrides(orgId),
+      this.orgPlanFeatures(orgId),
+    ]);
     const out: Record<string, ResolvedFlag> = {};
     for (const [feature, globalOn] of Object.entries(featureFlags)) {
       if (globalOn === false) {
         out[feature] = { enabled: false, source: "kill_switch" };
+        continue;
+      }
+      // Premium features need the plan to include them; the plan gate outranks
+      // an org override so a super-admin can't hand out an unpurchased feature.
+      const meta = FEATURE_META[feature];
+      if (meta?.tier === "premium" && meta.planFeature && !planFeatures.has(meta.planFeature)) {
+        out[feature] = { enabled: false, source: "plan" };
         continue;
       }
       const override = overrides[feature];
@@ -161,6 +235,14 @@ export class PlatformSettingsService {
     const { featureFlags } = await this.getSettingsCached();
     if (featureFlags[feature] === false) return false; // kill switch
     if (!orgId) return true; // no tenant context — global decides
+    // A premium feature the org's plan doesn't include stays off regardless of
+    // any override — same rule as resolveFeatureFlags, kept here for the guard's
+    // hot path.
+    const meta = FEATURE_META[feature];
+    if (meta?.tier === "premium" && meta.planFeature) {
+      const planFeatures = await this.orgPlanFeatures(orgId);
+      if (!planFeatures.has(meta.planFeature)) return false;
+    }
     const overrides = await this.orgOverrides(orgId);
     return overrides[feature] ?? true;
   }

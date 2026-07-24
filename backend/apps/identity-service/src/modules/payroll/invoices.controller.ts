@@ -5,6 +5,7 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { InvoicesService } from "./invoices.service.js";
 
@@ -21,6 +22,7 @@ const generateSchema = previewSchema.extend({
  * invoice is a financial claim.
  */
 @Controller("payroll/invoices")
+@RequireFeature("payroll")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class InvoicesController {
   constructor(private readonly invoices: InvoicesService) {}

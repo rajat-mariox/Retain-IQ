@@ -6,6 +6,7 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { MonitoringService } from "./monitoring.service.js";
 
@@ -23,6 +24,7 @@ const policySchema = z
 
 /** Employee-monitoring read API (activity timeline, apps, websites, sessions, presence). */
 @Controller("monitoring")
+@RequireFeature("monitoring")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class MonitoringController {
   constructor(private readonly monitoring: MonitoringService) {}

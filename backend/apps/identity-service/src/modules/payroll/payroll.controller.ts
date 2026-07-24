@@ -5,6 +5,7 @@ import { RequirePermissions } from "../../common/decorators/permissions.decorato
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
+import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { PayrollService } from "./payroll.service.js";
 
@@ -17,6 +18,7 @@ const createCycleSchema = periodSchema.extend({ note: z.string().max(300).option
  * and marking paid are payroll.approve (Owner) — each moves or freezes money.
  */
 @Controller("payroll/cycles")
+@RequireFeature("payroll")
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class PayrollController {
   constructor(private readonly payroll: PayrollService) {}
