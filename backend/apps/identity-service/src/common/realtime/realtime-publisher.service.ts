@@ -1,6 +1,12 @@
 import { Injectable, type OnApplicationShutdown } from "@nestjs/common";
 import { loadConfig } from "@retainiq/config";
-import { RedisRealtimeBus, userNotificationChannel, type RealtimeBus } from "@retainiq/messaging";
+import {
+  orgBroadcastChannel,
+  PLATFORM_BROADCAST_CHANNEL,
+  RedisRealtimeBus,
+  userNotificationChannel,
+  type RealtimeBus,
+} from "@retainiq/messaging";
 import { logger } from "../observability/observability.js";
 
 const config = loadConfig();
@@ -23,6 +29,24 @@ export class RealtimePublisher implements OnApplicationShutdown {
     } catch (error) {
       // Live delivery is a nudge on top of persisted state — never fatal.
       logger.warn({ userId, err: String(error) }, "realtime publish failed");
+    }
+  }
+
+  /** Fan a payload out to every live connection in one tenant. */
+  async publishToOrg(orgId: string, payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.bus.publish(orgBroadcastChannel(orgId), payload);
+    } catch (error) {
+      logger.warn({ orgId, err: String(error) }, "realtime org publish failed");
+    }
+  }
+
+  /** Fan a payload out to every live connection on the platform. */
+  async publishToAll(payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.bus.publish(PLATFORM_BROADCAST_CHANNEL, payload);
+    } catch (error) {
+      logger.warn({ err: String(error) }, "realtime broadcast publish failed");
     }
   }
 

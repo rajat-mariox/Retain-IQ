@@ -411,11 +411,12 @@ export class NotificationsController {
   stream(): Observable<MessageEvent> {
     const ctx = requireTenantContext();
     const userId = ctx.userId;
+    const orgId = ctx.orgId;
 
     return new Observable<MessageEvent>((subscriber) => {
       const channel = new Subject<MessageEvent>();
       const subscription = channel.subscribe(subscriber);
-      this.hub.register(userId, channel);
+      this.hub.register(userId, orgId, channel);
 
       subscriber.next({ data: { type: "connected" } });
       const ping = setInterval(() => subscriber.next({ data: { type: "ping" } }), PING_INTERVAL_MS);
@@ -423,7 +424,7 @@ export class NotificationsController {
       return () => {
         clearInterval(ping);
         subscription.unsubscribe();
-        this.hub.unregister(userId, channel);
+        this.hub.unregister(userId, orgId, channel);
       };
     });
   }

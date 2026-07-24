@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { Bell, X } from "lucide-react";
 
 export interface NotifItem {
@@ -63,6 +64,7 @@ function playDing(ctxRef: React.MutableRefObject<AudioContext | null>) {
 }
 
 export function NotificationsProvider({ children }: { children: ReactNode }) {
+  const router = useRouter();
   const [items, setItems] = useState<NotifItem[]>([]);
   const [unread, setUnread] = useState(0);
   const [soundOn, setSoundOn] = useState(true);
@@ -129,6 +131,25 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [refresh]);
+
+  // Live stream: one connection for the whole app. A "feature.changed" push means
+  // a platform admin toggled a feature for this org (or globally) — re-render the
+  // server tree so the nav and any gated page reflect it without a manual reload.
+  // Notifications also arrive here, so refresh the bell immediately rather than
+  // waiting for the next poll. EventSource reconnects on its own if it drops.
+  useEffect(() => {
+    const es = new EventSource("/api/notifications/stream");
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data) as { type?: string };
+        if (data.type === "feature.changed") router.refresh();
+        else if (data.type === "notification") void refresh();
+      } catch {
+        // ignore keep-alive pings and any non-JSON frames
+      }
+    };
+    return () => es.close();
+  }, [router, refresh]);
 
   const markRead = useCallback((id: string) => {
     setItems((prev) => prev.map((n) => (n.id === id ? { ...n, readAt: n.readAt ?? new Date().toISOString() } : n)));

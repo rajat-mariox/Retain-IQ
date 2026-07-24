@@ -9,6 +9,7 @@ import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { PlatformSettingsService } from "../../common/settings/platform-settings.service.js";
+import { RealtimePublisher } from "../../common/realtime/realtime-publisher.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { ensureSystemRoles } from "../../common/security/roles.util.js";
 import type {
@@ -88,6 +89,7 @@ export class AdminService {
     private readonly broker: BrokerService,
     private readonly outbox: OutboxService,
     private readonly settings: PlatformSettingsService,
+    private readonly realtime: RealtimePublisher,
   ) {}
 
   private readonly cache = new Map<string, { at: number; value: unknown }>();
@@ -721,7 +723,26 @@ export class AdminService {
     });
     this.cache.delete("customer-success"); // adoption counts shift with flags
 
+    // Nudge this org's live tabs to re-check their flags so a turned-off feature
+    // disappears without a manual refresh. Best-effort — the guard already
+    // enforces the change on the next request regardless.
+    void this.realtime.publishToOrg(orgId, { type: "feature.changed", feature: input.feature });
+
     return this.orgFeatures(orgId);
+  }
+
+  /**
+   * Persist a platform-settings patch. When the patch touches the global feature
+   * flags, broadcast so every tenant's live tabs re-check — a global kill switch
+   * must vanish everywhere, not just where someone happens to refresh.
+   */
+  async updateSettings(input: Parameters<PlatformSettingsService["updateSettings"]>[0]) {
+    const result = await this.settings.updateSettings(input);
+    if (input.featureFlags) {
+      this.cache.delete("customer-success");
+      void this.realtime.publishToAll({ type: "feature.changed", scope: "global" });
+    }
+    return result;
   }
 
   /** One feature across every org — answers "who has this turned on?". */

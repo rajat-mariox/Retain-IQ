@@ -260,6 +260,6 @@ export class AdminController {
 
   @Patch("settings")
   updateSettings(@Body(new ZodValidationPipe(updateSettingsSchema)) body: UpdateSettingsInput) {
-    return this.settings.updateSettings(body);
+    return this.admin.updateSettings(body);
   }
 }

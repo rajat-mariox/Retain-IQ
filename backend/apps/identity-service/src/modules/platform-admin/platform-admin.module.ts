@@ -9,6 +9,7 @@ import { PlatformAdminController } from "./platform-admin.controller.js";
 import { PlatformAdminService } from "./platform-admin.service.js";
 import { PlatformTokenService } from "./platform-token.service.js";
 import { PlatformAuthGuard } from "./platform-auth.guard.js";
+import { RealtimePublisher } from "../../common/realtime/realtime-publisher.service.js";
 import { PLATFORM_DENYLIST } from "./dto.js";
 
 const config = loadConfig();
@@ -20,6 +21,7 @@ const config = loadConfig();
     PlatformTokenService,
     PlatformAuthGuard,
     AdminService,
+    RealtimePublisher,
     {
       // Platform-scoped denylist keyed with the platform access TTL (8h), so a
       // logged-out admin token stays revoked for its full lifetime — separate
