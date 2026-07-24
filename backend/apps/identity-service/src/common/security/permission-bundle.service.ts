@@ -39,22 +39,29 @@ export class PermissionBundleService {
 
     const grants = await this.prisma.roleAssignment.findMany({
       where: { orgId, userId, status: "ACTIVE" },
-      select: { role: { select: { permissions: true, version: true } } },
+      select: { role: { select: { name: true, permissions: true, version: true } } },
     });
 
     const permissionSet = new Set<Permission>();
     let version = 0;
+    // The label reflects what actually governs access: the granted role(s) when
+    // any grant exists, otherwise the membership's base role. Keeps the session's
+    // displayed role in step with the permissions it carries.
+    let roleName = membership.role.name;
     if (grants.length > 0) {
+      const names = new Set<string>();
       for (const g of grants) {
         for (const p of g.role.permissions as Permission[]) permissionSet.add(p);
         version += g.role.version;
+        names.add(g.role.name);
       }
+      roleName = [...names].join(", ");
     } else {
       for (const p of membership.role.permissions as Permission[]) permissionSet.add(p);
       version = membership.role.version;
     }
 
-    const bundle: PermissionBundle = { role: membership.role.name, permissions: [...permissionSet], version };
+    const bundle: PermissionBundle = { role: roleName, permissions: [...permissionSet], version };
     await this.cache.set(key, bundle);
     return bundle;
   }

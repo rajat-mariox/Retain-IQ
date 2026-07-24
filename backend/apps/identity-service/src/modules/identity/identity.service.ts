@@ -23,6 +23,7 @@ import { PrismaService } from "../../common/database/prisma.service.js";
 import { hashPassword, verifyPassword } from "../../common/crypto/password.util.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { PlatformSettingsService } from "../../common/settings/platform-settings.service.js";
+import { PermissionBundleService } from "../../common/security/permission-bundle.service.js";
 import { TokenService } from "./token.service.js";
 
 const config = loadConfig();
@@ -35,6 +36,7 @@ export class IdentityService {
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
     private readonly settings: PlatformSettingsService,
+    private readonly permissionBundle: PermissionBundleService,
   ) {}
 
   /**
@@ -371,11 +373,21 @@ export class IdentityService {
       throw new UnauthorizedException("Active membership not found.");
     }
 
+    // Effective permissions = the UNION across every active role grant (custom
+    // roles included), exactly what the permission guards enforce. Reading only
+    // membership.role.permissions here was a bug: a person granted a custom role
+    // (e.g. "HR Manager") saw the nav of their base role, so admin sections were
+    // hidden even though the backend would have let them in.
+    const bundle = await this.permissionBundle.resolve(membership.org.id, membership.user.id);
+    const role = bundle
+      ? { name: bundle.role, permissions: bundle.permissions, version: bundle.version }
+      : membership.role;
+
     // Feature flags resolved for THIS org (global kill switch ∩ org override).
     // They ride the session rather than /v1/config because that endpoint is
     // public and must not leak per-org configuration.
     const featureFlags = await this.settings.resolveFeatureFlagsFlat(membership.org.id);
-    return { ...membership, featureFlags };
+    return { ...membership, role, featureFlags };
   }
 
   private async resolveClaimsForMembership(membershipId: string): Promise<AccessTokenClaims> {

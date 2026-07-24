@@ -320,23 +320,34 @@ export class RbacService implements OnModuleInit {
       scopeId = input.scopeId;
     }
 
-    // Dedupe (the unique index can't catch null scopeId for ORG/SELF).
-    const existing = await this.prisma.roleAssignment.findFirst({
-      where: { orgId: ctx.orgId, userId: input.userId, roleId: input.roleId, scopeType: input.scopeType, scopeId, status: "ACTIVE" },
+    // A prior grant for this exact (user, role, scope) may still be on file —
+    // ACTIVE (a real duplicate) or REVOKED (revoked earlier). The unique index
+    // spans (orgId, userId, roleId, scopeType, scopeId) and ignores status, so a
+    // plain create would collide with a leftover REVOKED row. Look the row up and
+    // decide: reject a live duplicate, reactivate a revoked one.
+    const prior = await this.prisma.roleAssignment.findFirst({
+      where: { orgId: ctx.orgId, userId: input.userId, roleId: input.roleId, scopeType: input.scopeType, scopeId },
     });
-    if (existing) throw new ConflictException("This role is already granted at that scope.");
+    if (prior?.status === "ACTIVE") {
+      throw new ConflictException("This role is already granted at that scope.");
+    }
 
-    const grant = await this.prisma.roleAssignment.create({
-      data: {
-        orgId: ctx.orgId,
-        userId: input.userId,
-        employeeId: membership.employeeId,
-        roleId: input.roleId,
-        scopeType: input.scopeType,
-        scopeId,
-        createdBy: ctx.userId,
-      },
-    });
+    const grant = prior
+      ? await this.prisma.roleAssignment.update({
+          where: { id: prior.id },
+          data: { status: "ACTIVE", createdBy: ctx.userId },
+        })
+      : await this.prisma.roleAssignment.create({
+          data: {
+            orgId: ctx.orgId,
+            userId: input.userId,
+            employeeId: membership.employeeId,
+            roleId: input.roleId,
+            scopeType: input.scopeType,
+            scopeId,
+            createdBy: ctx.userId,
+          },
+        });
     await this.bundles.invalidate(ctx.orgId, input.userId); // effective permissions changed
     return grant;
   }
