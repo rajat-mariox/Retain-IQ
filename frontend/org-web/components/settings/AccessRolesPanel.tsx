@@ -41,7 +41,12 @@ export function AccessRolesPanel({
       setLoading(true);
       fetch(`/api/rbac/access?page=${page}&pageSize=${pageSize}&q=${encodeURIComponent(query)}`)
         .then((r) => r.json())
-        .then((d: AccessPage) => setData(d))
+        .then((d: Partial<AccessPage>) => {
+          // A transient error (backend restarting, 401) can yield {} or {error}.
+          // Only replace state when the response actually looks like a page, so
+          // the table never renders against an item-less shape.
+          if (d && Array.isArray(d.items)) setData(d as AccessPage);
+        })
         .catch(() => undefined)
         .finally(() => setLoading(false));
     },
@@ -59,7 +64,7 @@ export function AccessRolesPanel({
     return () => clearTimeout(t);
   }, [q, load]);
 
-  const refresh = () => load(data.page, q);
+  const refresh = () => load(data?.page ?? 1, q);
 
   function openFor(m: AccessMember) {
     setForUser(m);
@@ -97,9 +102,13 @@ export function AccessRolesPanel({
   }
 
   const activeDepts = departments.filter((d) => d.status !== "ARCHIVED");
-  const total = data.total;
-  const from = total === 0 ? 0 : (data.page - 1) * pageSize + 1;
-  const to = Math.min(data.page * pageSize, total);
+  // Defend against a malformed page (transient fetch failure upstream): render an
+  // empty table rather than crashing on `.map` of an undefined items list.
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const total = data?.total ?? 0;
+  const currentPage = data?.page ?? 1;
+  const from = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const to = Math.min(currentPage * pageSize, total);
   const lastPage = Math.max(1, Math.ceil(total / pageSize));
 
   return (
@@ -130,7 +139,7 @@ export function AccessRolesPanel({
               </tr>
             </thead>
             <tbody className={loading ? "opacity-50 transition-opacity" : "transition-opacity"}>
-              {data.items.map((m) => (
+              {items.map((m) => (
                 <tr key={m.userId} className="border-b border-hairline/60 last:border-0 align-top hover:bg-slate-50">
                   <td className="px-5 py-3">
                     <p className="font-medium text-slate-900">{m.name ?? m.email}</p>
@@ -159,7 +168,7 @@ export function AccessRolesPanel({
                   </td>
                 </tr>
               ))}
-              {data.items.length === 0 ? (
+              {items.length === 0 ? (
                 <tr>
                   <td colSpan={3} className="px-5 py-8 text-center text-sm text-slate-500">{q ? "No members match your search." : "No members."}</td>
                 </tr>
@@ -171,18 +180,18 @@ export function AccessRolesPanel({
           <span>{total === 0 ? "No members" : `Showing ${from}–${to} of ${total}`}</span>
           <div className="flex items-center gap-1">
             <button
-              onClick={() => load(data.page - 1, q)}
-              disabled={loading || data.page <= 1}
+              onClick={() => load(currentPage - 1, q)}
+              disabled={loading || currentPage <= 1}
               className="rounded-lg border border-hairline bg-panel px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
             >
               Prev
             </button>
             <span className="px-1 tabular-nums">
-              {data.page} / {lastPage}
+              {currentPage} / {lastPage}
             </span>
             <button
-              onClick={() => load(data.page + 1, q)}
-              disabled={loading || data.page >= lastPage}
+              onClick={() => load(currentPage + 1, q)}
+              disabled={loading || currentPage >= lastPage}
               className="rounded-lg border border-hairline bg-panel px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
             >
               Next
