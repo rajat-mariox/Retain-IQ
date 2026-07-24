@@ -1,4 +1,5 @@
 import {
+  Activity,
   CalendarCheck,
   CalendarDays,
   CreditCard,
@@ -28,6 +29,7 @@ export interface NavItem {
   adminOnly?: boolean;
   employeeOnly?: boolean; // hidden from anyone who can manage projects (Owner/Manager)
   flag?: string; // hidden when this platform feature flag is off
+  permission?: string; // hidden unless the member holds this permission
 }
 
 /** A collapsible section of related links. Visibility rules match NavItem. */
@@ -53,6 +55,7 @@ export const NAV_ITEMS: NavEntry[] = [
   { label: "Projects & Teams", href: "/projects", icon: FolderKanban, flag: "projects" },
   { label: "My Tasks", href: "/tasks", icon: ListTodo, flag: "projects", employeeOnly: true },
   { label: "Notifications", href: "/notifications", icon: Bell },
+  { label: "Activity", href: "/activity", icon: Activity, flag: "activityFeed", permission: "audit.read" },
   { label: "Screenshots", href: "/screenshots", icon: Images, flag: "screenshots" },
   {
     label: "Human Resources",

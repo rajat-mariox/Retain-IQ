@@ -29,6 +29,7 @@ import { ClientsModule } from "./modules/clients/clients.module.js";
 import { LeaveModule } from "./modules/leave/leave.module.js";
 import { PayrollModule } from "./modules/payroll/payroll.module.js";
 import { HolidaysModule } from "./modules/holidays/holidays.module.js";
+import { OrgActivityModule } from "./modules/org-activity/org-activity.module.js";
 import { MonitoringModule } from "./modules/monitoring/monitoring.module.js";
 import { TimeTrackingModule } from "./modules/timetracking/timetracking.module.js";
 import { RbacModule } from "./modules/rbac/rbac.module.js";
@@ -70,6 +71,7 @@ import { OutboxModule } from "./modules/outbox/outbox.module.js";
     LeaveModule,
     PayrollModule,
     HolidaysModule,
+    OrgActivityModule,
     MonitoringModule,
     TimeTrackingModule,
     RbacModule,

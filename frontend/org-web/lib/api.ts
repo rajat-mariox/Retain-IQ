@@ -876,6 +876,18 @@ export const getMembers = cache((page = 1, pageSize = 10) =>
   apiFetch<OffsetPage<OrgMember>>(`org/members?page=${page}&pageSize=${pageSize}`),
 );
 
+/** This organization's own activity feed (members invited, features changed, etc.). */
+export interface OrgActivityItem {
+  id: string;
+  type: string;
+  summary: string;
+  createdAt: string;
+}
+export const getOrgActivity = cache((page = 1, pageSize = 20, type = "") =>
+  apiFetch<OffsetPage<OrgActivityItem>>(`activity?page=${page}&pageSize=${pageSize}${type ? `&type=${encodeURIComponent(type)}` : ""}`),
+);
+export const getOrgActivityTypes = cache(() => apiFetch<string[]>("activity/types"));
+
 export interface OrgProfile {
   id: string;
   name: string;

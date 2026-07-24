@@ -49,6 +49,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <Sidebar
           orgName={session?.org.name ?? "Organization"}
           isAdmin={isAdmin}
+          permissions={session?.role.permissions ?? []}
           platformName={config.branding.platformName}
           // Org-resolved flags (global ∩ this org's override), not the public
           // global set — /v1/config can't know which tenant is asking.

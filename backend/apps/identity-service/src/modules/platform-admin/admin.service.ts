@@ -680,7 +680,9 @@ export class AdminService {
     return {
       orgId: org.id,
       orgName: org.name,
-      features: this.settings.featureKeys().map((feature) => {
+      // Only tenant product features — a super-admin console module (Customer
+      // Success, Platform Health) is global-only and can't be toggled per org.
+      features: this.settings.tenantFeatureKeys().map((feature) => {
         const o = overrideBy.get(feature);
         const r = resolved[feature];
         return {
@@ -702,6 +704,9 @@ export class AdminService {
     if (!org) throw new NotFoundException("Organization not found.");
     if (!this.settings.isKnownFeature(input.feature)) {
       throw new BadRequestException(`Unknown feature "${input.feature}". Known: ${this.settings.featureKeys().join(", ")}.`);
+    }
+    if (!this.settings.isTenantFeature(input.feature)) {
+      throw new BadRequestException(`"${input.feature}" is a platform-console feature and can't be set per organization.`);
     }
 
     await this.settings.setOrgFeature({ orgId, feature: input.feature, enabled: input.enabled, reason: input.reason });

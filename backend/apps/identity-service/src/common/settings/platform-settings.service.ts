@@ -19,11 +19,11 @@ const DEFAULTS: PlatformSettings = {
   branding: { platformName: "RetainIQ", primaryColor: "#1f883d", supportEmail: "support@retainiq.com", logoUrl: "" },
   notification: { enabled: false, message: "", level: "info" },
   featureFlags: {
-    // admin-web modules
+    // Super-admin console modules — global-only, not per-tenant.
     customerSuccess: true,
     platformHealth: true,
+    // Tenant product features — a super-admin can turn these on/off per org.
     activityFeed: true,
-    // org-web (tenant) product features
     timeTracking: true,
     attendance: true,
     projects: true,
@@ -32,6 +32,25 @@ const DEFAULTS: PlatformSettings = {
     billing: true,
   },
   maintenance: { enabled: false, message: "We're performing scheduled maintenance. Please check back shortly." },
+};
+
+/**
+ * What each feature is and where it applies. `scope` decides whether a feature
+ * is toggled per-org (tenant product features) or only globally (super-admin
+ * console modules). The per-org "Feature access" screen shows only tenant ones —
+ * toggling an admin-console module for a single org is meaningless.
+ */
+export type FeatureScope = "tenant" | "adminConsole";
+export const FEATURE_META: Record<string, { scope: FeatureScope; label: string }> = {
+  customerSuccess: { scope: "adminConsole", label: "Customer Success" },
+  platformHealth: { scope: "adminConsole", label: "Platform Health" },
+  activityFeed: { scope: "tenant", label: "Activity Feed" },
+  timeTracking: { scope: "tenant", label: "Time Tracking" },
+  attendance: { scope: "tenant", label: "Attendance" },
+  projects: { scope: "tenant", label: "Projects & Teams" },
+  screenshots: { scope: "tenant", label: "Screenshots" },
+  aiInsights: { scope: "tenant", label: "AI Insights" },
+  billing: { scope: "tenant", label: "Billing" },
 };
 
 /** One feature's state for one org, plus where the decision came from. */
@@ -77,13 +96,23 @@ export class PlatformSettingsService {
 
   // ---- Org-level feature flags --------------------------------------------
 
-  /** The canonical feature list — what an admin may override, and nothing else. */
+  /** The canonical feature list. */
   featureKeys(): string[] {
     return Object.keys(DEFAULTS.featureFlags);
   }
 
+  /** Only the features that make sense to toggle per organization. */
+  tenantFeatureKeys(): string[] {
+    return this.featureKeys().filter((f) => FEATURE_META[f]?.scope === "tenant");
+  }
+
   isKnownFeature(feature: string): boolean {
     return feature in DEFAULTS.featureFlags;
+  }
+
+  /** True only for features that may be overridden for a single org. */
+  isTenantFeature(feature: string): boolean {
+    return FEATURE_META[feature]?.scope === "tenant";
   }
 
   /** An org's raw overrides (only features that diverge from global). Cached. */

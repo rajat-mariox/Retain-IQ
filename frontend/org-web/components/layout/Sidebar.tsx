@@ -22,12 +22,14 @@ const iconClass = (active: boolean) => cn("size-4.5", active ? "text-brand-soft"
 export function Sidebar({
   orgName,
   isAdmin,
+  permissions = [],
   platformName = "RetainIQ",
   featureFlags = {},
   logoUrl,
 }: {
   orgName: string;
   isAdmin: boolean;
+  permissions?: string[];
   platformName?: string;
   featureFlags?: Record<string, boolean>;
   logoUrl?: string;
@@ -35,11 +37,13 @@ export function Sidebar({
   const pathname = usePathname();
   const { open, setOpen } = useMobileNav();
   const [groupOverrides, setGroupOverrides] = useState<Record<string, boolean>>({});
+  const canDo = (p?: string) => !p || permissions.includes(p);
 
-  const visible = (entry: { adminOnly?: boolean; employeeOnly?: boolean; flag?: string }) =>
+  const visible = (entry: { adminOnly?: boolean; employeeOnly?: boolean; flag?: string; permission?: string }) =>
     (!entry.adminOnly || isAdmin) &&
     (!entry.employeeOnly || !isAdmin) &&
-    (!entry.flag || featureFlags[entry.flag] !== false);
+    (!entry.flag || featureFlags[entry.flag] !== false) &&
+    canDo(entry.permission);
 
   // Filter groups' children too, and drop a group once nothing inside it is visible.
   const items: NavEntry[] = NAV_ITEMS.filter(visible)
