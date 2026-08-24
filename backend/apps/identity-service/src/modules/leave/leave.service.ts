@@ -4,6 +4,7 @@ import { ApprovalService } from "../../common/approval/approval.service.js";
 import { OrgRolesService } from "../../common/org-roles/org-roles.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
+import { CompOffService } from "./comp-off.service.js";
 
 const DEFAULT_WORKING_DAYS = [1, 2, 3, 4, 5];
 
@@ -26,6 +27,7 @@ export class LeaveService {
     private readonly outbox: OutboxService,
     private readonly approval: ApprovalService,
     private readonly orgRoles: OrgRolesService,
+    private readonly compOff: CompOffService,
   ) {}
 
   /** Resolve the caller's employee record via their active membership. */
@@ -146,7 +148,7 @@ export class LeaveService {
     return days;
   }
 
-  async createRequest(input: { leaveTypeId: string; startDate: string; endDate: string; reason?: string }) {
+  async createRequest(input: { leaveTypeId: string; startDate: string; endDate: string; dayPart?: string; reason?: string }) {
     const ctx = requireTenantContext();
     const employeeId = await this.callerEmployeeId();
     // The Owner grants leave rather than requesting it — a leave balance for them
@@ -161,6 +163,13 @@ export class LeaveService {
     const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     if (start < today) throw new BadRequestException("Leave cannot be applied for past dates.");
 
+    // A half-day only applies to a single date. Reject FIRST_HALF/SECOND_HALF across a range.
+    const dayPart = input.dayPart === "FIRST_HALF" || input.dayPart === "SECOND_HALF" ? input.dayPart : "FULL";
+    const isHalfDay = dayPart !== "FULL";
+    if (isHalfDay && start.getTime() !== end.getTime()) {
+      throw new BadRequestException("A half-day leave must be for a single date.");
+    }
+
     const type = await this.prisma.leaveType.findFirst({ where: { id: input.leaveTypeId, orgId: ctx.orgId, status: "ACTIVE" } });
     if (!type) throw new NotFoundException("Leave type not found.");
 
@@ -171,8 +180,19 @@ export class LeaveService {
     });
     if (overlap) throw new ConflictException("You already have a leave request overlapping these dates.");
 
-    const days = await this.computeLeaveDays(ctx.orgId, employeeId, start, end);
-    if (days <= 0) throw new BadRequestException("The selected range has no working days to take leave on.");
+    const workingDays = await this.computeLeaveDays(ctx.orgId, employeeId, start, end);
+    if (workingDays <= 0) throw new BadRequestException("The selected range has no working days to take leave on.");
+    // Half-day deducts exactly 0.5 (the single date is already confirmed to be a working day above).
+    const days = isHalfDay ? 0.5 : workingDays;
+
+    // Comp-off leave draws on the earned comp-off ledger, not an annual quota —
+    // reject upfront if the balance can't cover it (the spend is written on approve).
+    if (type.code === "COMP_OFF") {
+      const balance = await this.compOff.balanceOf(ctx.orgId, employeeId);
+      if (days > balance) {
+        throw new BadRequestException(`You have ${balance} comp-off day(s) available but requested ${days}.`);
+      }
+    }
 
     const employee = await this.prisma.employee.findUnique({ where: { id: employeeId }, select: { firstName: true, lastName: true } });
     const employeeName = employee ? `${employee.firstName} ${employee.lastName}`.trim() : "An employee";
@@ -182,14 +202,14 @@ export class LeaveService {
     // approvers (owner/managers/HR), idempotently per (event, recipient).
     return this.prisma.$transaction(async (tx) => {
       const req = await tx.leaveRequest.create({
-        data: { orgId: ctx.orgId, employeeId, leaveTypeId: type.id, startDate: start, endDate: end, days, reason: input.reason?.trim() || null },
+        data: { orgId: ctx.orgId, employeeId, leaveTypeId: type.id, startDate: start, endDate: end, days, dayPart, reason: input.reason?.trim() || null },
       });
       await this.outbox.enqueue(tx, {
         eventType: "leave.requested",
         aggregateType: "leave_request",
         aggregateId: req.id,
         orgId: ctx.orgId,
-        payload: { leaveRequestId: req.id, employeeId, employeeName, leaveTypeName: type.name, leaveTypeCode: type.code, startDate: iso(start), endDate: iso(end), days },
+        payload: { leaveRequestId: req.id, employeeId, employeeName, leaveTypeName: type.name, leaveTypeCode: type.code, startDate: iso(start), endDate: iso(end), days, dayPart },
       });
       return req;
     });
@@ -201,6 +221,7 @@ export class LeaveService {
     startDate: Date;
     endDate: Date;
     days: number;
+    dayPart: string;
     reason: string | null;
     status: string;
     decidedAt: Date | null;
@@ -217,6 +238,7 @@ export class LeaveService {
       startDate: iso(r.startDate),
       endDate: iso(r.endDate),
       days: r.days,
+      dayPart: r.dayPart,
       reason: r.reason,
       status: r.status,
       decidedAt: r.decidedAt ? r.decidedAt.toISOString() : null,
@@ -247,9 +269,100 @@ export class LeaveService {
       where,
       orderBy: [{ createdAt: "desc" }],
       take: 200,
-      include: { leaveType: { select: { id: true, name: true, code: true, color: true } }, employee: { select: { firstName: true, lastName: true } } },
+      include: {
+        leaveType: { select: { id: true, name: true, code: true, color: true } },
+        employee: { select: { firstName: true, lastName: true, teamId: true, departmentId: true } },
+      },
     });
+
+    // Approval center (scope=all): attach team/department leave conflicts so the
+    // approver can see, per request, who ELSE on the same team/department overlaps
+    // these dates — avoiding accidentally granting half a team the same days off.
+    if (query.scope === "all") {
+      const conflicts = await this.computeConflicts(ctx.orgId, rows);
+      return rows.map((r) => ({ ...this.serialize(r), conflict: conflicts.get(r.id) ?? null }));
+    }
     return rows.map((r) => this.serialize(r));
+  }
+
+  /** Leave requests as a { baseName, columns, rows } table for CSV/xlsx export. */
+  async exportRequests(scope: "mine" | "all") {
+    const items = await this.listRequests({ scope });
+    const columns = ["Employee", "Leave type", "Start", "End", "Days", "Day part", "Status", "Reason", "Decided at", "Requested at"];
+    const rows = items.map((r) => [
+      r.employeeName ?? "",
+      r.leaveType?.name ?? "",
+      r.startDate,
+      r.endDate,
+      r.days,
+      r.dayPart,
+      r.status,
+      r.reason ?? "",
+      r.decidedAt ? r.decidedAt.slice(0, 10) : "",
+      r.createdAt.slice(0, 10),
+    ]);
+    return { baseName: `leave-${scope}-${iso(new Date())}`, columns, rows };
+  }
+
+  /**
+   * For each request, find OTHER active (pending/approved) requests from the same
+   * team (or department, if no team) whose dates overlap. Returns a map of
+   * requestId → { count, peers: [{ name, startDate, endDate, status }] }.
+   */
+  private async computeConflicts(
+    orgId: string,
+    rows: { id: string; employeeId: string; startDate: Date; endDate: Date; employee: { teamId: string | null; departmentId: string | null } | null }[],
+  ): Promise<Map<string, { count: number; peers: { name: string; startDate: string; endDate: string; status: string }[] }>> {
+    const result = new Map<string, { count: number; peers: { name: string; startDate: string; endDate: string; status: string }[] }>();
+    if (rows.length === 0) return result;
+
+    // The group of employees to compare against = everyone in the same team/dept as
+    // any request in this list. One batched query, then match in memory.
+    const teamIds = [...new Set(rows.map((r) => r.employee?.teamId).filter((v): v is string => Boolean(v)))];
+    const deptIds = [...new Set(rows.map((r) => r.employee?.departmentId).filter((v): v is string => Boolean(v)))];
+    if (teamIds.length === 0 && deptIds.length === 0) return result;
+
+    const minStart = new Date(Math.min(...rows.map((r) => r.startDate.getTime())));
+    const maxEnd = new Date(Math.max(...rows.map((r) => r.endDate.getTime())));
+
+    const peers = await this.prisma.leaveRequest.findMany({
+      where: {
+        orgId,
+        status: { in: ["PENDING", "APPROVED"] },
+        startDate: { lte: maxEnd },
+        endDate: { gte: minStart },
+        employee: { OR: [{ teamId: { in: teamIds } }, { departmentId: { in: deptIds } }] },
+      },
+      select: {
+        id: true, employeeId: true, startDate: true, endDate: true, status: true,
+        employee: { select: { firstName: true, lastName: true, teamId: true, departmentId: true } },
+      },
+    });
+
+    const overlaps = (aS: Date, aE: Date, bS: Date, bE: Date) => aS <= bE && bS <= aE;
+    for (const r of rows) {
+      const group = r.employee?.teamId ?? r.employee?.departmentId;
+      if (!group) continue;
+      const clash = peers.filter(
+        (p) =>
+          p.id !== r.id &&
+          p.employeeId !== r.employeeId &&
+          (p.employee?.teamId === r.employee?.teamId || p.employee?.departmentId === r.employee?.departmentId) &&
+          overlaps(r.startDate, r.endDate, p.startDate, p.endDate),
+      );
+      if (clash.length > 0) {
+        result.set(r.id, {
+          count: clash.length,
+          peers: clash.map((p) => ({
+            name: p.employee ? `${p.employee.firstName} ${p.employee.lastName}`.trim() : "—",
+            startDate: iso(p.startDate),
+            endDate: iso(p.endDate),
+            status: p.status,
+          })),
+        });
+      }
+    }
+    return result;
   }
 
   async decide(id: string, approve: boolean, note?: string) {
@@ -260,11 +373,11 @@ export class LeaveService {
     // Only the requester's own manager (or an Owner) may decide — not any approver.
     await this.approval.assertCanApprove(req.employeeId);
     const status = approve ? "APPROVED" : "REJECTED";
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.leaveRequest.update({
         where: { id: req.id },
         data: { status, decidedBy: ctx.userId, decidedAt: new Date(), decisionNote: note?.trim() || null },
-        include: { leaveType: { select: { name: true } } },
+        include: { leaveType: { select: { name: true, code: true } } },
       });
       // The requesting employee's user, so notifications-service can notify them.
       const membership = await tx.organizationMembership.findFirst({ where: { orgId: ctx.orgId, employeeId: req.employeeId, status: "ACTIVE" }, select: { userId: true } });
@@ -277,6 +390,14 @@ export class LeaveService {
       });
       return updated;
     });
+
+    // On approval of a comp-off leave, debit the ledger (balance was checked at
+    // request time; this makes the spend). Post-commit so a ledger issue surfaces
+    // as an error to the approver without corrupting the decision transaction.
+    if (approve && result.leaveType.code === "COMP_OFF") {
+      await this.compOff.spendForLeave(ctx.orgId, req.employeeId, req.id, req.days);
+    }
+    return result;
   }
 
   /**
@@ -323,11 +444,11 @@ export class LeaveService {
       }),
     ]);
 
-    const leaveDays: { date: string; status: string; typeName: string; code: string; color: string | null }[] = [];
+    const leaveDays: { date: string; status: string; typeName: string; code: string; color: string | null; dayPart: string }[] = [];
     for (const lr of leaves) {
       const s = lr.startDate < start ? new Date(start) : new Date(lr.startDate);
       for (const d = s; d < end && d <= lr.endDate; d.setUTCDate(d.getUTCDate() + 1)) {
-        leaveDays.push({ date: iso(d), status: lr.status, typeName: lr.leaveType.name, code: lr.leaveType.code, color: lr.leaveType.color });
+        leaveDays.push({ date: iso(d), status: lr.status, typeName: lr.leaveType.name, code: lr.leaveType.code, color: lr.leaveType.color, dayPart: lr.dayPart });
       }
     }
 
@@ -396,11 +517,77 @@ export class LeaveService {
         startDate: iso(lr.startDate),
         endDate: iso(lr.endDate),
         days: lr.days,
+        dayPart: lr.dayPart,
         status: lr.status,
         typeName: lr.leaveType.name,
         code: lr.leaveType.code,
         color: lr.leaveType.color,
       })),
+    };
+  }
+
+  /**
+   * Approval-center analytics for the caller's approval scope (Owner → org,
+   * manager → their reports). Summarises the pending queue, who's out now / soon,
+   * and how leave splits across types for the year — the numbers an approver needs
+   * to make good decisions, without paging through every request.
+   */
+  async analytics() {
+    const ctx = requireTenantContext();
+    const reach = await this.approval.approvableEmployeeIds(); // null = whole org
+    const scope = reach !== null ? { employeeId: { in: reach } } : {};
+
+    const now = new Date();
+    const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const in14 = new Date(todayUtc);
+    in14.setUTCDate(in14.getUTCDate() + 14);
+    const yearStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    const yearEnd = new Date(Date.UTC(now.getUTCFullYear() + 1, 0, 1));
+
+    const [pending, outNow, upcoming, yearApproved, types] = await Promise.all([
+      // Pending queue awaiting a decision.
+      this.prisma.leaveRequest.count({ where: { orgId: ctx.orgId, status: "PENDING", ...scope } }),
+      // Currently on approved leave (today falls in the range).
+      this.prisma.leaveRequest.count({
+        where: { orgId: ctx.orgId, status: "APPROVED", startDate: { lte: todayUtc }, endDate: { gte: todayUtc }, ...scope },
+      }),
+      // Approved leave starting within the next 14 days.
+      this.prisma.leaveRequest.count({
+        where: { orgId: ctx.orgId, status: "APPROVED", startDate: { gt: todayUtc, lte: in14 }, ...scope },
+      }),
+      // This year's approved leave, grouped by type, to show the mix.
+      this.prisma.leaveRequest.groupBy({
+        by: ["leaveTypeId"],
+        where: { orgId: ctx.orgId, status: "APPROVED", startDate: { gte: yearStart, lt: yearEnd }, ...scope },
+        _sum: { days: true },
+        _count: { _all: true },
+      }),
+      this.prisma.leaveType.findMany({ where: { orgId: ctx.orgId }, select: { id: true, name: true, code: true, color: true } }),
+    ]);
+
+    const typeById = new Map(types.map((t) => [t.id, t]));
+    const byType = yearApproved
+      .map((g) => {
+        const t = typeById.get(g.leaveTypeId);
+        return {
+          leaveTypeId: g.leaveTypeId,
+          name: t?.name ?? "—",
+          code: t?.code ?? "",
+          color: t?.color ?? null,
+          days: g._sum.days ?? 0,
+          requests: g._count._all,
+        };
+      })
+      .sort((a, b) => b.days - a.days);
+
+    const totalDaysYear = byType.reduce((s, t) => s + t.days, 0);
+
+    return {
+      pending,
+      outNow,
+      upcoming14: upcoming,
+      totalDaysYear,
+      byType,
     };
   }
 
@@ -418,7 +605,7 @@ export class LeaveService {
     const employeeId = await this.callerEmployeeId();
     const req = await this.prisma.leaveRequest.findFirst({
       where: { id, orgId: ctx.orgId },
-      include: { leaveType: { select: { name: true } } },
+      include: { leaveType: { select: { name: true, code: true } } },
     });
     if (!req) throw new NotFoundException("Leave request not found.");
     if (req.employeeId !== employeeId) throw new ForbiddenException("You can only cancel your own leave requests.");
@@ -430,6 +617,11 @@ export class LeaveService {
     }
 
     const wasApproved = req.status === "APPROVED";
+
+    // Cancelling an approved comp-off leave returns the spent days to the ledger.
+    if (wasApproved && req.leaveType.code === "COMP_OFF") {
+      await this.compOff.reverseForLeave(ctx.orgId, req.employeeId, req.id);
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.leaveRequest.update({ where: { id: req.id }, data: { status: "CANCELLED" } });

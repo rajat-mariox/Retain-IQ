@@ -41,6 +41,7 @@ const settingsSchema = z
     cycleFrequency: z.enum(["WEEKLY", "BIWEEKLY", "MONTHLY"]),
     invoicePrefix: z.string().min(1).max(10),
     requireApproval: z.boolean(),
+    overtimeHandling: z.enum(["PAY", "COMP_OFF"]),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: "Provide at least one field." });

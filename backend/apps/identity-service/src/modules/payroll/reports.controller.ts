@@ -1,4 +1,4 @@
-import { Controller, Get, Header, Query, Res, UseGuards } from "@nestjs/common";
+import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
 import type { FastifyReply } from "fastify";
 import { permissions } from "@retainiq/authz";
 import { z } from "zod";
@@ -8,6 +8,7 @@ import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
 import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
+import { toCsv, toXlsx, exportMeta } from "../../common/reports/report-export.js";
 import { ReportsService } from "./reports.service.js";
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -17,6 +18,7 @@ const exportSchema = z.object({
   from: date.optional(),
   to: date.optional(),
   cycleId: z.string().uuid().optional(),
+  format: z.enum(["csv", "xlsx"]).optional(),
 });
 
 /** Payroll dashboard, reports and CSV exports. Read-only — payroll.read. */
@@ -38,13 +40,22 @@ export class ReportsController {
     return this.reports.payrollReport(query);
   }
 
-  /** Sends a CSV attachment rather than JSON — the browser downloads it. */
+  /**
+   * Sends a downloadable report file — CSV (default) or a native Excel workbook
+   * (?format=xlsx). Streamed as an attachment so the browser downloads it.
+   */
   @Get("export")
   @RequirePermissions(permissions.payrollRead)
-  @Header("Content-Type", "text/csv; charset=utf-8")
-  async exportCsv(@Query(new ZodValidationPipe(exportSchema)) query: z.infer<typeof exportSchema>, @Res() res: FastifyReply) {
-    const { filename, body } = await this.reports.exportCsv(query.kind, query);
-    // The BOM makes Excel read the UTF-8 correctly instead of mangling accents.
-    await res.header("Content-Disposition", `attachment; filename="${filename}"`).send(String.fromCharCode(0xfeff) + body);
+  async export(@Query(new ZodValidationPipe(exportSchema)) query: z.infer<typeof exportSchema>, @Res() res: FastifyReply) {
+    const table = await this.reports.exportTable(query.kind, query);
+    const format = query.format ?? "csv";
+    const meta = exportMeta(table.baseName, format);
+    if (format === "xlsx") {
+      const buf = toXlsx(query.kind, table);
+      await res.header("Content-Type", meta.contentType).header("Content-Disposition", `attachment; filename="${meta.filename}"`).send(buf);
+    } else {
+      // The BOM makes Excel read the UTF-8 correctly instead of mangling accents.
+      await res.header("Content-Type", meta.contentType).header("Content-Disposition", `attachment; filename="${meta.filename}"`).send(String.fromCharCode(0xfeff) + toCsv(table));
+    }
   }
 }

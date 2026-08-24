@@ -1,5 +1,5 @@
 import type { Logger } from "@retainiq/observability";
-import type { EmailSender } from "./email.js";
+import type { EmailSender, EmailAttachment } from "./email.js";
 import type { PushSender } from "./push.js";
 import { isQuietHour } from "./quiet-hours.js";
 import type { Channel } from "./rules.js";
@@ -18,6 +18,8 @@ export type DispatchContext = {
   quietHours: { start: number; end: number; now: number };
   email: EmailSender;
   push: PushSender;
+  /** Email-only file attachments (e.g. a scheduled report's CSV). */
+  attachments?: EmailAttachment[];
 };
 
 /**
@@ -46,6 +48,7 @@ export async function dispatch(ctx: DispatchContext): Promise<DeliveryOutcome> {
         title: ctx.title,
         body: ctx.body,
         link: ctx.link,
+        attachments: ctx.attachments,
       });
       return ok ? { status: "SENT", sentAt: new Date() } : { status: "FAILED", sentAt: null };
     }

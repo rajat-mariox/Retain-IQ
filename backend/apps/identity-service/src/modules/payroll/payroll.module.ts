@@ -7,8 +7,10 @@ import { RatesController } from "./rates.controller.js";
 import { RatesService } from "./rates.service.js";
 import { ReportsController } from "./reports.controller.js";
 import { ReportsService } from "./reports.service.js";
+import { LeaveModule } from "../leave/leave.module.js";
 
 @Module({
+  imports: [LeaveModule], // CompOffService: convert approved OT → comp-off at lock()
   // ReportsController owns the bare /payroll routes (dashboard, reports,
   // export); the others own their own prefixes, so registration order is
   // irrelevant here.

@@ -7,8 +7,12 @@ import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
+import { requireTenantContext } from "../../common/context/request-context.store.js";
+import { AuditService } from "../../common/audit/audit.service.js";
 import { EmployeeService } from "./employee.service.js";
 import { EmployeeDocumentsService } from "./employee-documents.service.js";
+import { Employee360Service } from "./employee-360.service.js";
+import { RecommendationsService } from "./recommendations.service.js";
 
 const listQuerySchema = offsetPaginationQuerySchema.extend({
   q: z.string().trim().max(120).optional(),
@@ -31,6 +35,7 @@ const updateEmployeeSchema = z
     departmentId: z.string().uuid().nullable(),
     teamId: z.string().uuid().nullable(),
     shiftId: z.string().uuid().nullable(),
+    rotationId: z.string().uuid().nullable(),
     managerId: z.string().uuid().nullable(),
     title: z.string().max(120).nullable(),
     status: z.enum(["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD", "EXITED", "SUSPENDED"]),
@@ -40,6 +45,8 @@ const updateEmployeeSchema = z
     gender: z.string().max(20).nullable(),
     location: z.string().max(120).nullable(),
     employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"]).nullable(),
+    workModel: z.enum(["WFO", "WFH", "HYBRID"]).nullable(),
+    officeDays: z.array(z.number().int().min(0).max(6)).max(7),
     address: z.string().max(500).nullable(),
     emergencyContactName: z.string().max(120).nullable(),
     emergencyContactPhone: z.string().max(40).nullable(),
@@ -73,6 +80,9 @@ export class EmployeeController {
   constructor(
     private readonly employeeService: EmployeeService,
     private readonly documents: EmployeeDocumentsService,
+    private readonly employee360: Employee360Service,
+    private readonly audit: AuditService,
+    private readonly recommendations: RecommendationsService,
   ) {}
 
   @Get()
@@ -107,6 +117,33 @@ export class EmployeeController {
   @RequirePermissions(permissions.employeeRead)
   getEmployee(@Param("employeeId", ParseUUIDPipe) employeeId: string) {
     return this.employeeService.getEmployee(employeeId);
+  }
+
+  /** Aggregated 360 view — attendance/productivity/monitoring/timesheets/leave,
+   *  each section server-side authorization-filtered to what the caller may see. */
+  @Get(":employeeId/360")
+  @RequirePermissions(permissions.employeeRead)
+  get360(@Param("employeeId", ParseUUIDPipe) employeeId: string, @Query("from") from?: string, @Query("to") to?: string) {
+    return this.employee360.aggregate(employeeId, { from, to });
+  }
+
+  /** The append-only audit trail for one employee. Gated on audit.read AND the
+   *  employee being within the caller's employee-read scope. */
+  @Get(":employeeId/audit")
+  @RequirePermissions(permissions.auditRead)
+  async getAudit(@Param("employeeId", ParseUUIDPipe) employeeId: string) {
+    // getEmployee already enforces the ABAC employee-in-scope check (NotFound if not).
+    await this.employeeService.getEmployee(employeeId);
+    const ctx = requireTenantContext();
+    return this.audit.listForResource(ctx.orgId, "employee", employeeId);
+  }
+
+  /** AI-derived, read-only HR recommendations for one employee. Advisory only —
+   *  every item needs human review through the normal workflow. */
+  @Get(":employeeId/recommendations")
+  @RequirePermissions(permissions.employeeRead)
+  recommend(@Param("employeeId", ParseUUIDPipe) employeeId: string) {
+    return this.recommendations.forEmployee(employeeId);
   }
 
   @Patch(":employeeId")

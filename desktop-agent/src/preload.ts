@@ -21,4 +21,13 @@ contextBridge.exposeInMainWorld("agent", {
   // Live-sync: the main process pushes this when an attendance change arrives on
   // the SSE stream, so the renderer refreshes at once instead of waiting to poll.
   onAttendanceChanged: (fn: () => void) => ipcRenderer.on("attendance:changed", () => fn()),
+  // Idle auto-checkout: main sends ONE warn with the total seconds; the renderer
+  // runs its own visible countdown. Main sends a clear when the user returns or
+  // the checkout has happened.
+  onIdleWarn: (fn: (remainingSeconds: number) => void) =>
+    ipcRenderer.on("idle:warn", (_e, payload: { remainingSeconds: number }) => fn(payload.remainingSeconds)),
+  onIdleWarnClear: (fn: () => void) => ipcRenderer.on("idle:warn-clear", () => fn()),
+  // "I'm still here": tells main to cancel the pending auto-checkout and reset the
+  // idle state so the warning doesn't immediately re-appear.
+  idleStillHere: () => ipcRenderer.invoke("agent:idle-still-here"),
 });

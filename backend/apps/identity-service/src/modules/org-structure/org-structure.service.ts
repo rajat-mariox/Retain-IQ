@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import type { Prisma } from "@retainiq/database/identity";
+import { Prisma } from "@retainiq/database/identity";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 
@@ -14,6 +14,7 @@ function isUnique(e: unknown): boolean {
 interface CreateDeptInput { name: string; description?: string }
 interface UpdateDeptInput { name?: string; description?: string; leadEmployeeId?: string | null; status?: string }
 interface ShiftBreak { name: string; startMinute: number; endMinute: number }
+interface ShiftDay { day: number; startMinute: number; endMinute: number; graceMinutes?: number }
 interface CreateTeamInput { name: string; departmentId?: string | null; description?: string }
 interface UpdateTeamInput { name?: string; departmentId?: string | null; description?: string; leadEmployeeId?: string | null }
 
@@ -293,7 +294,7 @@ export class OrgStructureService {
     const rows = await this.prisma.shift.findMany({
       where: { orgId: ctx.orgId },
       orderBy: [{ status: "asc" }, { isDefault: "desc" }, { startMinute: "asc" }],
-      select: { id: true, name: true, startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, breaks: true, isDefault: true, status: true, _count: { select: { employees: true } } },
+      select: { id: true, name: true, startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, daySchedule: true, breaks: true, isDefault: true, status: true, _count: { select: { employees: true } } },
     });
     return rows.map((s) => ({
       id: s.id,
@@ -302,6 +303,7 @@ export class OrgStructureService {
       endMinute: s.endMinute,
       graceMinutes: s.graceMinutes,
       workingDays: s.workingDays,
+      daySchedule: s.daySchedule ?? null,
       breaks: s.breaks,
       isDefault: s.isDefault,
       status: s.status,
@@ -309,7 +311,7 @@ export class OrgStructureService {
     }));
   }
 
-  async createShift(input: { name: string; startMinute: number; endMinute: number; graceMinutes?: number; workingDays?: number[]; breaks?: ShiftBreak[]; isDefault?: boolean }) {
+  async createShift(input: { name: string; startMinute: number; endMinute: number; graceMinutes?: number; workingDays?: number[]; daySchedule?: ShiftDay[] | null; breaks?: ShiftBreak[]; isDefault?: boolean }) {
     const ctx = requireTenantContext();
     return this.prisma.$transaction(async (tx) => {
       if (input.isDefault) await tx.shift.updateMany({ where: { orgId: ctx.orgId, isDefault: true }, data: { isDefault: false } });
@@ -321,6 +323,7 @@ export class OrgStructureService {
           endMinute: input.endMinute,
           graceMinutes: input.graceMinutes ?? 10,
           ...(input.workingDays ? { workingDays: input.workingDays } : {}),
+          ...(input.daySchedule && input.daySchedule.length ? { daySchedule: input.daySchedule as unknown as Prisma.InputJsonValue } : {}),
           breaks: (input.breaks ?? []) as unknown as Prisma.InputJsonValue,
           isDefault: input.isDefault ?? false,
         },
@@ -328,7 +331,7 @@ export class OrgStructureService {
     });
   }
 
-  async updateShift(id: string, input: { name?: string; startMinute?: number; endMinute?: number; graceMinutes?: number; workingDays?: number[]; breaks?: ShiftBreak[]; isDefault?: boolean; status?: string }) {
+  async updateShift(id: string, input: { name?: string; startMinute?: number; endMinute?: number; graceMinutes?: number; workingDays?: number[]; daySchedule?: ShiftDay[] | null; breaks?: ShiftBreak[]; isDefault?: boolean; status?: string }) {
     const ctx = requireTenantContext();
     const found = await this.prisma.shift.findFirst({ where: { id, orgId: ctx.orgId } });
     if (!found) throw new NotFoundException("Shift not found.");
@@ -340,6 +343,7 @@ export class OrgStructureService {
       if (input.endMinute !== undefined) data.endMinute = input.endMinute;
       if (input.graceMinutes !== undefined) data.graceMinutes = input.graceMinutes;
       if (input.workingDays !== undefined) data.workingDays = input.workingDays;
+      if (input.daySchedule !== undefined) data.daySchedule = input.daySchedule && input.daySchedule.length ? (input.daySchedule as unknown as Prisma.InputJsonValue) : Prisma.DbNull;
       if (input.breaks !== undefined) data.breaks = input.breaks;
       if (input.isDefault !== undefined) data.isDefault = input.isDefault;
       if (input.status !== undefined) data.status = input.status;

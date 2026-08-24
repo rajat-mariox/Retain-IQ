@@ -46,9 +46,13 @@ export class SeatLimitService {
 
     const activeEmployees = await tx.employee.count({ where: { orgId, status: "ACTIVE" } });
     if (activeEmployees >= limit) {
-      throw new ConflictException(
-        `Seat limit reached: ${activeEmployees}/${limit} seats in use. Upgrade the plan or add seats before adding more employees.`,
-      );
+      // Distinct machine code so the client can tell a full-seats rejection apart
+      // from other 409s (e.g. duplicate email) and route to the upgrade flow.
+      throw new ConflictException({
+        code: "seat_limit_reached",
+        message: `Seat limit reached: ${activeEmployees}/${limit} seats in use. Upgrade the plan or add seats before adding more employees.`,
+        seats: { used: activeEmployees, limit },
+      });
     }
   }
 }

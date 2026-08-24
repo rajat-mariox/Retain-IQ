@@ -23,13 +23,25 @@ const FEATURES: { key: string; label: string; unlocks?: string }[] = [
 ];
 const FEATURE_LABEL = Object.fromEntries(FEATURES.map((f) => [f.key, f.label]));
 
+// Built-in plans the backend refuses to delete (free is the no-subscription
+// fallback; the rest are the standard tiers). Delete is disabled for these.
+const SYSTEM_PLANS = new Set(["free", "basic", "professional", "enterprise"]);
+
 interface Form {
   id: string;
   name: string;
   description: string;
   priceDollars: string;
+  baseDollars: string;
+  includedSeats: string;
+  additionalSeatDollars: string;
   billingPeriod: string;
   seatLimit: string;
+  minSeats: string;
+  maxSeats: string;
+  allowCustomSeats: boolean;
+  trialEnabled: boolean;
+  trialDays: string;
   storageGb: string;
   features: string[];
   color: string;
@@ -42,8 +54,16 @@ const emptyForm = (): Form => ({
   name: "",
   description: "",
   priceDollars: "0",
+  baseDollars: "0",
+  includedSeats: "0",
+  additionalSeatDollars: "0",
   billingPeriod: "monthly",
   seatLimit: "",
+  minSeats: "1",
+  maxSeats: "",
+  allowCustomSeats: true,
+  trialEnabled: true,
+  trialDays: "14",
   storageGb: "",
   features: ["core"],
   color: "#1f883d",
@@ -56,8 +76,16 @@ const planToForm = (p: AdminPlan): Form => ({
   name: p.name,
   description: p.description ?? "",
   priceDollars: String(p.pricePerSeat / 100),
+  baseDollars: String(p.basePrice / 100),
+  includedSeats: String(p.includedSeats),
+  additionalSeatDollars: String(p.additionalSeatPrice / 100),
   billingPeriod: p.billingPeriod,
   seatLimit: p.seatLimit == null ? "" : String(p.seatLimit),
+  minSeats: String(p.minSeats),
+  maxSeats: p.maxSeats == null ? "" : String(p.maxSeats),
+  allowCustomSeats: p.allowCustomSeats,
+  trialEnabled: p.trialEnabled,
+  trialDays: String(p.trialDays),
   storageGb: p.storageLimitMb == null ? "" : String(p.storageLimitMb / 1024),
   features: [...p.features],
   color: p.color,
@@ -77,6 +105,9 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
   const [deleteTarget, setDeleteTarget] = useState<AdminPlan | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // Orgs currently subscribed to the plan being deleted (null = still loading).
+  const [usage, setUsage] = useState<{ id: string; name: string; status: string }[] | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
 
   /** Per-field messages, keyed like the API's `path` so server errors map straight on. */
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -101,6 +132,22 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
     const price = Number(form.priceDollars);
     if (form.priceDollars.trim() === "") f.priceDollars = "Price is required — use 0 for a free plan.";
     else if (!Number.isFinite(price) || price < 0) f.priceDollars = "Price must be 0 or more.";
+    if (form.baseDollars.trim() !== "" && (!Number.isFinite(Number(form.baseDollars)) || Number(form.baseDollars) < 0)) {
+      f.baseDollars = "Base price must be 0 or more.";
+    }
+    if (form.includedSeats.trim() !== "" && (!Number.isInteger(Number(form.includedSeats)) || Number(form.includedSeats) < 0)) {
+      f.includedSeats = "Included seats must be a whole number of 0 or more.";
+    }
+    if (form.additionalSeatDollars.trim() !== "" && (!Number.isFinite(Number(form.additionalSeatDollars)) || Number(form.additionalSeatDollars) < 0)) {
+      f.additionalSeatDollars = "Additional-seat price must be 0 or more.";
+    }
+    if (!Number.isInteger(Number(form.minSeats)) || Number(form.minSeats) < 1) {
+      f.minSeats = "Minimum seats must be a whole number of 1 or more.";
+    }
+    if (form.maxSeats.trim() !== "") {
+      if (!Number.isInteger(Number(form.maxSeats)) || Number(form.maxSeats) < 1) f.maxSeats = "Max seats must be a whole number of 1 or more, or blank for unlimited.";
+      else if (Number(form.maxSeats) < Number(form.minSeats || 1)) f.maxSeats = "Max seats can't be less than minimum seats.";
+    }
     if (form.seatLimit.trim() !== "" && (!Number.isInteger(Number(form.seatLimit)) || Number(form.seatLimit) < 1)) {
       f.seatLimit = "Seat limit must be a whole number of 1 or more, or blank for unlimited.";
     }
@@ -141,8 +188,16 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
       name: form.name,
       description: form.description.trim() || undefined,
       pricePerSeat: Math.round(Number(form.priceDollars || 0) * 100),
+      basePrice: Math.round(Number(form.baseDollars || 0) * 100),
+      includedSeats: Math.round(Number(form.includedSeats || 0)),
+      additionalSeatPrice: Math.round(Number(form.additionalSeatDollars || 0) * 100),
       billingPeriod: form.billingPeriod,
       seatLimit: form.seatLimit.trim() === "" ? null : Math.round(Number(form.seatLimit)),
+      minSeats: Math.round(Number(form.minSeats || 1)),
+      maxSeats: form.maxSeats.trim() === "" ? null : Math.round(Number(form.maxSeats)),
+      allowCustomSeats: form.allowCustomSeats,
+      trialEnabled: form.trialEnabled,
+      trialDays: Math.round(Number(form.trialDays || 0)),
       storageLimitMb: form.storageGb.trim() === "" ? null : Math.round(Number(form.storageGb) * 1024),
       features: form.features,
       color: form.color,
@@ -168,9 +223,20 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
     }
   }
 
-  function askDelete(p: AdminPlan) {
+  async function askDelete(p: AdminPlan) {
     setDeleteTarget(p);
     setDeleteError(null);
+    setUsage(null);
+    setUsageLoading(true);
+    try {
+      const res = await fetch(`/api/admin/plans/${p.id}/usage`);
+      const data = (await res.json().catch(() => ({}))) as { orgs?: { id: string; name: string; status: string }[] };
+      setUsage(res.ok ? data.orgs ?? [] : []);
+    } catch {
+      setUsage([]); // couldn't check — fail open on the display; backend still enforces
+    } finally {
+      setUsageLoading(false);
+    }
   }
 
   async function confirmDelete() {
@@ -250,6 +316,51 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
             </Field>
           </div>
 
+          {/* Seat-based pricing: total = base + max(0, seats - included) × additional-seat. */}
+          <div className="rounded-xl border border-hairline bg-panel-2/30 p-3">
+            <p className="mb-2 text-xs font-semibold text-slate-600">Seat-based pricing</p>
+            <p className="mb-3 text-xs text-slate-500">
+              Bill = <span className="font-medium text-slate-700">base + max(0, seats − included) × additional-seat</span>.
+              Leave base 0 &amp; included 0 to charge a flat per-seat price (uses “Additional seat”).
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field label="Base price (USD)" hint="charged each period" error={fields.baseDollars}>
+                <input type="number" min="0" step="0.01" value={form.baseDollars} onChange={(e) => set("baseDollars", e.target.value)} className={fields.baseDollars ? `${inputCls} border-rose-400` : inputCls} />
+              </Field>
+              <Field label="Included seats" hint="covered by base" error={fields.includedSeats}>
+                <input type="number" min="0" value={form.includedSeats} onChange={(e) => set("includedSeats", e.target.value)} className={fields.includedSeats ? `${inputCls} border-rose-400` : inputCls} />
+              </Field>
+              <Field label="Additional seat (USD)" hint="per seat over included" error={fields.additionalSeatDollars}>
+                <input type="number" min="0" step="0.01" value={form.additionalSeatDollars} onChange={(e) => set("additionalSeatDollars", e.target.value)} className={fields.additionalSeatDollars ? `${inputCls} border-rose-400` : inputCls} />
+              </Field>
+            </div>
+          </div>
+
+          {/* Seat capacity policy. */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Field label="Minimum seats" error={fields.minSeats}>
+              <input type="number" min="1" value={form.minSeats} onChange={(e) => set("minSeats", e.target.value)} className={fields.minSeats ? `${inputCls} border-rose-400` : inputCls} />
+            </Field>
+            <Field label="Maximum seats" hint="blank = ∞" error={fields.maxSeats}>
+              <input type="number" min="1" value={form.maxSeats} onChange={(e) => set("maxSeats", e.target.value)} className={fields.maxSeats ? `${inputCls} border-rose-400` : inputCls} placeholder="Unlimited" />
+            </Field>
+            <label className="flex items-end gap-2 pb-2 text-sm text-slate-700">
+              <input type="checkbox" checked={form.allowCustomSeats} onChange={(e) => set("allowCustomSeats", e.target.checked)} className="size-4 rounded border-hairline" />
+              Allow custom seats
+            </label>
+          </div>
+
+          {/* Trial policy. */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <label className="flex items-end gap-2 pb-2 text-sm text-slate-700">
+              <input type="checkbox" checked={form.trialEnabled} onChange={(e) => set("trialEnabled", e.target.checked)} className="size-4 rounded border-hairline" />
+              Offer a free trial
+            </label>
+            <Field label="Trial length (days)" hint="when trial is on">
+              <input type="number" min="0" max="365" value={form.trialDays} onChange={(e) => set("trialDays", e.target.value)} disabled={!form.trialEnabled} className={`${inputCls} ${form.trialEnabled ? "" : "opacity-60"}`} />
+            </Field>
+          </div>
+
           {/* Feature mapping */}
           <Field label="Features">
             <p className="mb-2 text-xs text-slate-500">
@@ -310,15 +421,39 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
                 </div>
                 <div className="flex items-center gap-1">
                   <button type="button" onClick={() => openEdit(p)} aria-label="Edit" className="grid size-7 place-items-center rounded-lg border border-hairline text-slate-500 hover:bg-panel-2"><Pencil className="size-3.5" /></button>
-                  <button type="button" onClick={() => askDelete(p)} aria-label="Delete" className="grid size-7 place-items-center rounded-lg border border-rose-500/30 text-rose-600 hover:bg-rose-500/10"><Trash2 className="size-3.5" /></button>
+                  <button
+                    type="button"
+                    onClick={() => askDelete(p)}
+                    disabled={SYSTEM_PLANS.has(p.id)}
+                    aria-label="Delete"
+                    title={SYSTEM_PLANS.has(p.id) ? "Built-in plan — can't be deleted (deactivate instead)" : "Delete plan"}
+                    className="grid size-7 place-items-center rounded-lg border border-rose-500/30 text-rose-600 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
                 </div>
               </div>
               <p className="text-2xl font-semibold tabular-nums text-slate-900">
-                {p.pricePerSeat === 0 ? "Free" : usd(p.pricePerSeat)}
-                {p.pricePerSeat > 0 ? <span className="text-sm font-normal text-slate-500"> /seat/{p.billingPeriod === "yearly" ? "yr" : "mo"}</span> : null}
+                {p.basePrice > 0 ? (
+                  <>
+                    {usd(p.basePrice)}<span className="text-sm font-normal text-slate-500"> /{p.billingPeriod === "yearly" ? "yr" : "mo"}</span>
+                  </>
+                ) : p.additionalSeatPrice > 0 ? (
+                  <>
+                    {usd(p.additionalSeatPrice)}<span className="text-sm font-normal text-slate-500"> /seat/{p.billingPeriod === "yearly" ? "yr" : "mo"}</span>
+                  </>
+                ) : (
+                  "Free"
+                )}
               </p>
               <dl className="space-y-1 text-xs text-slate-500">
-                <div className="flex justify-between"><dt>Seats</dt><dd className="text-slate-700">{limitLabel(p.seatLimit, "seats")}</dd></div>
+                {p.basePrice > 0 ? (
+                  <>
+                    <div className="flex justify-between"><dt>Included seats</dt><dd className="text-slate-700">{p.includedSeats}</dd></div>
+                    <div className="flex justify-between"><dt>Extra seat</dt><dd className="text-slate-700">{p.additionalSeatPrice === 0 ? "—" : `${usd(p.additionalSeatPrice)}/seat`}</dd></div>
+                  </>
+                ) : null}
+                <div className="flex justify-between"><dt>Seats</dt><dd className="text-slate-700">{limitLabel(p.maxSeats ?? p.seatLimit, "seats")}{p.allowCustomSeats ? "" : " · fixed"}</dd></div>
                 <div className="flex justify-between"><dt>Storage</dt><dd className="text-slate-700">{p.storageLimitMb == null ? "Unlimited" : `${(p.storageLimitMb / 1024).toLocaleString()} GB`}</dd></div>
               </dl>
               <div className="mt-auto flex flex-wrap gap-1.5 pt-2">
@@ -337,29 +472,69 @@ export function PlanManager({ plans }: { plans: AdminPlan[] }) {
       {/* Delete confirmation */}
       <Modal open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} title="Delete plan" size="sm">
         <div className="space-y-4">
-          <div className="flex items-start gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-rose-500/10 text-rose-600">
-              <AlertTriangle className="size-5" />
-            </span>
-            <p className="text-sm text-slate-600">
-              Delete the <span className="font-semibold text-slate-900">{deleteTarget?.name}</span> plan? This can’t be undone. Plans
-              with active subscriptions can’t be deleted.
-            </p>
-          </div>
-          {deleteError ? <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-700">{deleteError}</p> : null}
-          <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setDeleteTarget(null)} className="rounded-xl px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900">
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={confirmDelete}
-              disabled={deleting}
-              className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
-            >
-              {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />} Delete plan
-            </button>
-          </div>
+          {(() => {
+            const inUse = (usage?.length ?? 0) > 0;
+            const isSystem = deleteTarget ? SYSTEM_PLANS.has(deleteTarget.id) : false;
+            const blocked = isSystem || inUse;
+            return (
+              <>
+                <div className="flex items-start gap-3">
+                  <span className={`grid size-9 shrink-0 place-items-center rounded-xl ${blocked ? "bg-amber-500/10 text-amber-600" : "bg-rose-500/10 text-rose-600"}`}>
+                    <AlertTriangle className="size-5" />
+                  </span>
+                  <p className="text-sm text-slate-600">
+                    {isSystem ? (
+                      <>
+                        <span className="font-semibold text-slate-900">{deleteTarget?.name}</span> is a built-in plan and can’t be deleted. You can deactivate it from the edit form instead.
+                      </>
+                    ) : inUse ? (
+                      <>
+                        <span className="font-semibold text-slate-900">{deleteTarget?.name}</span> can’t be deleted — {usage!.length} organization{usage!.length === 1 ? " is" : "s are"} subscribed to it. Move them to another plan first.
+                      </>
+                    ) : (
+                      <>
+                        Delete the <span className="font-semibold text-slate-900">{deleteTarget?.name}</span> plan? This can’t be undone.
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                {/* Subscribed organizations (only when in use). */}
+                {usageLoading ? (
+                  <p className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="size-3.5 animate-spin" /> Checking subscriptions…</p>
+                ) : inUse ? (
+                  <div className="rounded-xl border border-hairline bg-panel-2/40 p-3">
+                    <p className="mb-2 text-xs font-medium text-slate-500">Subscribed organizations</p>
+                    <ul className="max-h-40 space-y-1 overflow-y-auto">
+                      {usage!.map((o) => (
+                        <li key={o.id} className="flex items-center justify-between gap-2 text-sm">
+                          <span className="truncate text-slate-800">{o.name}</span>
+                          <span className="shrink-0 text-xs text-slate-400">{o.status.toLowerCase()}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {deleteError ? <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-700">{deleteError}</p> : null}
+
+                <div className="flex justify-end gap-2">
+                  <button type="button" onClick={() => setDeleteTarget(null)} className="rounded-xl px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900">
+                    {blocked ? "Close" : "Cancel"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDelete}
+                    disabled={deleting || usageLoading || blocked}
+                    title={blocked ? (isSystem ? "Built-in plan can't be deleted" : "Plan is in use by one or more organizations") : "Delete plan"}
+                    className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />} Delete plan
+                  </button>
+                </div>
+              </>
+            );
+          })()}
         </div>
       </Modal>
     </div>

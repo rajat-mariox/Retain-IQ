@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
-import { allPermissions, employeePermissions, managerPermissions } from "@retainiq/authz";
+import { allPermissions, employeePermissions, hrManagerPermissions, managerPermissions } from "@retainiq/authz";
 import { loadConfig } from "@retainiq/config";
 import type {
   AccessTokenClaims,
@@ -70,10 +70,12 @@ export class IdentityService {
         },
       });
 
-      // Seed the rest of the role hierarchy so admins can assign Manager/Employee.
+      // Seed the rest of the role hierarchy so admins can assign Manager/HR
+      // Manager/Employee.
       await tx.role.createMany({
         data: [
           { orgId: org.id, name: "Manager", description: "Manage team, projects and attendance.", permissions: managerPermissions, isSystem: true },
+          { orgId: org.id, name: "HR Manager", description: "People operations — employees, attendance, payroll approvals, observations & incidents.", permissions: hrManagerPermissions, isSystem: true },
           { orgId: org.id, name: "Employee", description: "Standard employee access.", permissions: employeePermissions, isSystem: true },
         ],
         skipDuplicates: true,

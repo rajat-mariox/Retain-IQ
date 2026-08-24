@@ -36,6 +36,12 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
   const [breaks, setBreaks] = useState<{ name: string; start: string; end: string }[]>([]);
   const [isDefault, setIsDefault] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Per-weekday custom hours. Off = uniform start/end above. On = each working
+  // day gets its own window (seeded from the flat times).
+  const [perDay, setPerDay] = useState(false);
+  const [dayHours, setDayHours] = useState<Record<number, { start: string; end: string }>>({});
+  const setDayHour = (d: number, patch: Partial<{ start: string; end: string }>) =>
+    setDayHours((prev) => ({ ...prev, [d]: { start: prev[d]?.start ?? startT, end: prev[d]?.end ?? endT, ...patch } }));
 
   const toggleDay = (d: number) => setDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
   const addBreak = () => setBreaks((prev) => [...prev, { name: prev.length === 0 ? "Lunch" : "Break", start: "13:00", end: "13:45" }]);
@@ -68,6 +74,11 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
             endMinute: timeToMin(endT),
             graceMinutes: Math.max(0, Number(grace) || 0),
             workingDays: [...days].sort((a, b) => a - b),
+            daySchedule: perDay
+              ? [...days]
+                  .sort((a, b) => a - b)
+                  .map((d) => ({ day: d, startMinute: timeToMin(dayHours[d]?.start ?? startT), endMinute: timeToMin(dayHours[d]?.end ?? endT) }))
+              : null,
             breaks: breaks.map((b) => ({ name: b.name.trim() || "Break", startMinute: timeToMin(b.start), endMinute: timeToMin(b.end) })).filter((b) => b.endMinute > b.startMinute),
             isDefault,
           }),
@@ -81,6 +92,8 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
         setDays([1, 2, 3, 4, 5]);
         setBreaks([]);
         setIsDefault(false);
+        setPerDay(false);
+        setDayHours({});
       },
     );
   const makeDefault = (id: string) => run(() => fetch(`/api/shifts/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isDefault: true }) }), () => undefined);
@@ -103,7 +116,9 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
                   <span className="font-medium text-slate-900">{s.name}</span>
                   {s.isDefault ? <span className="ml-2 inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-[11px] font-medium text-brand"><Star className="size-3" /> default</span> : null}
                   {s.status === "ARCHIVED" ? <span className="ml-2 text-[11px] text-slate-400">archived</span> : null}
+                  {(s.daySchedule?.length ?? 0) > 0 ? <span className="ml-2 inline-flex items-center rounded bg-panel-2 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-inset ring-hairline">custom hours</span> : null}
                   <span className="block text-xs text-slate-500">{minToTime(s.startMinute)}–{minToTime(s.endMinute)}{s.endMinute <= s.startMinute ? " (+1d)" : ""} · {formatDays(s.workingDays)} · {s.graceMinutes}m grace{(s.breaks?.length ?? 0) > 0 ? ` · ${s.breaks.reduce((t, b) => t + (b.endMinute - b.startMinute), 0)}m break` : ""} · {s.employeeCount} assigned</span>
+                  {(s.daySchedule?.length ?? 0) > 0 ? <span className="mt-0.5 block text-[11px] text-slate-400">{s.daySchedule!.map((d) => `${DOW[d.day]} ${minToTime(d.startMinute)}–${minToTime(d.endMinute)}`).join(" · ")}</span> : null}
                   {(s.breaks?.length ?? 0) > 0 ? <span className="mt-0.5 block text-[11px] text-slate-400">{s.breaks.map((b) => `${b.name} ${minToTime(b.startMinute)}–${minToTime(b.endMinute)}`).join(" · ")}</span> : null}
                 </span>
               </span>
@@ -142,6 +157,29 @@ export function ShiftsView({ shifts }: { shifts: OrgShift[] }) {
               ))}
             </div>
             <p className="mt-1 text-xs text-slate-400">Late/absent are measured only on these days. Overnight shifts (end ≤ start) are supported.</p>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={perDay} onChange={(e) => setPerDay(e.target.checked)} className="size-4 rounded border-hairline text-brand focus:ring-brand" />
+              Custom hours per day
+            </label>
+            {perDay ? (
+              days.length === 0 ? (
+                <p className="mt-1.5 text-xs text-slate-400">Pick working days above to set their hours.</p>
+              ) : (
+                <div className="mt-2 space-y-1.5">
+                  {[...days].sort((a, b) => a - b).map((d) => (
+                    <div key={d} className="flex items-center gap-2">
+                      <span className="w-10 text-xs font-medium text-slate-600">{DOW[d]}</span>
+                      <input type="time" className={`${input} w-28`} value={dayHours[d]?.start ?? startT} onChange={(e) => setDayHour(d, { start: e.target.value })} />
+                      <span className="text-xs text-slate-400">to</span>
+                      <input type="time" className={`${input} w-28`} value={dayHours[d]?.end ?? endT} onChange={(e) => setDayHour(d, { end: e.target.value })} />
+                    </div>
+                  ))}
+                  <p className="mt-1 text-xs text-slate-400">Each day uses its own window; days left blank fall back to the shift start/end above.</p>
+                </div>
+              )
+            ) : null}
           </div>
           <div>
             <div className="mb-1.5 flex items-center justify-between">

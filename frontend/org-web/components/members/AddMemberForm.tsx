@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, Loader2, UserPlus, X } from "lucide-react";
+import { ArrowUpRight, Check, Copy, Loader2, Users, UserPlus, X } from "lucide-react";
+import { Modal } from "@/components/ui/Modal";
 import type { OrgDepartment, OrgRole, OrgTeam } from "@/lib/api";
 
 type ScopeType = "SELF" | "DEPARTMENT" | "TEAM" | "ORG";
@@ -30,6 +31,8 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
   const [fields, setFields] = useState<Record<string, string>>({});
   const [result, setResult] = useState<{ email: string; tempPassword: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  /** Set when the org is out of seats — drives the upgrade modal (the message is the server's). */
+  const [seatLimit, setSeatLimit] = useState<string | null>(null);
 
   /** Catch what we can before a round-trip; the server still validates everything. */
   function validate(): Record<string, string> {
@@ -81,6 +84,12 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
       const res = await fetch("/api/members", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // Seats are full: this isn't a form mistake to fix here — it's an upgrade.
+        // Raise the upgrade modal instead of the red inline error.
+        if (data.code === "seat_limit_reached") {
+          setSeatLimit(data.error ?? "All seats on your current plan are in use.");
+          return;
+        }
         setError(data.error ?? "Could not add member.");
         setFields(data.fields ?? {});
         return;
@@ -93,9 +102,45 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
     }
   }
 
+  // Rendered in both branches (collapsed button + open form) so it survives either.
+  const seatModal = (
+    <Modal open={seatLimit !== null} onClose={() => setSeatLimit(null)} title="Add more seats to continue" size="sm">
+      <div className="space-y-4">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-600">
+            <Users className="size-5" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-slate-900">Your plan is out of seats</p>
+            <p className="mt-1 text-sm text-slate-600">
+              {seatLimit} To add this person, upgrade your plan or add seats.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-hairline pt-4">
+          <button
+            type="button"
+            onClick={() => setSeatLimit(null)}
+            className="rounded-xl px-3.5 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => { setSeatLimit(null); router.push("/billing?upgrade=seats"); }}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-soft"
+          >
+            Upgrade plan <ArrowUpRight className="size-4" />
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+
   if (!open) {
     return (
       <div className="flex justify-end">
+        {seatModal}
         <button type="button" onClick={() => { setOpen(true); setResult(null); }} className="inline-flex items-center gap-2 rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-soft">
           <UserPlus className="size-4" /> Add employee
         </button>
@@ -105,6 +150,7 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
 
   return (
     <div className="rounded-2xl border border-hairline bg-panel/80 p-5">
+      {seatModal}
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-slate-900">Add employee</h3>
         <button type="button" onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-700"><X className="size-4" /></button>

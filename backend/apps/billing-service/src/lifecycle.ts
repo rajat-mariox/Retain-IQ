@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@retainiq/database/billing";
 import type { Logger } from "@retainiq/observability";
+import { computePrice, effectivePricing, planPricingOf } from "@retainiq/contracts";
 
 const DAY_MS = 86_400_000;
 const GRACE_DAYS = 14; // PAST_DUE this long past an invoice due date -> SUSPENDED
@@ -78,7 +79,14 @@ export async function runBillingCycle(opts: {
 
       const periodStart = sub.currentPeriodEnd;
       const periodEnd = addPeriod(periodStart, sub.plan.billingPeriod);
-      const amount = sub.activeSeats * sub.plan.pricePerSeat;
+      // Bill at the subscription's LOCKED rate (fall back to the live plan for
+      // pre-migration subs), on active seats. A later plan-price edit never
+      // retroactively changes an existing subscriber's renewal amount.
+      const pricing = effectivePricing(
+        { basePrice: sub.lockedBasePrice ?? undefined, includedSeats: sub.lockedIncludedSeats ?? undefined, additionalSeatPrice: sub.lockedAdditionalSeatPrice ?? undefined },
+        planPricingOf(sub.plan),
+      );
+      const amount = computePrice(pricing, sub.activeSeats).totalPrice;
       const invoiceNumber = `INV-${periodStart.toISOString().slice(0, 7).replace("-", "")}-${sub.orgId.replace(/-/g, "").slice(0, 8)}`;
       const paid = amount === 0 || chargeSucceeds();
 

@@ -29,6 +29,13 @@ export function ApprovalQueue({
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Multi-select for bulk approve/reject of corrections.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const allSelected = corrections.length > 0 && selected.size === corrections.length;
+  const toggle = (id: string) =>
+    setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () =>
+    setSelected(allSelected ? new Set() : new Set(corrections.map((c) => c.id)));
   // Approvers may grant less overtime than was measured; seeded with the full amount.
   const [grant, setGrant] = useState<Record<string, string>>(
     Object.fromEntries(overtime.map((o) => [o.attendanceId, String(o.overtimeMinutes)])),
@@ -50,16 +57,52 @@ export function ApprovalQueue({
     router.refresh();
   }
 
+  async function bulkDecide(approve: boolean) {
+    if (selected.size === 0) return;
+    setBusy("bulk");
+    setError(null);
+    const res = await fetch(`/api/attendance/corrections/bulk-decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [...selected], approve }),
+    });
+    const d = (await res.json().catch(() => ({}))) as { skipped?: { reason: string }[]; error?: string };
+    if (!res.ok) setError(d.error ?? "That didn't work.");
+    else if (d.skipped?.length) setError(`${d.skipped.length} could not be decided (${d.skipped[0]!.reason}).`);
+    setSelected(new Set());
+    setBusy(null);
+    router.refresh();
+  }
+
   return (
     <div className="space-y-6">
       {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600 ring-1 ring-inset ring-rose-200">{error}</p> : null}
 
       <Card>
-        <CardHeader title="Attendance corrections" subtitle={`${corrections.length} awaiting your decision`} />
+        <CardHeader
+          title="Attendance corrections"
+          subtitle={`${corrections.length} awaiting your decision`}
+          action={
+            selected.size > 0 ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">{selected.size} selected</span>
+                <button onClick={() => bulkDecide(true)} disabled={busy !== null} className={btnApprove}>
+                  {busy === "bulk" ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Approve selected
+                </button>
+                <button onClick={() => bulkDecide(false)} disabled={busy !== null} className={btnReject}>
+                  <X className="size-3.5" /> Reject selected
+                </button>
+              </div>
+            ) : null
+          }
+        />
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[800px] text-sm">
             <thead>
               <tr className="border-b border-hairline text-xs text-slate-500">
+                <th className="w-10 px-5 py-3 text-left font-medium">
+                  <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all corrections" className="size-3.5 accent-emerald-600" />
+                </th>
                 <th className="px-5 py-3 text-left font-medium">Employee</th>
                 <th className="px-5 py-3 text-left font-medium">Day</th>
                 <th className="px-5 py-3 text-left font-medium">Type</th>
@@ -70,7 +113,10 @@ export function ApprovalQueue({
             </thead>
             <tbody>
               {corrections.map((c) => (
-                <tr key={c.id} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
+                <tr key={c.id} className={`border-b border-hairline/60 last:border-0 hover:bg-slate-50 ${selected.has(c.id) ? "bg-emerald-50/50" : ""}`}>
+                  <td className="px-5 py-3">
+                    <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} aria-label={`Select correction for ${c.employeeName ?? "employee"}`} className="size-3.5 accent-emerald-600" />
+                  </td>
                   <td className="px-5 py-3 font-medium text-slate-900">{c.employeeName ?? "—"}</td>
                   <td className="px-5 py-3 tabular-nums text-slate-600">{c.day}</td>
                   <td className="px-5 py-3 text-slate-600">{pretty(c.type)}</td>
@@ -94,7 +140,7 @@ export function ApprovalQueue({
                 </tr>
               ))}
               {corrections.length === 0 ? (
-                <tr><td colSpan={6} className="px-5 py-8 text-center text-sm text-slate-500">Nothing to review.</td></tr>
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-slate-500">Nothing to review.</td></tr>
               ) : null}
             </tbody>
           </table>

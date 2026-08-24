@@ -295,3 +295,61 @@ render();
 // fallback for when the stream is down, not the main heartbeat.
 if (window.agent.onAttendanceChanged) window.agent.onAttendanceChanged(render);
 setInterval(render, 15000);
+
+// ---- Idle auto-checkout warning ----
+// The main process owns the entire warning: it pushes the remaining seconds every
+// second (its timer is never throttled), and detects the user's return + does the
+// checkout. The renderer just DISPLAYS each pushed value and shows/hides the
+// overlay — no competing local timer, so the countdown can't freeze or fight main.
+const fmtCountdown = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+// A short tick sound on each second of the countdown, so the person hears it even
+// if they're not looking at the screen. Web Audio (no asset needed); created lazily.
+let _audioCtx = null;
+function playTick() {
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _audioCtx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880; // a soft, high-ish beep
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01); // quick attack
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12); // short decay
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.13);
+  } catch (_) { /* audio not available — ignore */ }
+}
+
+let _lastTickSecond = -1;
+
+function hideIdleOverlay() {
+  _lastTickSecond = -1;
+  const overlay = document.getElementById("idleOverlay");
+  if (overlay) overlay.classList.add("hide");
+}
+function showIdle(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const count = document.getElementById("idleCount");
+  const overlay = document.getElementById("idleOverlay");
+  if (count) count.textContent = fmtCountdown(s);
+  if (overlay) overlay.classList.remove("hide");
+  // Beep once per whole second as the number changes (not on repeated same-value pushes).
+  if (s !== _lastTickSecond) {
+    _lastTickSecond = s;
+    playTick();
+  }
+}
+
+if (window.agent.onIdleWarn) window.agent.onIdleWarn((remainingSeconds) => showIdle(remainingSeconds));
+if (window.agent.onIdleWarnClear) window.agent.onIdleWarnClear(() => hideIdleOverlay());
+
+const idleStayBtn = $("idleStayBtn");
+if (idleStayBtn) {
+  idleStayBtn.addEventListener("click", () => {
+    hideIdleOverlay(); // instant feedback
+    if (window.agent.idleStillHere) window.agent.idleStillHere(); // cancel the pending checkout
+  });
+}

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Coffee, Loader2, LogIn, LogOut, Play } from "lucide-react";
+import { AlertTriangle, Coffee, Loader2, LogIn, LogOut, Play } from "lucide-react";
 import { LocalTime } from "@/components/ui/LocalTime";
 import { cn } from "@/lib/cn";
 import { useCoalescedCallback } from "@/lib/hooks";
@@ -79,6 +79,7 @@ export function CheckInOut({ initial }: { initial: AttendanceStatus | null }) {
   const [status, setStatus] = useState<AttendanceStatus | null>(initial);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [breakKind, setBreakKind] = useState("LUNCH");
 
   const load = useCallback(async () => {
@@ -112,11 +113,15 @@ export function CheckInOut({ initial }: { initial: AttendanceStatus | null }) {
   async function act(path: string, key: string) {
     setBusy(key);
     setError(null);
+    setWarning(null);
     try {
       const res = await fetch(`/api/attendance/${path}`, { method: "POST" });
+      const d = (await res.json().catch(() => ({}))) as { error?: string; warning?: string };
       if (!res.ok) {
-        const d = (await res.json().catch(() => ({}))) as { error?: string };
         setError(d.error ?? "That didn't work.");
+      } else if (d.warning) {
+        // A soft conflict (e.g. checked in on a leave day) — show it, don't block.
+        setWarning(d.warning);
       }
       await load();
     } finally {
@@ -260,6 +265,12 @@ export function CheckInOut({ initial }: { initial: AttendanceStatus | null }) {
       ) : null}
 
       {error ? <p className="text-xs text-rose-600">{error}</p> : null}
+      {warning ? (
+        <div className="mt-1 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>{warning}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

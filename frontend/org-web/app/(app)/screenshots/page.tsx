@@ -4,8 +4,7 @@ import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody } from "@/components/ui/Card";
 import { PageNav } from "@/components/ui/PageNav";
-import { LocalTime } from "@/components/ui/LocalTime";
-import { ScreenshotThumb } from "@/components/screenshots/ScreenshotThumb";
+import { ScreenshotGrid } from "@/components/screenshots/ScreenshotGrid";
 import { getMyScreenshots, getScreenshotEmployees, getSession, getStorageUsage } from "@/lib/api";
 import { formatBytes, formatCompact, timeAgo } from "@/lib/format";
 
@@ -42,19 +41,7 @@ export default async function ScreenshotsPage({ searchParams }: { searchParams: 
             </Card>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-                {mine.items.map((shot) => (
-                  <div key={shot.id} className="group relative overflow-hidden rounded-xl border border-hairline bg-panel">
-                    <div className="aspect-video w-full bg-panel-2">
-                      <ScreenshotThumb src={shot.viewUrl} alt={`Screenshot from ${shot.capturedAt.slice(0, 10)}`} />
-                    </div>
-                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-slate-500">
-                      <span className="truncate"><LocalTime iso={shot.capturedAt} mode="datetime" /></span>
-                      <span className="shrink-0 tabular-nums">{formatBytes(shot.sizeBytes)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <ScreenshotGrid shots={mine.items} />
 
               <Card>
                 <PageNav page={mine.page} pageSize={mine.pageSize} total={mine.total} basePath="/screenshots" />

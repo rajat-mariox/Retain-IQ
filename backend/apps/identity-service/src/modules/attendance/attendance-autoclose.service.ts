@@ -5,6 +5,7 @@ import { PrismaService } from "../../common/database/prisma.service.js";
 import { logger } from "../../common/observability/observability.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
 import { AttendancePolicyService } from "./attendance-policy.service.js";
+import { ShiftRotationService, type RotationStep } from "../org-structure/shift-rotation.service.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -80,7 +81,7 @@ export class AttendanceAutoCloseService {
     const policy = await this.policies.get(session.orgId);
     if (!policy.autoCheckOutAtShiftEnd) return false;
 
-    const { tz, shift } = await this.resolveShift(session.orgId, session.employeeId);
+    const { tz, shift } = await this.resolveShift(session.orgId, session.employeeId, session.startedAt);
     const now = new Date();
 
     // The instant the shift was over for this session's day, plus the org's
@@ -230,22 +231,30 @@ export class AttendanceAutoCloseService {
     }
   }
 
-  private async resolveShift(orgId: string, employeeId: string): Promise<{ tz: string; shift: ShiftLike | null }> {
+  /** Shift for an employee on the session's day: active rotation → fixed → default. */
+  private async resolveShift(orgId: string, employeeId: string, onDay: Date): Promise<{ tz: string; shift: ShiftLike | null }> {
+    const shiftSelect = { startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, status: true } as const;
     const [org, employee] = await Promise.all([
       this.prisma.organization.findUnique({ where: { id: orgId }, select: { timezone: true } }),
       this.prisma.employee.findUnique({
         where: { id: employeeId },
-        select: { shiftRef: { select: { startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, status: true } } },
+        select: { shiftRef: { select: shiftSelect }, rotationRef: { select: { anchorDate: true, steps: true, status: true } } },
       }),
     ]);
     const tz = org?.timezone || "UTC";
-    let shift: ShiftLike | null =
-      employee?.shiftRef && employee.shiftRef.status === "ACTIVE" ? employee.shiftRef : null;
+
+    let shift: ShiftLike | null = null;
+    const rot = employee?.rotationRef;
+    if (rot && rot.status === "ACTIVE") {
+      const shiftId = ShiftRotationService.shiftIdOn(rot.anchorDate, (rot.steps as unknown as RotationStep[]) ?? [], onDay);
+      if (shiftId) {
+        const s = await this.prisma.shift.findFirst({ where: { id: shiftId, orgId, status: "ACTIVE" }, select: shiftSelect });
+        if (s) shift = s;
+      }
+    }
+    if (!shift && employee?.shiftRef && employee.shiftRef.status === "ACTIVE") shift = employee.shiftRef;
     if (!shift) {
-      shift = await this.prisma.shift.findFirst({
-        where: { orgId, isDefault: true, status: "ACTIVE" },
-        select: { startMinute: true, endMinute: true, graceMinutes: true, workingDays: true },
-      });
+      shift = await this.prisma.shift.findFirst({ where: { orgId, isDefault: true, status: "ACTIVE" }, select: shiftSelect });
     }
     return { tz, shift };
   }

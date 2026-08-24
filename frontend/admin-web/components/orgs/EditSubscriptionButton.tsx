@@ -8,7 +8,10 @@ import { Modal } from "@/components/ui/Modal";
 interface PlanOption {
   id: string;
   name: string;
-  pricePerSeat: number; // USD cents
+  pricePerSeat: number; // USD cents (legacy flat)
+  basePrice: number;
+  includedSeats: number;
+  additionalSeatPrice: number;
 }
 
 interface Props {
@@ -18,6 +21,15 @@ interface Props {
 }
 
 const usd = (cents: number) => (cents === 0 ? "Free" : `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}/seat`);
+
+/** Seat-based total (cents): base + max(0, seats − included) × additional. Falls
+ *  back to flat per-seat when the base/included model is unset. */
+function planTotalCents(p: PlanOption, seats: number): number {
+  const flat = p.basePrice === 0 && p.includedSeats === 0 && p.additionalSeatPrice === 0;
+  const addl = flat ? p.pricePerSeat : p.additionalSeatPrice;
+  const base = flat ? 0 : p.basePrice;
+  return base + Math.max(0, seats - (flat ? 0 : p.includedSeats)) * addl;
+}
 
 export function EditSubscriptionButton({ orgId, current, plans }: Props) {
   const router = useRouter();
@@ -30,7 +42,7 @@ export function EditSubscriptionButton({ orgId, current, plans }: Props) {
 
   const selectedPlan = plans.find((p) => p.id === planId);
   const seatNum = Math.max(1, Number(seats) || 0);
-  const projectedMrr = selectedPlan ? (seatNum * selectedPlan.pricePerSeat) / 100 : 0;
+  const projectedMrr = selectedPlan ? planTotalCents(selectedPlan, seatNum) / 100 : 0;
   const dirty = planId !== current.planId || seatNum !== current.seats || autoRenew !== current.autoRenew;
 
   function reset() {

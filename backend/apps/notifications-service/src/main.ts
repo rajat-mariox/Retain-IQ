@@ -82,6 +82,9 @@ async function handle(message: StreamMessage): Promise<void> {
   }
 
   const payload = isRecord(event.payload) ? event.payload : {};
+  // A rule may carry a file attachment in its payload (e.g. a scheduled report's
+  // CSV as { reportCsv: { filename, content } }). Only EMAIL uses it.
+  const attachments = extractAttachments(payload);
 
   for (const spec of specs) {
     const recipients = await resolveRecipients(prisma, orgId, spec.audience, payload);
@@ -110,6 +113,7 @@ async function handle(message: StreamMessage): Promise<void> {
             link: spec.link ? spec.link(payload) : null,
           },
           quietHours,
+          attachments,
         });
       }
     }
@@ -145,6 +149,7 @@ async function deliver(args: {
   channel: Channel;
   spec: { type: string; title: string; body: string; category: Category; priority: Priority; link: string | null };
   quietHours: { start: number; end: number; now: number };
+  attachments?: { filename: string; content: string; contentType?: string }[];
 }): Promise<void> {
   const dedupeKey = `${args.eventId}:${args.spec.type}:${args.recipientUserId}:${args.channel}`;
 
@@ -200,6 +205,7 @@ async function deliver(args: {
     quietHours: args.quietHours,
     email: emailSender,
     push: pushSender,
+    attachments: args.channel === "EMAIL" ? args.attachments : undefined,
   });
   if (outcome.status === "DEFERRED") {
     deferred.inc({ channel: args.channel });
@@ -291,6 +297,20 @@ function asString(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/**
+ * Pull email file attachments out of an event payload. A producer sends a report
+ * as `{ reportCsv: { filename, content } }`; we surface it as an attachment so
+ * scheduled reports arrive with the actual CSV, not just a text summary.
+ */
+function extractAttachments(payload: Record<string, unknown>): { filename: string; content: string; contentType?: string }[] | undefined {
+  const raw = payload.reportCsv;
+  if (!isRecord(raw)) return undefined;
+  const filename = asString(raw.filename);
+  const content = asString(raw.content);
+  if (!filename || !content) return undefined;
+  return [{ filename, content, contentType: "text/csv" }];
 }
 
 function isUniqueViolation(error: unknown): boolean {

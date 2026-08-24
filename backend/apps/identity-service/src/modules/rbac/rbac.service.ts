@@ -44,6 +44,7 @@ const PERMISSION_CATALOG: {
     items: [
       { key: permissions.attendanceRead, label: "See attendance", hint: "View who's checked in, hours and the roster." },
       { key: permissions.attendanceApprove, label: "Approve attendance fixes & overtime", hint: "Decide on correction requests and sign off overtime." },
+      { key: permissions.attendanceManage, label: "Set attendance rules", hint: "Edit grace time, auto check-out buffer, breaks, overtime and work model." },
     ],
   },
   {

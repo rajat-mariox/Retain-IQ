@@ -23,7 +23,18 @@
       .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
       .on { background: var(--brand); } .off { background: #94a3b8; } .idle { background: #d97706; }
       .hide { display: none; }
+      /* The overlay uses an ID selector for display:flex, which would out-specify
+         the .hide class — so hide it with an equally-specific rule. */
+      #idleOverlay.hide { display: none; }
       select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; background: #fff; margin-top: 8px; }
+      /* Idle auto-checkout warning — full-window overlay with a live countdown. */
+      #idleOverlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.72); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 100; }
+      #idleOverlay .idle-card { background: var(--panel); border-radius: 16px; padding: 26px 24px; text-align: center; box-shadow: 0 20px 45px rgba(0,0,0,0.35); max-width: 320px; }
+      #idleOverlay h2 { margin: 0 0 6px; font-size: 17px; }
+      #idleOverlay p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+      #idleCount { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; color: #d97706; letter-spacing: 1px; }
+      #idleOverlay .idle-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+      #idleStayBtn { margin-top: 18px; }
     </style>
   </head>
   <body>
@@ -110,6 +121,19 @@
         </div>
       </div>
     </div>
+
+    <!-- Idle auto-checkout warning. Shown by the main process via onIdleWarn with
+         a live countdown; dismissed on activity (onIdleWarnClear) or checkout. -->
+    <div id="idleOverlay" class="hide">
+      <div class="idle-card">
+        <h2>Are you still there?</h2>
+        <p>You've been idle. You'll be checked out automatically in</p>
+        <div id="idleCount">5:00</div>
+        <div class="idle-hint">Move your mouse or press a key to stay checked in.</div>
+        <button id="idleStayBtn">I'm still here</button>
+      </div>
+    </div>
+
     <script src="renderer.js"></script>
   </body>
 </html>

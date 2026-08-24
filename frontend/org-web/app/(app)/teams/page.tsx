@@ -5,6 +5,7 @@ import { PageBody } from "@/components/layout/PageBody";
 import { StatTile } from "@/components/ui/StatTile";
 import { ProjectsTabs } from "@/components/projects/ProjectsTabs";
 import { TeamsManager } from "@/components/projects/TeamsManager";
+import { EscalationRollup } from "@/components/observations/EscalationRollup";
 import { getDepartmentsOverview, getProjectPeople, getProjects, getSession, getTeamsOverview } from "@/lib/api";
 
 export default async function TeamsPage() {
@@ -19,6 +20,7 @@ export default async function TeamsPage() {
   const canManageTabs = perms.includes("project.write");
   if (!canManageTabs) redirect("/projects"); // employees don't see Teams
   const canManageStructure = perms.includes("employee.write");
+  const canSeeCases = perms.includes("observation.read") || session?.role.name === "Owner";
   const totalMembers = teams.reduce((s, t) => s + t.size, 0);
   const totalActive = teams.reduce((s, t) => s + t.activeProjects, 0);
   const avgProgress = teams.length ? Math.round(teams.reduce((s, t) => s + t.progress, 0) / teams.length) : 0;
@@ -39,6 +41,7 @@ export default async function TeamsPage() {
         </div>
 
         <TeamsManager teams={teams} people={people} departments={deptOptions} projects={projectOptions} canManage={canManageStructure} />
+        {canSeeCases ? <EscalationRollup mode="team" /> : null}
       </PageBody>
     </>
   );

@@ -17,9 +17,13 @@ const attendancePolicySchema = z
     maxSingleBreakMinutes: z.coerce.number().int().min(0).max(1440),
     paidBreakMinutesPerDay: z.coerce.number().int().min(0).max(1440),
     allowCheckOutOnBreak: z.boolean(),
+    minMinutesBeforeBreak: z.coerce.number().int().min(0).max(480),
+    minMinutesBeforeCheckOut: z.coerce.number().int().min(0).max(480),
     graceMinutes: z.coerce.number().int().min(0).max(240),
     autoCheckOutAtShiftEnd: z.boolean(),
     autoCheckOutAfterMinutes: z.coerce.number().int().min(0).max(1440),
+    idleCheckoutMinutes: z.coerce.number().int().min(0).max(480),
+    idleCheckoutWarnMinutes: z.coerce.number().int().min(1).max(60),
     overtimeAfterMinutes: z.coerce.number().int().min(0).max(1440),
     minHoursForPresent: z.coerce.number().int().min(0).max(1440),
     workModel: z.enum(["WFO", "WFH", "HYBRID"]),
@@ -220,6 +224,12 @@ export class AdminController {
   @Get("subscriptions")
   subscriptions() {
     return this.admin.subscriptions();
+  }
+
+  /** Orgs subscribed to a plan (for the plan-manager delete guard). */
+  @Get("plans/:planId/usage")
+  planUsage(@Param("planId") planId: string) {
+    return this.admin.planUsage(planId);
   }
 
   @Get("activity")

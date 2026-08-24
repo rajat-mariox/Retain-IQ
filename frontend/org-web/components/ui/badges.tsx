@@ -14,6 +14,7 @@ const SUBSCRIPTION: Record<string, string> = {
   PAST_DUE: "bg-amber-500/10 text-amber-700 ring-amber-600/20",
   SUSPENDED: "bg-amber-500/10 text-amber-700 ring-amber-600/20",
   CANCELED: "bg-rose-500/10 text-rose-700 ring-rose-600/20",
+  EXPIRED: "bg-slate-500/10 text-slate-600 ring-slate-500/20",
 };
 
 const INVOICE: Record<string, string> = {

@@ -190,7 +190,8 @@ export class ReportsService {
    * CSV for one of the module's datasets. CSV over PDF deliberately: it's what
    * an accountant actually imports, and it needs no dependency.
    */
-  async exportCsv(kind: "payroll" | "timesheets" | "billable" | "invoices", query: { from?: string; to?: string; cycleId?: string }) {
+  /** The export as a { baseName, columns, rows } table — rendered to CSV or xlsx by the controller. */
+  async exportTable(kind: "payroll" | "timesheets" | "billable" | "invoices", query: { from?: string; to?: string; cycleId?: string }) {
     const ctx = requireTenantContext();
     const to = query.to ? parseDate(query.to) : today();
     const from = query.from ? parseDate(query.from) : addDays(to, -29);
@@ -222,7 +223,7 @@ export class ReportsService {
           ]);
         }
       }
-      return { filename: `payroll-${iso(from)}-to-${iso(to)}.csv`, body: csv(rows) };
+      return { baseName: `payroll-${iso(from)}-to-${iso(to)}`, columns: rows[0]!.map(String), rows: rows.slice(1) };
     }
 
     if (kind === "timesheets") {
@@ -244,7 +245,7 @@ export class ReportsService {
           t.note ?? "",
         ]);
       }
-      return { filename: `timesheets-${iso(from)}-to-${iso(to)}.csv`, body: csv(rows) };
+      return { baseName: `timesheets-${iso(from)}-to-${iso(to)}`, columns: rows[0]!.map(String), rows: rows.slice(1) };
     }
 
     if (kind === "billable") {
@@ -269,7 +270,7 @@ export class ReportsService {
           e.description ?? "",
         ]);
       }
-      return { filename: `billable-hours-${iso(from)}-to-${iso(to)}.csv`, body: csv(rows) };
+      return { baseName: `billable-hours-${iso(from)}-to-${iso(to)}`, columns: rows[0]!.map(String), rows: rows.slice(1) };
     }
 
     // invoices
@@ -296,6 +297,12 @@ export class ReportsService {
         ]);
       }
     }
-    return { filename: `invoices-${iso(from)}-to-${iso(to)}.csv`, body: csv(rows) };
+    return { baseName: `invoices-${iso(from)}-to-${iso(to)}`, columns: rows[0]!.map(String), rows: rows.slice(1) };
+  }
+
+  /** Back-compat CSV wrapper (used by the scheduled/summary paths). */
+  async exportCsv(kind: "payroll" | "timesheets" | "billable" | "invoices", query: { from?: string; to?: string; cycleId?: string }) {
+    const t = await this.exportTable(kind, query);
+    return { filename: `${t.baseName}.csv`, body: csv([t.columns, ...t.rows]) };
   }
 }

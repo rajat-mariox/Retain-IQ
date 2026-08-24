@@ -57,13 +57,27 @@ async function refresh(): Promise<string | null> {
   const { identityUrl } = getConfig();
   const session = getSession();
   if (!session) return null;
-  const res = await fetch(`${identityUrl}/v1/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken: session.refreshToken }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${identityUrl}/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: session.refreshToken }),
+    });
+  } catch {
+    // Backend unreachable — keep the session; this is a transient network blip,
+    // NOT an auth failure. Clearing here would log the user out every time their
+    // laptop briefly drops offline or the server restarts.
+    return null;
+  }
   if (!res.ok) {
-    clearSession();
+    // ONLY a real auth rejection (401/403) means the refresh token is dead —
+    // clear the session and drop to the login screen. Anything else (5xx, 502/503/
+    // 504 from a gateway, a server mid-deploy/restart, a timeout page) is transient:
+    // keep the session so a backend blip doesn't sign a working user out.
+    if (res.status === 401 || res.status === 403) {
+      clearSession();
+    }
     return null;
   }
   const tokens = (await res.json()) as { accessToken: string; refreshToken: string };
@@ -92,20 +106,32 @@ export interface AttendanceStatus {
   source: string | null;
 }
 
-/** Authenticated call to identity, refreshing the token once on a 401. */
+/**
+ * Authenticated call to identity, refreshing the token once on a 401. Returns
+ * null when there's no session OR the backend is unreachable — a `fetch failed`
+ * TypeError (server restarting, laptop offline, DNS hiccup) is a transient
+ * network condition, not a crash: callers already treat null as "no status right
+ * now", so the agent stays quiet and retries on the next poll instead of
+ * surfacing an unhandled error in the IPC handler.
+ */
 async function identityFetch(path: string, init: RequestInit = {}): Promise<Response | null> {
   const { identityUrl } = getConfig();
   const session = getSession();
   if (!session) return null;
   const call = (token: string) =>
     fetch(`${identityUrl}/v1${path}`, { ...init, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${token}` } });
-  let res = await call(session.accessToken);
-  if (res.status === 401) {
-    const fresh = await refresh();
-    if (!fresh) return null;
-    res = await call(fresh);
+  try {
+    let res = await call(session.accessToken);
+    if (res.status === 401) {
+      const fresh = await refresh();
+      if (!fresh) return null;
+      res = await call(fresh);
+    }
+    return res;
+  } catch {
+    // Network-level failure (backend unreachable) — treat as "no response".
+    return null;
   }
-  return res;
 }
 
 /**
@@ -199,29 +225,59 @@ export async function fetchAttendanceStatus(): Promise<AttendanceStatus | null> 
   return (await res.json()) as AttendanceStatus;
 }
 
+/** Org-configured idle auto-checkout timings, or null when unavailable/not staff. */
+export interface IdlePolicy {
+  idleCheckoutMinutes: number; // 0 = off
+  idleCheckoutWarnMinutes: number;
+}
+export async function fetchIdlePolicy(): Promise<IdlePolicy | null> {
+  const res = await identityFetch("/attendance/status");
+  if (!res?.ok) return null;
+  const data = (await res.json()) as { policy?: Partial<IdlePolicy> };
+  const p = data.policy;
+  if (!p || typeof p.idleCheckoutMinutes !== "number") return null;
+  return {
+    idleCheckoutMinutes: p.idleCheckoutMinutes,
+    idleCheckoutWarnMinutes: typeof p.idleCheckoutWarnMinutes === "number" ? p.idleCheckoutWarnMinutes : 5,
+  };
+}
+
 /**
- * Reserve screenshot storage quota and get a presigned PUT URL from identity.
- * Returns null on 403 (screenshots disabled for the org), quota exceeded, or error.
+ * Upload a screenshot for server-side PII masking + storage. The raw bytes are
+ * sent (base64) to identity, which masks the PII and stores ONLY the masked
+ * image — a raw capture never leaves the machine unmasked into storage. Returns
+ * the stored object key, or null on 403 (screenshots disabled), quota exceeded,
+ * masking unavailable, or a transient network error (the capture is skipped and
+ * retried next interval; nothing is stored).
  */
-export async function requestScreenshotUpload(sizeBytes: number, contentType: string): Promise<{ key: string; uploadUrl: string } | null> {
+export async function uploadScreenshot(body: Uint8Array, contentType: string): Promise<{ key: string; piiCount: number } | null> {
   const { identityUrl } = getConfig();
   const session = getSession();
   if (!session) return null;
+  const payload = JSON.stringify({
+    contentType,
+    data: Buffer.from(body).toString("base64"),
+    capturedAt: new Date().toISOString(),
+  });
   const post = (token: string) =>
-    fetch(`${identityUrl}/v1/storage/screenshots`, {
+    fetch(`${identityUrl}/v1/storage/screenshots/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ contentType, sizeBytes, capturedAt: new Date().toISOString() }),
+      body: payload,
     });
-  let res = await post(session.accessToken);
-  if (res.status === 401) {
-    const fresh = await refresh();
-    if (!fresh) return null;
-    res = await post(fresh);
+  try {
+    let res = await post(session.accessToken);
+    if (res.status === 401) {
+      const fresh = await refresh();
+      if (!fresh) return null;
+      res = await post(fresh);
+    }
+    if (!res.ok) return null; // disabled / over quota / masking unavailable — skip this capture.
+    const data = (await res.json()) as { key: string; piiCount?: number };
+    return { key: data.key, piiCount: data.piiCount ?? 0 };
+  } catch {
+    return null; // backend unreachable — skip this capture, retry next interval.
   }
-  if (!res.ok) return null;
-  const data = (await res.json()) as { key: string; uploadUrl: string };
-  return { key: data.key, uploadUrl: data.uploadUrl };
 }
 
 export interface MonitoringPolicy {
@@ -251,18 +307,6 @@ export async function fetchPolicy(): Promise<MonitoringPolicy | null> {
   }
 }
 
-/** Upload the screenshot bytes directly to the presigned URL (object storage). */
-export async function putBinary(url: string, body: Uint8Array, contentType: string): Promise<boolean> {
-  try {
-    // Electron's fetch accepts a Uint8Array/Buffer body at runtime; the DOM types
-    // are stricter than reality, so cast to BodyInit.
-    const res = await fetch(url, { method: "PUT", headers: { "Content-Type": contentType }, body: body as unknown as BodyInit });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 /** Upload a batch of activity events; retries once after a token refresh on 401. */
 export async function uploadBatch(events: ActivityEvent[]): Promise<{ ok: boolean; status: number }> {
   const { ingestionUrl } = getConfig();
@@ -276,11 +320,17 @@ export async function uploadBatch(events: ActivityEvent[]): Promise<{ ok: boolea
       body: JSON.stringify({ events }),
     });
 
-  let res = await post(session.accessToken);
-  if (res.status === 401) {
-    const fresh = await refresh();
-    if (!fresh) return { ok: false, status: 401 };
-    res = await post(fresh);
+  try {
+    let res = await post(session.accessToken);
+    if (res.status === 401) {
+      const fresh = await refresh();
+      if (!fresh) return { ok: false, status: 401 };
+      res = await post(fresh);
+    }
+    return { ok: res.ok, status: res.status };
+  } catch {
+    // Ingestion unreachable — report a soft failure so the caller keeps the
+    // events queued and retries on the next flush, rather than crashing.
+    return { ok: false, status: 0 };
   }
-  return { ok: res.ok, status: res.status };
 }

@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { GitBranch, Users, type LucideIcon } from "lucide-react";
-import type { EmployeePage, LifecycleSummary, OrgChartNode, OrgDepartment, OrgDesignation, OrgRole, OrgShift, OrgTeam } from "@/lib/api";
+import type { EmployeePage, LifecycleSummary, OrgChartNode, OrgDepartment, OrgDesignation, OrgRole, OrgShift, ShiftRotation, OrgTeam } from "@/lib/api";
 import { AllEmployeesView } from "./AllEmployeesView";
 import { DesignationsView } from "./DesignationsView";
 import { ShiftsView } from "./ShiftsView";
+import { RotationsView } from "./RotationsView";
 import { StructureView } from "./StructureView";
 import { LifecycleView } from "./LifecycleView";
 import { OrgChartView } from "./OrgChartView";
@@ -34,6 +35,7 @@ export function EmployeeManagement({
   teams,
   designations,
   shifts,
+  rotations,
   roles,
   lifecycle,
   orgChart,
@@ -43,6 +45,7 @@ export function EmployeeManagement({
   teams: OrgTeam[];
   designations: OrgDesignation[];
   shifts: OrgShift[];
+  rotations: ShiftRotation[];
   roles: OrgRole[];
   lifecycle: LifecycleSummary;
   orgChart: { roots: OrgChartNode[]; total: number };
@@ -89,7 +92,12 @@ export function EmployeeManagement({
           {dirTab === "departments" ? <StructureView kind="departments" departments={departments} teams={teams} /> : null}
           {dirTab === "teams" ? <StructureView kind="teams" departments={departments} teams={teams} /> : null}
           {dirTab === "designations" ? <DesignationsView designations={designations} departments={departments} /> : null}
-          {dirTab === "shifts" ? <ShiftsView shifts={shifts} /> : null}
+          {dirTab === "shifts" ? (
+            <div className="space-y-5">
+              <ShiftsView shifts={shifts} />
+              <RotationsView rotations={rotations} shifts={shifts} />
+            </div>
+          ) : null}
         </>
       ) : (
         // key={lifeTab} forces a fresh mount per stage so the previous stage's rows never flash.

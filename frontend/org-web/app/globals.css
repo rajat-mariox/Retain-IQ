@@ -8,6 +8,13 @@
   --color-brand: #1f883d;
   --color-brand-soft: #2da44e;
 
+  /* Attendance health-score ramp (good → poor). Always paired with a number or
+     label, so it reads as ordinal severity rather than category. */
+  --score-excellent: #059669;
+  --score-good: #65a30d;
+  --score-fair: #f59e0b;
+  --score-poor: #f43f5e;
+
   --font-sans:
     var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
@@ -37,6 +44,33 @@ body {
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+/* Lightbox: backdrop fade + preview card pop-in, and a soft swap when stepping
+   between screenshots. */
+@keyframes lbFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes lbPop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes lbSwap {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 

@@ -1,6 +1,7 @@
 import { Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from "@nestjs/common";
 import { STREAMS, type EventConsumer } from "@retainiq/messaging";
 import { PlatformSettingsService } from "../../common/settings/platform-settings.service.js";
+import { EntitlementService } from "../../common/entitlement/entitlement.service.js";
 import { BrokerService } from "../../common/messaging/broker.service.js";
 
 /**
@@ -31,6 +32,7 @@ export class PlanCacheSyncService implements OnApplicationBootstrap, OnApplicati
   constructor(
     private readonly broker: BrokerService,
     private readonly settings: PlatformSettingsService,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -51,7 +53,8 @@ export class PlanCacheSyncService implements OnApplicationBootstrap, OnApplicati
             : null;
       if (!orgId) return;
       this.settings.invalidatePlan(orgId);
-      this.logger.debug(`Busted plan cache for org ${orgId} (${type})`);
+      this.entitlements.invalidate(orgId);
+      this.logger.debug(`Busted plan + entitlement cache for org ${orgId} (${type})`);
     }).catch((err) => this.logger.error(`plan-cache consumer failed: ${String(err)}`));
   }
 

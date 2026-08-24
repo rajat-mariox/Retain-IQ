@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { OrgRolesService } from "../../common/org-roles/org-roles.service.js";
+import { CompOffService } from "../leave/comp-off.service.js";
 import { RatesService } from "./rates.service.js";
 
 function parseDate(s: string): Date {
@@ -47,10 +48,12 @@ type LineDraft = {
  */
 @Injectable()
 export class PayrollService {
+  private readonly logger = new Logger(PayrollService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly rates: RatesService,
     private readonly orgRoles: OrgRolesService,
+    private readonly compOff: CompOffService,
   ) {}
 
   // ---- cycles --------------------------------------------------------------
@@ -205,7 +208,11 @@ export class PayrollService {
             continue;
           }
           regularPay += cents((dayRegular / 60) * dayRate);
-          overtimePay += cents((dayOvertime / 60) * dayRate * (settings.overtimeMultiplier / 100));
+          // In a COMP_OFF org overtime is compensated as time-off, not money, so it
+          // adds nothing to pay here — it is converted to comp-off days at lock().
+          if (settings.overtimeHandling !== "COMP_OFF") {
+            overtimePay += cents((dayOvertime / 60) * dayRate * (settings.overtimeMultiplier / 100));
+          }
           rateWeightNumerator += dayRate * d.minutes;
           rateWeightMinutes += d.minutes;
         }
@@ -350,6 +357,18 @@ export class PayrollService {
     if (cycle._count.lines === 0) throw new ConflictException("This cycle has no payable lines to lock.");
 
     await this.prisma.payrollCycle.update({ where: { id: cycle.id }, data: { status: "LOCKED", lockedAt: new Date(), lockedBy: ctx.userId } });
+
+    // COMP_OFF orgs don't pay overtime — locking the cycle is the moment its
+    // approved OT converts into comp-off leave. Idempotent, so re-locking (or a
+    // PAY org) is a no-op. Never let a comp-off hiccup fail the lock itself.
+    const settings = await this.rates.getSettings();
+    if (settings.overtimeHandling === "COMP_OFF") {
+      try {
+        await this.compOff.earnFromCycle(ctx.orgId, cycle.id, cycle.periodStart, cycle.periodEnd);
+      } catch (err) {
+        this.logger.warn(`Comp-off conversion failed for cycle ${cycle.id}: ${String(err)}`);
+      }
+    }
     return this.get(cycleId);
   }
 

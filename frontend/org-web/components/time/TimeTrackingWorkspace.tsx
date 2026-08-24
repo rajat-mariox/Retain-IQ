@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, useTransition } from "react";
-import { Activity, Check, ChevronLeft, ChevronRight, Eye, Gauge, Mail, Pencil, Plus, Send, Timer, Trash2, TrendingUp, X } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, Eye, Gauge, Mail, Pencil, Plus, RefreshCw, Send, Timer, Trash2, TrendingUp, X } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { Modal } from "@/components/ui/Modal";
@@ -166,6 +166,12 @@ export function TimeTrackingWorkspace({ insights, projects, isManager }: { insig
       loadSheet(week);
     });
   };
+  const syncAuto = () => start(async () => {
+    setError(null);
+    const res = await fetch(`/api/time/auto-sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    if (!res.ok) { const d = (await res.json().catch(() => ({}))) as { error?: string }; setError(d.error ?? "Could not sync tracked time."); return; }
+    loadSheet(week);
+  });
   const submitWeek = () => start(async () => {
     setError(null);
     const res = await fetch(`/api/time/timesheet/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ week }) });
@@ -303,7 +309,10 @@ export function TimeTrackingWorkspace({ insights, projects, isManager }: { insig
               })}
               {sheet.editable ? (
                 <div className="flex items-center justify-between pt-1">
-                  <button onClick={openAdd} className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"><Plus className="size-4" /> Add time</button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={openAdd} className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"><Plus className="size-4" /> Add time</button>
+                    {isManager ? <button onClick={syncAuto} disabled={pending} className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60" title="Create draft entries from tracked desktop-agent activity (yesterday). Non-billable — assign a project & mark billable."><RefreshCw className="size-4" /> Pull tracked time</button> : null}
+                  </div>
                   <button onClick={submitWeek} disabled={pending || sheet.totalMinutes === 0} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-soft disabled:opacity-60"><Send className="size-4" /> Submit for approval</button>
                 </div>
               ) : (

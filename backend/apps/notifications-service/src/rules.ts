@@ -162,6 +162,218 @@ const RULES: Record<string, NotificationSpec[]> = {
       link: () => "/attendance",
     },
   ],
+  "observation.created": [
+    {
+      type: "observation.created",
+      audience: "requester", // the manager the observation routed to (requesterUserId)
+      category: "ATTENDANCE",
+      priority: "HIGH",
+      channels: ["IN_APP", "EMAIL"],
+      title: () => "New observation to review",
+      body: (p) => `${str(p.title, "An issue")} — ${str(p.employeeName, "an employee")}. Review it in Observations.`,
+      link: () => "/observations",
+    },
+  ],
+  "observation.resolved": [
+    {
+      type: "observation.resolved",
+      audience: "requester",
+      category: "ATTENDANCE",
+      priority: "NORMAL",
+      channels: ["IN_APP"],
+      title: () => "Observation resolved",
+      body: (p) => `${str(p.title, "An observation")} was resolved.`,
+      link: () => "/observations",
+    },
+  ],
+  "escalation.created": [
+    {
+      type: "escalation.created",
+      audience: "requester", // the level-N authority (requesterUserId)
+      category: "ATTENDANCE",
+      priority: "HIGH",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `Escalation — ${str(p.levelLabel, "review needed")}`,
+      body: (p) => `${str(p.title, "An issue")} (${str(p.severity, "").toLowerCase()}) was escalated to you${p.auto ? " automatically (SLA elapsed)" : ""}. Review it in Observations.`,
+      link: () => "/observations",
+    },
+  ],
+  "incident.opened": [
+    {
+      type: "incident.opened",
+      audience: "requester", // the assigned investigator (requesterUserId)
+      category: "SYSTEM",
+      priority: "HIGH",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `Incident opened — ${str(p.reference, "")}`,
+      body: (p) => `${str(p.title, "A case")} (${str(p.severity, "").toLowerCase()}) was assigned to you for investigation.`,
+      link: () => "/incidents",
+    },
+  ],
+  "incident.resolved": [
+    {
+      type: "incident.resolved",
+      audience: "requester",
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP"],
+      title: (p) => `Incident resolved — ${str(p.reference, "")}`,
+      body: (p) => `${str(p.title, "A case")} was resolved.`,
+      link: () => "/incidents",
+    },
+  ],
+  "report.ready": [
+    {
+      type: "report.ready",
+      audience: "requester", // the person who requested the async report
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `Your ${str(p.kind, "report")} report is ready`,
+      body: (p) => `${str(p.fileName, "The report")} (${Number(p.rows) || 0} rows) has finished generating. Download it from Reports.`,
+      link: (p) => str(p.link, "/reports"),
+    },
+  ],
+  "report.scheduled": [
+    {
+      type: "report.scheduled",
+      audience: "requester", // the specific manager who set the schedule up
+      category: "ATTENDANCE",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => str(p.title, "Your attendance report"),
+      body: (p) => `${linesOf(p.summaryLines)}\n\nThe full report is attached as a CSV.`,
+      link: (p) => str(p.link, "/attendance"),
+    },
+  ],
+  "certification.expiring": [
+    {
+      type: "certification.expiring",
+      audience: "requester", // the employee's manager (or an org admin), via requesterUserId
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `Certification expiring: ${str(p.certName, "a certification")}`,
+      body: (p) => `${str(p.employeeName, "An employee")}'s "${str(p.certName, "certification")}" expires in ${Number(p.daysLeft) || 0} day(s) (on ${str(p.expiresAt, "the listed date")}). Review it on their profile.`,
+      link: (p) => `/employees/${str(p.employeeId, "")}`,
+    },
+  ],
+  // A promotion/transfer approval is waiting on this approver.
+  "employee.change_approval_pending": [
+    {
+      type: "employee.change_approval_pending",
+      audience: "requester", // the assigned approver, via requesterUserId
+      category: "SYSTEM",
+      priority: "HIGH",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `${cap(str(p.kind, "change"))} approval needed`,
+      body: (p) => `A ${str(p.kind, "change").toLowerCase()} request is awaiting your approval.`,
+      link: () => "/employees",
+    },
+  ],
+  // The requester learns their promotion/transfer was rejected/scheduled/applied.
+  "employee.change_decided": [
+    {
+      type: "employee.change_decided",
+      audience: "requester",
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `${cap(str(p.kind, "change"))} ${str(p.outcome, "updated")}`,
+      body: (p) => `The ${str(p.kind, "change").toLowerCase()} request you raised has been ${str(p.outcome, "updated")}.`,
+      link: () => "/employees",
+    },
+  ],
+  // The employee (and org) is notified when a promotion/transfer takes effect.
+  "employee.promoted": [
+    {
+      type: "employee.promoted",
+      audience: "requester",
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: () => "Promotion applied",
+      body: (p) => `A promotion took effect${str(p.effectiveDate, "") ? ` on ${str(p.effectiveDate, "")}` : ""}.`,
+      link: (p) => `/employees/${str(p.employeeId, "")}`,
+    },
+  ],
+  "employee.transferred": [
+    {
+      type: "employee.transferred",
+      audience: "requester",
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: () => "Transfer applied",
+      body: (p) => `A transfer took effect${str(p.effectiveDate, "") ? ` on ${str(p.effectiveDate, "")}` : ""}.`,
+      link: (p) => `/employees/${str(p.employeeId, "")}`,
+    },
+  ],
+  // Exit initiated — HR/org-admins should track the offboarding.
+  "employee.exit_started": [
+    {
+      type: "employee.exit_started",
+      audience: "org-admins",
+      category: "SYSTEM",
+      priority: "HIGH",
+      channels: ["IN_APP", "EMAIL"],
+      title: () => "Employee exit initiated",
+      body: (p) => `An exit process has started (${str(p.reason, "reason not given").toLowerCase().replace(/_/g, " ")}). Offboarding checklist is ready.`,
+      link: (p) => `/employees/${str(p.employeeId, "")}`,
+    },
+  ],
+  // Exit completed — the employee has left.
+  "employee.exited": [
+    {
+      type: "employee.exited",
+      audience: "org-admins",
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP"],
+      title: () => "Employee exited",
+      body: (p) => `An employee has completed their exit (${str(p.reason, "reason not given").toLowerCase().replace(/_/g, " ")}) and moved to alumni.`,
+      link: () => "/employees",
+    },
+  ],
+  // Probation is ending soon — the manager should run a review.
+  "probation.ending": [
+    {
+      type: "probation.ending",
+      audience: "requester", // the employee's manager (or admin), via requesterUserId
+      category: "SYSTEM",
+      priority: "HIGH",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `Probation review due: ${str(p.employeeName, "an employee")}`,
+      body: (p) => `${str(p.employeeName, "An employee")}'s probation ends in ${Number(p.daysLeft) || 0} day(s) (on ${str(p.endDate, "the listed date")}). Complete their probation review.`,
+      link: (p) => `/employees/${str(p.employeeId, "")}`,
+    },
+  ],
+  // Recognition — the recognised employee is congratulated.
+  "recognition.created": [
+    {
+      type: "recognition.created",
+      audience: "requester", // the recognised employee, via requesterUserId
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `You've been recognised: ${str(p.title, "an award")}`,
+      body: (p) => `You received recognition (${str(p.category, "award").toLowerCase()}): "${str(p.title, "")}". It's on your profile.`,
+      link: (p) => `/employees/${str(p.employeeId, "")}`,
+    },
+  ],
+  // Employee confirmed as permanent.
+  "employee.confirmed": [
+    {
+      type: "employee.confirmed",
+      audience: "requester",
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: () => "Employee confirmed",
+      body: () => "A probation review was completed and the employee is now confirmed as permanent.",
+      link: (p) => `/employees/${str(p.employeeId, "")}`,
+    },
+  ],
 
   // ---- Projects ----
   "timesheet.submitted": [
@@ -269,10 +481,21 @@ function hoursOf(v: unknown): string {
   return `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
+/** Join a payload's string[] summary lines into a notification body. */
+function linesOf(v: unknown): string {
+  if (Array.isArray(v)) return v.filter((x) => typeof x === "string").join("\n");
+  return typeof v === "string" ? v : "Your scheduled attendance report is ready.";
+}
+
 export function rulesFor(eventType: string): NotificationSpec[] {
   return RULES[eventType] ?? [];
 }
 
 function str(value: unknown, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+/** Title-case a single word (e.g. "PROMOTION" → "Promotion"). */
+function cap(value: string): string {
+  return value.length === 0 ? value : value[0]!.toUpperCase() + value.slice(1).toLowerCase();
 }

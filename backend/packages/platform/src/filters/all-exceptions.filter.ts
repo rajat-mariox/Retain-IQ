@@ -68,8 +68,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const response = exception.getResponse();
-      const { message, details } = extractHttpDetails(response, exception.message);
-      return { status, code: statusToCode(status), message, details };
+      const { message, details, code } = extractHttpDetails(response, exception.message);
+      // A thrown exception may name its own machine code (e.g. "seat_limit_reached")
+      // so the client can branch precisely; otherwise fall back to the status code.
+      return { status, code: code ?? statusToCode(status), message, details };
     }
 
     const prisma = mapPrismaError(exception);
@@ -89,7 +91,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 function extractHttpDetails(
   response: string | object,
   fallback: string,
-): { message: string; details?: unknown } {
+): { message: string; details?: unknown; code?: string } {
   if (typeof response === "string") {
     return { message: response };
   }
@@ -102,7 +104,9 @@ function extractHttpDetails(
         : fallback;
   // Surface structured validation info (issues / array messages) as details.
   const details = record.issues ?? (Array.isArray(record.message) ? record.message : undefined);
-  return { message, details };
+  // An explicit machine code, when the thrower set one (kept lowercase-snake).
+  const code = typeof record.code === "string" ? record.code : undefined;
+  return { message, details, code };
 }
 
 /** Duck-typed Prisma known-request-error mapping (no Prisma import coupling). */

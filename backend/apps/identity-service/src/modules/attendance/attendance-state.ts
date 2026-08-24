@@ -30,9 +30,13 @@ export interface AttendancePolicy {
   maxSingleBreakMinutes: number;
   paidBreakMinutesPerDay: number;
   allowCheckOutOnBreak: boolean;
+  minMinutesBeforeBreak: number;
+  minMinutesBeforeCheckOut: number;
   graceMinutes: number;
   autoCheckOutAtShiftEnd: boolean;
   autoCheckOutAfterMinutes: number;
+  idleCheckoutMinutes: number;
+  idleCheckoutWarnMinutes: number;
   overtimeAfterMinutes: number;
   minHoursForPresent: number;
   workModel: string;
@@ -51,9 +55,13 @@ export const DEFAULT_POLICY: AttendancePolicy = {
   maxSingleBreakMinutes: 0,
   paidBreakMinutesPerDay: 0,
   allowCheckOutOnBreak: false,
+  minMinutesBeforeBreak: 0,
+  minMinutesBeforeCheckOut: 0,
   graceMinutes: 10,
   autoCheckOutAtShiftEnd: false,
   autoCheckOutAfterMinutes: 120,
+  idleCheckoutMinutes: 0,
+  idleCheckoutWarnMinutes: 5,
   overtimeAfterMinutes: 0,
   minHoursForPresent: 240,
   workModel: "WFO",
@@ -76,6 +84,8 @@ export interface DaySnapshot {
   breakMinutesSoFar: number;
   /** Minutes elapsed in the currently open break, if any. */
   openBreakMinutes: number;
+  /** Minutes elapsed in the currently open work session (since check-in), if any. */
+  openSessionMinutes: number;
 }
 
 export interface Decision {
@@ -136,6 +146,11 @@ export function can(action: AttendanceAction, snap: DaySnapshot, policy: Attenda
       if (!snap.hasOpenSession && !snap.hasOpenBreak) {
         return { allowed: false, reason: "You have not checked in." };
       }
+      // Can't check out too soon after checking in (stops immediate cross-out).
+      if (policy.minMinutesBeforeCheckOut > 0 && snap.hasOpenSession && snap.openSessionMinutes < policy.minMinutesBeforeCheckOut) {
+        const left = policy.minMinutesBeforeCheckOut - snap.openSessionMinutes;
+        return { allowed: false, reason: `You can check out ${left} minute${left === 1 ? "" : "s"} from now (minimum ${policy.minMinutesBeforeCheckOut} minutes after check-in).` };
+      }
       if (snap.hasOpenBreak && !policy.allowCheckOutOnBreak) {
         return { allowed: false, reason: "End your break before checking out." };
       }
@@ -145,6 +160,11 @@ export function can(action: AttendanceAction, snap: DaySnapshot, policy: Attenda
     case "BREAK_START": {
       if (state === "ON_BREAK") return { allowed: false, reason: "You are already on a break." };
       if (!snap.hasOpenSession) return { allowed: false, reason: "Check in before taking a break." };
+      // Can't take a break too soon after checking in.
+      if (policy.minMinutesBeforeBreak > 0 && snap.openSessionMinutes < policy.minMinutesBeforeBreak) {
+        const left = policy.minMinutesBeforeBreak - snap.openSessionMinutes;
+        return { allowed: false, reason: `You can take a break ${left} minute${left === 1 ? "" : "s"} from now (minimum ${policy.minMinutesBeforeBreak} minutes after check-in).` };
+      }
       if (policy.maxBreaksPerDay > 0 && snap.breakCount >= policy.maxBreaksPerDay) {
         return { allowed: false, reason: `You have used all ${policy.maxBreaksPerDay} breaks for today.` };
       }

@@ -11,9 +11,18 @@ export interface AdminPlan {
   id: string;
   name: string;
   description: string | null;
-  pricePerSeat: number; // USD cents
+  pricePerSeat: number; // USD cents (legacy flat)
+  // Seat-based pricing: total = basePrice + max(0, seats - includedSeats) * additionalSeatPrice
+  basePrice: number;
+  includedSeats: number;
+  additionalSeatPrice: number;
   billingPeriod: string;
   seatLimit: number | null;
+  minSeats: number;
+  maxSeats: number | null;
+  allowCustomSeats: boolean;
+  trialEnabled: boolean;
+  trialDays: number;
   storageLimitMb: number | null;
   features: string[];
   color: string;

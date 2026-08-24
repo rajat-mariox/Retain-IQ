@@ -112,4 +112,15 @@ export class TimeTrackingController {
   decide(@Param("id", ParseUUIDPipe) id: string, @Body(new ZodValidationPipe(decisionSchema)) body: z.infer<typeof decisionSchema>) {
     return this.time.decide(id, body.approve, body.note);
   }
+
+  /**
+   * Generate AUTO time entries from tracked activity for this org now (defaults to
+   * yesterday) — the admin "sync tracked time" action, instead of waiting for the
+   * nightly sweep. Managers/admins only.
+   */
+  @Post("auto-sync")
+  @RequirePermissions(permissions.attendanceApprove)
+  autoSync(@Body(new ZodValidationPipe(z.object({ day: date.optional() }))) body: { day?: string }) {
+    return this.time.syncAutoEntriesForOrg(body.day);
+  }
 }

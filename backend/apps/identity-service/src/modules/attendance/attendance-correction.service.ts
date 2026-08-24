@@ -253,6 +253,28 @@ export class AttendanceCorrectionService {
   }
 
   /**
+   * Approve or reject several correction requests in one action. Each id runs
+   * through the single-item `decide` — same reach check, recompute and requester
+   * notification — so authorization and side effects are identical to doing them
+   * one by one. One id failing (already decided, out of reach, no record) never
+   * aborts the rest: it lands in `skipped` with a reason and the sweep continues.
+   */
+  async decideMany(ids: string[], approve: boolean, note?: string) {
+    const unique = [...new Set(ids)];
+    const approved: string[] = [];
+    const skipped: { id: string; reason: string }[] = [];
+    for (const id of unique) {
+      try {
+        await this.decide(id, approve, note);
+        approved.push(id);
+      } catch (err) {
+        skipped.push({ id, reason: err instanceof Error ? err.message : "Could not be decided." });
+      }
+    }
+    return { decided: approved.length, approved, skipped };
+  }
+
+  /**
    * Days with unapproved overtime, for the approver's queue. Overtime is
    * measured automatically but pays nothing until someone signs it off, so this
    * is where genuine extra hours actually get recognised.

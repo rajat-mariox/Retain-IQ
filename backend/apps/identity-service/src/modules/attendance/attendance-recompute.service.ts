@@ -113,6 +113,7 @@ export class AttendanceRecomputeService {
       breakCount: breaks.length,
       breakMinutesSoFar: breaks.reduce((a, b) => a + b.minutes, 0),
       openBreakMinutes: openBreak ? Math.max(0, Math.round((now.getTime() - openBreak.startedAt.getTime()) / 60000)) : 0,
+      openSessionMinutes: openSession ? Math.max(0, Math.round((now.getTime() - openSession.startedAt.getTime()) / 60000)) : 0,
     };
 
     // Open sessions count up to "now" so live totals tick along with the day.

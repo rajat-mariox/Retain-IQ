@@ -5,6 +5,7 @@ import { AlertTriangle, Download, FolderKanban, ListChecks } from "lucide-react"
 import { Card, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { ProjectStatusBadge } from "@/components/ui/badges";
+import { downloadCsv, downloadXlsx } from "@/lib/export";
 import type { ProjectReports, ProjectSettings } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { colorOf, labelOf } from "@/lib/project-labels";
@@ -17,19 +18,6 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "progress", label: "Progress" },
 ];
 
-function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
-  if (rows.length === 0) return;
-  const headers = Object.keys(rows[0]);
-  const escape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const csv = [headers.join(","), ...rows.map((r) => headers.map((h) => escape(r[h])).join(","))].join("\n");
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 const th = "px-5 py-3 text-left font-medium";
 const thr = "px-5 py-3 text-right font-medium";
 
@@ -38,7 +26,10 @@ export function ReportsWorkspace({ reports, settings }: { reports: ProjectReport
   const statuses = settings?.statuses;
 
   const exportBtn = (name: string, rows: Record<string, unknown>[]) => (
-    <button onClick={() => downloadCsv(name, rows)} className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"><Download className="size-3.5" /> Export CSV</button>
+    <div className="flex gap-2">
+      <button onClick={() => downloadCsv(name, rows)} className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"><Download className="size-3.5" /> CSV</button>
+      <button onClick={() => downloadXlsx(name, name, rows)} className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"><Download className="size-3.5" /> Excel</button>
+    </div>
   );
 
   return (

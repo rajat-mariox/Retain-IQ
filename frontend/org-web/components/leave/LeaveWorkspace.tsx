@@ -2,12 +2,14 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarDays, CalendarPlus, Check, Plus, Trash2, X } from "lucide-react";
+import { AlertTriangle, CalendarDays, CalendarPlus, Check, Download, Plus, Trash2, X } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { LeaveCalendar } from "./LeaveCalendar";
 import { OrgLeaveCalendar } from "./OrgLeaveCalendar";
-import type { Holiday, LeaveBalances, LeaveRequest, LeaveType, OrgDepartment, OrgTeam } from "@/lib/api";
+import { AttachmentLinks } from "./AttachmentLinks";
+import { CompOffCard } from "./CompOffCard";
+import type { Holiday, LeaveAnalytics, LeaveBalances, LeaveRequest, LeaveType, OrgDepartment, OrgTeam } from "@/lib/api";
 
 const input = "w-full rounded-lg border border-hairline bg-panel px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none";
 const label = "mb-1.5 block text-sm font-medium text-slate-700";
@@ -31,6 +33,7 @@ export function LeaveWorkspace({
   holidays,
   departments,
   teams,
+  analytics,
 }: {
   isAdmin: boolean;
   types: LeaveType[];
@@ -40,6 +43,7 @@ export function LeaveWorkspace({
   holidays: Holiday[];
   departments: OrgDepartment[];
   teams: OrgTeam[];
+  analytics: LeaveAnalytics | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -51,7 +55,9 @@ export function LeaveWorkspace({
   const [reqType, setReqType] = useState(types[0]?.id ?? "");
   const [reqStart, setReqStart] = useState("");
   const [reqEnd, setReqEnd] = useState("");
+  const [reqDayPart, setReqDayPart] = useState("FULL"); // FULL | FIRST_HALF | SECOND_HALF
   const [reqReason, setReqReason] = useState("");
+  const [reqFile, setReqFile] = useState<File | null>(null); // optional supporting document
   // type modal
   const [typeOpen, setTypeOpen] = useState(false);
   const [tName, setTName] = useState("");
@@ -81,11 +87,45 @@ export function LeaveWorkspace({
     });
   }
 
-  const submitRequest = () =>
-    run(
-      () => fetch("/api/leave/requests", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leaveTypeId: reqType, startDate: reqStart, endDate: reqEnd, reason: reqReason || undefined }) }),
-      () => { setReqOpen(false); setReqStart(""); setReqEnd(""); setReqReason(""); },
-    );
+  // Half-day is only valid for a single date; force FULL whenever the range spans days.
+  const isSingleDay = Boolean(reqStart) && reqStart === reqEnd;
+  const effectiveDayPart = isSingleDay ? reqDayPart : "FULL";
+
+  /** Upload one file to a just-created leave request via the presigned-PUT flow. */
+  async function uploadAttachment(leaveRequestId: string, file: File) {
+    const res = await fetch(`/api/leave/requests/${leaveRequestId}/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, contentType: file.type || "application/octet-stream", sizeBytes: file.size }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Attachment failed.");
+    const { uploadUrl } = (await res.json()) as { uploadUrl: string };
+    const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+    if (!put.ok) throw new Error("File upload failed.");
+  }
+
+  // Create the request, then (if a file was chosen) attach it. Kept out of `run()`
+  // because we need the created request's id from the response to attach to it.
+  const submitRequest = () => {
+    setError(null);
+    start(async () => {
+      try {
+        const res = await fetch("/api/leave/requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leaveTypeId: reqType, startDate: reqStart, endDate: reqEnd, dayPart: effectiveDayPart, reason: reqReason || undefined }),
+        });
+        if (!res.ok) { setError((await res.json().catch(() => ({}))).error ?? "Could not submit leave request."); return; }
+        const created = (await res.json()) as { id: string };
+        if (reqFile && created?.id) await uploadAttachment(created.id, reqFile);
+        setReqOpen(false); setReqStart(""); setReqEnd(""); setReqDayPart("FULL"); setReqReason(""); setReqFile(null);
+        setCalVersion((v) => v + 1);
+        router.refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      }
+    });
+  };
   const cancelRequest = (id: string) => run(() => fetch(`/api/leave/requests/${id}/cancel`, { method: "POST" }), () => undefined);
   const decide = (id: string, approve: boolean) => run(() => fetch(`/api/leave/requests/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approve }) }), () => undefined);
   const createType = () =>
@@ -104,6 +144,9 @@ export function LeaveWorkspace({
   const activeDepts = departments.filter((d) => d.status !== "ARCHIVED");
   const today = new Date().toISOString().slice(0, 10); // leave can't be backdated
   const fmtRange = (r: LeaveRequest) => (r.startDate === r.endDate ? r.startDate : `${r.startDate} → ${r.endDate}`);
+  // "½ (AM)" / "½ (PM)" for a half-day, else the plain day count.
+  const fmtDays = (r: { days: number; dayPart: string }) =>
+    r.dayPart === "FIRST_HALF" ? "½ (AM)" : r.dayPart === "SECOND_HALF" ? "½ (PM)" : String(r.days);
 
   const TabBtn = ({ k, labelText, count }: { k: typeof tab; labelText: string; count?: number }) => (
     <button onClick={() => setTab(k)} className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${tab === k ? "bg-panel text-slate-900 shadow-sm ring-1 ring-hairline" : "text-slate-500 hover:text-slate-800"}`}>
@@ -142,6 +185,15 @@ export function LeaveWorkspace({
             ))}
           </div>
 
+          <CompOffCard
+            canGrant={isAdmin}
+            employees={
+              isAdmin
+                ? [...new Map(allRequests.filter((r) => r.employeeName).map((r) => [r.employeeId, { id: r.employeeId, name: r.employeeName as string }])).values()]
+                : undefined
+            }
+          />
+
           <LeaveCalendar refreshSignal={calVersion} />
 
           <Card>
@@ -149,20 +201,21 @@ export function LeaveWorkspace({
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px] text-sm">
                 <thead><tr className="border-b border-hairline text-xs text-slate-500">
-                  <th className="px-5 py-3 text-left font-medium">Type</th><th className="px-5 py-3 text-left font-medium">Dates</th><th className="px-5 py-3 text-right font-medium">Days</th><th className="px-5 py-3 text-left font-medium">Reason</th><th className="px-5 py-3 text-left font-medium">Status</th><th className="px-5 py-3 text-right font-medium"></th>
+                  <th className="px-5 py-3 text-left font-medium">Type</th><th className="px-5 py-3 text-left font-medium">Dates</th><th className="px-5 py-3 text-right font-medium">Days</th><th className="px-5 py-3 text-left font-medium">Reason</th><th className="px-5 py-3 text-left font-medium">Docs</th><th className="px-5 py-3 text-left font-medium">Status</th><th className="px-5 py-3 text-right font-medium"></th>
                 </tr></thead>
                 <tbody>
                   {myRequests.map((r) => (
                     <tr key={r.id} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
                       <td className="px-5 py-3 font-medium text-slate-900">{r.leaveType.name}</td>
                       <td className="px-5 py-3 tabular-nums text-slate-600">{fmtRange(r)}</td>
-                      <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.days}</td>
+                      <td className="px-5 py-3 text-right tabular-nums text-slate-600">{fmtDays(r)}</td>
                       <td className="px-5 py-3 text-slate-500">{r.reason ?? "—"}</td>
+                      <td className="px-5 py-3"><AttachmentLinks requestId={r.id} canDelete={r.status === "PENDING"} /></td>
                       <td className="px-5 py-3"><StatusPill s={r.status} /></td>
                       <td className="px-5 py-3 text-right">{r.status === "PENDING" || r.status === "APPROVED" ? <button onClick={() => cancelRequest(r.id)} disabled={pending} className="rounded-lg px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-rose-600 disabled:opacity-50">Cancel</button> : null}</td>
                     </tr>
                   ))}
-                  {myRequests.length === 0 ? <tr><td colSpan={6} className="px-5 py-8 text-center text-sm text-slate-500">No leave requests yet.</td></tr> : null}
+                  {myRequests.length === 0 ? <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-slate-500">No leave requests yet.</td></tr> : null}
                 </tbody>
               </table>
             </div>
@@ -175,21 +228,71 @@ export function LeaveWorkspace({
 
       {/* Approvals */}
       {tab === "approvals" && isAdmin ? (
+        <div className="space-y-6">
+        {/* Analytics summary */}
+        {analytics ? (
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <Card><CardBody className="space-y-0.5"><p className="text-2xl font-semibold tabular-nums text-slate-900">{analytics.pending}</p><p className="text-xs text-slate-500">Pending approval</p></CardBody></Card>
+            <Card><CardBody className="space-y-0.5"><p className="text-2xl font-semibold tabular-nums text-slate-900">{analytics.outNow}</p><p className="text-xs text-slate-500">On leave today</p></CardBody></Card>
+            <Card><CardBody className="space-y-0.5"><p className="text-2xl font-semibold tabular-nums text-slate-900">{analytics.upcoming14}</p><p className="text-xs text-slate-500">Starting in 14 days</p></CardBody></Card>
+            <Card><CardBody className="space-y-0.5"><p className="text-2xl font-semibold tabular-nums text-slate-900">{analytics.totalDaysYear}</p><p className="text-xs text-slate-500">Days taken this year</p></CardBody></Card>
+          </div>
+        ) : null}
+        {/* Leave mix by type */}
+        {analytics && analytics.byType.length > 0 ? (
+          <Card>
+            <CardHeader title="Leave mix" subtitle="Approved days this year, by type" />
+            <CardBody className="space-y-2">
+              {analytics.byType.map((t) => {
+                const pct = analytics.totalDaysYear > 0 ? Math.round((t.days / analytics.totalDaysYear) * 100) : 0;
+                return (
+                  <div key={t.leaveTypeId}>
+                    <div className="mb-1 flex items-center justify-between text-sm">
+                      <span className="flex items-center gap-2 text-slate-700"><span className="size-2.5 rounded-full" style={{ backgroundColor: t.color ?? "#64748b" }} />{t.name}</span>
+                      <span className="tabular-nums text-slate-500">{t.days} days · {t.requests} req</span>
+                    </div>
+                    <span className="block h-1.5 overflow-hidden rounded-full bg-panel-2"><span className="block h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: t.color ?? "#64748b" }} /></span>
+                  </div>
+                );
+              })}
+            </CardBody>
+          </Card>
+        ) : null}
         <Card>
-          <CardHeader title="Approval center" subtitle={`${pendingCount} pending`} />
+          <CardHeader
+            title="Approval center"
+            subtitle={`${pendingCount} pending`}
+            action={
+              <div className="flex gap-2">
+                <a href="/api/leave/export?format=csv" className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"><Download className="size-3.5" /> CSV</a>
+                <a href="/api/leave/export?format=xlsx" className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"><Download className="size-3.5" /> Excel</a>
+              </div>
+            }
+          />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] text-sm">
               <thead><tr className="border-b border-hairline text-xs text-slate-500">
-                <th className="px-5 py-3 text-left font-medium">Employee</th><th className="px-5 py-3 text-left font-medium">Type</th><th className="px-5 py-3 text-left font-medium">Dates</th><th className="px-5 py-3 text-right font-medium">Days</th><th className="px-5 py-3 text-left font-medium">Reason</th><th className="px-5 py-3 text-left font-medium">Status</th><th className="px-5 py-3 text-right font-medium">Actions</th>
+                <th className="px-5 py-3 text-left font-medium">Employee</th><th className="px-5 py-3 text-left font-medium">Type</th><th className="px-5 py-3 text-left font-medium">Dates</th><th className="px-5 py-3 text-right font-medium">Days</th><th className="px-5 py-3 text-left font-medium">Reason</th><th className="px-5 py-3 text-left font-medium">Docs</th><th className="px-5 py-3 text-left font-medium">Status</th><th className="px-5 py-3 text-right font-medium">Actions</th>
               </tr></thead>
               <tbody>
                 {allRequests.map((r) => (
                   <tr key={r.id} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
-                    <td className="px-5 py-3 font-medium text-slate-900">{r.employeeName ?? "—"}</td>
+                    <td className="px-5 py-3 font-medium text-slate-900">
+                      {r.employeeName ?? "—"}
+                      {r.conflict && r.conflict.count > 0 ? (
+                        <span
+                          title={`Also on leave (same team/dept): ${r.conflict.peers.map((p) => `${p.name} (${p.startDate}${p.startDate !== p.endDate ? `→${p.endDate}` : ""})`).join(", ")}`}
+                          className="ml-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700"
+                        >
+                          <AlertTriangle className="size-3" /> {r.conflict.count} clash{r.conflict.count === 1 ? "" : "es"}
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="px-5 py-3 text-slate-600">{r.leaveType.name}</td>
                     <td className="px-5 py-3 tabular-nums text-slate-600">{fmtRange(r)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.days}</td>
+                    <td className="px-5 py-3 text-right tabular-nums text-slate-600">{fmtDays(r)}</td>
                     <td className="px-5 py-3 text-slate-500">{r.reason ?? "—"}</td>
+                    <td className="px-5 py-3"><AttachmentLinks requestId={r.id} /></td>
                     <td className="px-5 py-3"><StatusPill s={r.status} /></td>
                     <td className="px-5 py-3 text-right">
                       {r.status === "PENDING" ? (
@@ -201,11 +304,12 @@ export function LeaveWorkspace({
                     </td>
                   </tr>
                 ))}
-                {allRequests.length === 0 ? <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-slate-500">No leave requests.</td></tr> : null}
+                {allRequests.length === 0 ? <tr><td colSpan={8} className="px-5 py-8 text-center text-sm text-slate-500">No leave requests.</td></tr> : null}
               </tbody>
             </table>
           </div>
         </Card>
+        </div>
       ) : null}
 
       {/* Leave Types */}
@@ -253,7 +357,29 @@ export function LeaveWorkspace({
             <div><label className={label}>From</label><input type="date" min={today} className={input} value={reqStart} onChange={(e) => setReqStart(e.target.value)} /></div>
             <div><label className={label}>To</label><input type="date" min={reqStart || today} className={input} value={reqEnd} onChange={(e) => setReqEnd(e.target.value)} /></div>
           </div>
+          {/* Half-day: only offered for a single-date request. */}
+          {isSingleDay ? (
+            <div>
+              <label className={label}>Duration</label>
+              <select className={input} value={reqDayPart} onChange={(e) => setReqDayPart(e.target.value)}>
+                <option value="FULL">Full day</option>
+                <option value="FIRST_HALF">Half day — first half (morning)</option>
+                <option value="SECOND_HALF">Half day — second half (afternoon)</option>
+              </select>
+              {reqDayPart !== "FULL" ? <p className="mt-1 text-xs text-slate-500">Deducts 0.5 day from your balance.</p> : null}
+            </div>
+          ) : null}
           <div><label className={label}>Reason (optional)</label><input className={input} value={reqReason} onChange={(e) => setReqReason(e.target.value)} placeholder="e.g. Family vacation" /></div>
+          <div>
+            <label className={label}>Supporting document (optional)</label>
+            <input
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.doc,.docx"
+              onChange={(e) => setReqFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-panel-2 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+            />
+            {reqFile ? <p className="mt-1 text-xs text-slate-500">{reqFile.name} · {(reqFile.size / 1024).toFixed(0)} KB</p> : <p className="mt-1 text-xs text-slate-400">e.g. a medical certificate for sick leave. Max 15 MB.</p>}
+          </div>
           {error ? <p className="text-sm text-rose-600">{error}</p> : null}
           <div className="flex justify-end gap-2"><button onClick={() => setReqOpen(false)} className="rounded-lg border border-hairline bg-panel px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">Cancel</button><button onClick={submitRequest} disabled={pending || !reqType || !reqStart || !reqEnd} className="rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-soft disabled:opacity-60">{pending ? "Submitting…" : "Submit"}</button></div>
         </div>

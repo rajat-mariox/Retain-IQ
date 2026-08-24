@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { powerMonitor } from "electron";
 import { getConfig, getSession, loadQueue, saveQueue } from "./store.js";
-import { uploadBatch, fetchPolicy, type ActivityEvent, type MonitoringPolicy } from "./api.js";
+import { uploadBatch, fetchPolicy, fetchIdlePolicy, type ActivityEvent, type MonitoringPolicy, type IdlePolicy } from "./api.js";
 import { getLatestTab } from "./tabserver.js";
 import { captureAndUpload } from "./screenshot.js";
 
@@ -54,6 +54,7 @@ export class Collector {
   private shotTimer: NodeJS.Timeout | null = null;
   private policyTimer: NodeJS.Timeout | null = null;
   private policy: MonitoringPolicy | null = null;
+  private idlePolicy: IdlePolicy | null = null; // org-configured idle-checkout timings (server wins over local config)
   private wasIdle = false;
   private idleStartedAt = 0;
   private lastApp: string | null = null;
@@ -68,6 +69,20 @@ export class Collector {
 
   isRunning(): boolean {
     return this.sessionId !== null;
+  }
+
+  /**
+   * The org's idle auto-checkout policy (checkout minutes + warn minutes), or the
+   * local-config fallback when the org hasn't set one. The main process reads this
+   * to run the on-screen warning + auto check-out; the collector's only job is to
+   * keep it fresh (refreshed on the same cadence as the monitoring policy).
+   */
+  idleCheckoutPolicy(): { checkoutMinutes: number; warnMinutes: number } {
+    const cfg = getConfig();
+    return {
+      checkoutMinutes: this.idlePolicy ? this.idlePolicy.idleCheckoutMinutes : cfg.autoCheckoutIdleMinutes,
+      warnMinutes: this.idlePolicy ? this.idlePolicy.idleCheckoutWarnMinutes : cfg.idleWarnMinutes,
+    };
   }
 
   status(): AgentStatus {
@@ -112,7 +127,21 @@ export class Collector {
     if (p) this.policy = p;
     const after = this.effShots();
     if (before.enabled !== after.enabled || before.interval !== after.interval) this.restartShotTimer();
+    // Also pull the org's idle auto-checkout timings (same cadence). When they
+    // actually change (admin edited them in the portal), tell main so it can
+    // re-baseline the idle clock — this clears any warning that was showing under
+    // the old timings, so a portal change takes effect without an agent restart.
+    const idle = await fetchIdlePolicy();
+    if (idle) {
+      const prev = this.idlePolicy;
+      const changed = !prev || prev.idleCheckoutMinutes !== idle.idleCheckoutMinutes || prev.idleCheckoutWarnMinutes !== idle.idleCheckoutWarnMinutes;
+      this.idlePolicy = idle;
+      if (changed) this.onIdlePolicyChange?.();
+    }
   }
+
+  /** Set by main to re-baseline the idle clock when the org's idle policy changes. */
+  onIdlePolicyChange: (() => void) | null = null;
 
   private enqueue(eventType: string, payload: Record<string, unknown>, sourceEventId?: string): void {
     const session = getSession();
@@ -187,6 +216,9 @@ export class Collector {
     const cfg = getConfig();
     const idleSeconds = powerMonitor.getSystemIdleTime();
 
+    // Idle timeline tracking only (idle.started / idle.ended for the activity feed).
+    // The on-screen idle warning + auto check-out is owned entirely by the main
+    // process (a 1-second OS idle watch), so this coarse poll doesn't touch it.
     if (idleSeconds >= cfg.idleThresholdSeconds) {
       if (!this.wasIdle) {
         this.wasIdle = true;

@@ -5,7 +5,12 @@ import { ApprovalService } from "../../common/approval/approval.service.js";
 import { AccessScopeService } from "../../common/access-scope/access-scope.service.js";
 import { OrgRolesService } from "../../common/org-roles/org-roles.service.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { AnalyticsReadPrismaService } from "../../common/database/analytics-prisma.service.js";
 import { OutboxService } from "../../common/outbox/outbox.service.js";
+import { logger } from "../../common/observability/observability.js";
+
+// AUTO entries below this much tracked activity are noise, not a work day.
+const AUTO_MIN_MINUTES = 15;
 
 function parseDate(s: string): Date {
   const d = new Date(`${s}T00:00:00.000Z`);
@@ -25,11 +30,122 @@ function weekStartOf(d: Date): Date {
 export class TimeTrackingService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly analytics: AnalyticsReadPrismaService,
     private readonly outbox: OutboxService,
     private readonly approval: ApprovalService,
     private readonly accessScope: AccessScopeService,
     private readonly orgRoles: OrgRolesService,
   ) {}
+
+  /**
+   * Generate AUTOMATIC time entries from tracked desktop-agent activity for a day
+   * (defaults to yesterday). One entry per employee, seeded from their tracked
+   * active time (EmployeeDayFact.activeSeconds). Non-billable and project-less by
+   * default — a starting point the employee reviews, assigns to a project, and
+   * marks billable. Context-free (cron, cross-org). Idempotent: skips an employee
+   * who already has an AUTO entry that day, and never touches a locked week.
+   */
+  async syncAutoEntries(dayStr?: string): Promise<{ created: number }> {
+    const base = dayStr ? parseDate(dayStr) : addDays(new Date(), -1);
+    const day = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()));
+    let created = 0;
+    try {
+      // Tracked active time per employee for the day (across all orgs).
+      const facts = await this.analytics.employeeDayFact.findMany({
+        where: { day, activeSeconds: { gte: AUTO_MIN_MINUTES * 60 } },
+        select: { orgId: true, employeeId: true, activeSeconds: true },
+        take: 5000,
+      });
+      if (facts.length === 0) return { created: 0 };
+
+      // Owners don't file time — exclude them per org.
+      const orgIds = [...new Set(facts.map((f) => f.orgId))];
+      const ownerByOrg = new Map<string, Set<string>>();
+      for (const orgId of orgIds) {
+        const owners = await this.orgRoles.ownerEmployeeIds(orgId);
+        ownerByOrg.set(orgId, new Set(owners));
+      }
+
+      // Skip employees who already have an AUTO entry for the day (idempotent).
+      const empIds = facts.map((f) => f.employeeId);
+      const existing = await this.prisma.timeEntry.findMany({
+        where: { employeeId: { in: empIds }, date: day, source: "AUTO" },
+        select: { employeeId: true, orgId: true },
+      });
+      const already = new Set(existing.map((e) => `${e.orgId}:${e.employeeId}`));
+
+      // Skip locked weeks (a submitted/approved timesheet for that week).
+      const weekStart = weekStartOf(day);
+      const locked = await this.prisma.timesheet.findMany({
+        where: { employeeId: { in: empIds }, weekStart, status: { in: ["SUBMITTED", "APPROVED"] } },
+        select: { employeeId: true, orgId: true },
+      });
+      const lockedSet = new Set(locked.map((t) => `${t.orgId}:${t.employeeId}`));
+
+      for (const f of facts) {
+        const key = `${f.orgId}:${f.employeeId}`;
+        if (already.has(key) || lockedSet.has(key)) continue;
+        if (ownerByOrg.get(f.orgId)?.has(f.employeeId)) continue;
+        const minutes = Math.round(f.activeSeconds / 60);
+        if (minutes < AUTO_MIN_MINUTES) continue;
+        await this.prisma.timeEntry.create({
+          data: {
+            orgId: f.orgId,
+            employeeId: f.employeeId,
+            date: day,
+            minutes,
+            billable: false, // starting point — the employee assigns a project + marks billable
+            description: "Tracked activity (auto)",
+            source: "AUTO",
+          },
+        });
+        created += 1;
+      }
+      if (created > 0) logger.info({ created, day: iso(day) }, "auto time entries generated");
+    } catch (error) {
+      logger.warn({ err: String(error) }, "auto time-entry sync failed");
+    }
+    return { created };
+  }
+
+  /**
+   * Generate AUTO entries for the CALLER'S org for a day (defaults to yesterday) —
+   * the admin "sync tracked time now" action, so they don't have to wait for the
+   * nightly sweep. Same rules as the cron path, scoped to one org.
+   */
+  async syncAutoEntriesForOrg(dayStr?: string): Promise<{ created: number }> {
+    const ctx = requireTenantContext();
+    const base = dayStr ? parseDate(dayStr) : addDays(new Date(), -1);
+    const day = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()));
+
+    const [facts, owners] = await Promise.all([
+      this.analytics.employeeDayFact.findMany({ where: { orgId: ctx.orgId, day, activeSeconds: { gte: AUTO_MIN_MINUTES * 60 } }, select: { employeeId: true, activeSeconds: true } }),
+      this.orgRoles.ownerEmployeeIds(ctx.orgId),
+    ]);
+    if (facts.length === 0) return { created: 0 };
+    const ownerSet = new Set(owners);
+    const empIds = facts.map((f) => f.employeeId);
+
+    const weekStart = weekStartOf(day);
+    const [existing, locked] = await Promise.all([
+      this.prisma.timeEntry.findMany({ where: { orgId: ctx.orgId, employeeId: { in: empIds }, date: day, source: "AUTO" }, select: { employeeId: true } }),
+      this.prisma.timesheet.findMany({ where: { orgId: ctx.orgId, employeeId: { in: empIds }, weekStart, status: { in: ["SUBMITTED", "APPROVED"] } }, select: { employeeId: true } }),
+    ]);
+    const already = new Set(existing.map((e) => e.employeeId));
+    const lockedSet = new Set(locked.map((t) => t.employeeId));
+
+    let created = 0;
+    for (const f of facts) {
+      if (already.has(f.employeeId) || lockedSet.has(f.employeeId) || ownerSet.has(f.employeeId)) continue;
+      const minutes = Math.round(f.activeSeconds / 60);
+      if (minutes < AUTO_MIN_MINUTES) continue;
+      await this.prisma.timeEntry.create({
+        data: { orgId: ctx.orgId, employeeId: f.employeeId, date: day, minutes, billable: false, description: "Tracked activity (auto)", source: "AUTO" },
+      });
+      created += 1;
+    }
+    return { created };
+  }
 
   private async callerEmployeeId(): Promise<string> {
     const ctx = requireTenantContext();

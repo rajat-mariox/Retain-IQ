@@ -1,0 +1,6 @@
+# PII screenshot-masking service dependencies.
+# The detection logic (analyze_lines) is pure-Python; OCR needs docTR + torch.
+python-doctr[torch]>=1.0
+pillow>=10
+python-dotenv>=1.0
+# service.py uses only the standard library (http.server) — no web framework needed.

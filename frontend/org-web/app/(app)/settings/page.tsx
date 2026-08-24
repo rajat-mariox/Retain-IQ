@@ -6,9 +6,10 @@ import { OrgStructurePanel } from "@/components/settings/OrgStructurePanel";
 import { RolesManager } from "@/components/settings/RolesManager";
 import { AccessRolesPanel } from "@/components/settings/AccessRolesPanel";
 import { MonitoringSettingsPanel } from "@/components/settings/MonitoringSettingsPanel";
+import { AttendanceSettingsPanel } from "@/components/settings/AttendanceSettingsPanel";
 import { ProductivityRulesPanel } from "@/components/settings/ProductivityRulesPanel";
 import { ClientsRatesPanel } from "@/components/settings/ClientsRatesPanel";
-import { getAccess, getBillRates, getClients, getDepartments, getMembers, getMonitoringPolicy, getOrg, getPayrollSettings, getPermissionCatalog, getProductivityRules, getProjectPeople, getProjects, getRequisitions, getRoles, getTeams } from "@/lib/api";
+import { getAccess, getAttendancePolicy, getBillRates, getClients, getDepartments, getMembers, getMonitoringPolicy, getOrg, getPayrollSettings, getPermissionCatalog, getProductivityRules, getProjectPeople, getProjects, getRequisitions, getRoles, getSession, getTeams } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 const PAGE_SIZE = 10;
@@ -29,6 +30,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const permissionCatalog = await getPermissionCatalog().catch(() => []);
   const monitoringPolicy = await getMonitoringPolicy().catch(() => ({ screenshotsEnabled: true, screenshotIntervalSeconds: 600, screenshotQuality: 55, screenshotMaxWidth: 1280, screenshotRetentionDays: 0 }));
   const productivityRules = await getProductivityRules().catch(() => null);
+
+  // Attendance rules are org-owned; editing needs attendance.manage (Owner +
+  // granted HR managers), reading needs attendance.read (any admin here).
+  const [session, attendance] = await Promise.all([
+    getSession().catch(() => null),
+    getAttendancePolicy().catch(() => null),
+  ]);
+  const canEditAttendance = Boolean(session?.role.permissions.includes("attendance.manage"));
 
   // Payroll surfaces are payroll.read-gated; a Manager without it still gets the page.
   const [clients, billRates, payrollSettings, projectList, people] = await Promise.all([
@@ -63,6 +72,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         {permissionCatalog.length > 0 ? <RolesManager initial={roles} catalog={permissionCatalog} /> : null}
 
         <AccessRolesPanel initial={access} roles={roles} departments={departments} teams={teams} />
+
+        {attendance ? <AttendanceSettingsPanel initial={attendance.policy} canEdit={canEditAttendance} /> : null}
 
         <MonitoringSettingsPanel initial={monitoringPolicy} />
 

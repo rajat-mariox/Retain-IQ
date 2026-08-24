@@ -5,11 +5,57 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { RiskBadge } from "@/components/ui/badges";
 import { PaginatedTable } from "@/components/ui/Pagination";
-import { getInsightsTeam } from "@/lib/api";
+import { ProductivityTargetCard } from "@/components/insights/ProductivityTargetCard";
+import { InsightsExport } from "@/components/insights/InsightsExport";
+import { getInsightsByGroup, getInsightsTeam, getSession, type ProductivityGroupRow } from "@/lib/api";
+
+/** Productivity rolled up by department or team. */
+function GroupProductivityCard({ title, subtitle, unitLabel, rows }: { title: string; subtitle: string; unitLabel: string; rows: ProductivityGroupRow[] }) {
+  return (
+    <Card>
+      <CardHeader title={title} subtitle={subtitle} />
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[520px] text-sm">
+          <thead>
+            <tr className="border-b border-hairline text-xs text-slate-500">
+              <th className="px-5 py-3 text-left font-medium">{unitLabel}</th>
+              <th className="px-5 py-3 text-right font-medium">People</th>
+              <th className="px-5 py-3 text-right font-medium">Productivity</th>
+              <th className="px-5 py-3 text-right font-medium">Focus</th>
+              <th className="px-5 py-3 text-right font-medium">Avg hrs/day</th>
+              <th className="px-5 py-3 text-right font-medium">At risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td colSpan={6} className="px-5 py-8 text-center text-sm text-slate-500">No {unitLabel.toLowerCase()} with activity yet.</td></tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={r.id} className="border-b border-hairline/60 last:border-0 hover:bg-slate-50">
+                  <td className="px-5 py-3 font-medium text-slate-900">{r.name}</td>
+                  <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.trackedEmployees}/{r.headcount}</td>
+                  <td className="px-5 py-3 text-right tabular-nums text-slate-700">{r.avgProductivity}%</td>
+                  <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.avgFocus}%</td>
+                  <td className="px-5 py-3 text-right tabular-nums text-slate-600">{r.avgActiveHours}</td>
+                  <td className="px-5 py-3 text-right tabular-nums">{r.burnoutRisk > 0 ? <span className="text-rose-600">{r.burnoutRisk}</span> : <span className="text-slate-400">0</span>}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
 
 export default async function InsightsPage() {
-  const data = await getInsightsTeam().catch(() => null);
+  const [data, groups, session] = await Promise.all([
+    getInsightsTeam().catch(() => null),
+    getInsightsByGroup().catch(() => null),
+    getSession().catch(() => null),
+  ]);
   const s = data?.summary;
+  const canManageTarget = Boolean(session && (session.role.permissions.includes("employee.write") || session.role.name === "Owner"));
 
   return (
     <>
@@ -22,9 +68,19 @@ export default async function InsightsPage() {
           <StatTile label="Low engagement" value={`${s?.lowEngagement ?? 0}`} icon={Sparkles} accent="#d97706" />
         </div>
 
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <ProductivityTargetCard
+            avgProductivity={s?.avgProductivity ?? 0}
+            initialTarget={s?.productivityTarget ?? null}
+            onTargetCount={s?.onTargetCount ?? null}
+            trackedEmployees={s?.trackedEmployees ?? 0}
+            canManage={canManageTarget}
+          />
+        </div>
+
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
           <Card className="xl:col-span-2">
-            <CardHeader title="Workforce" subtitle="Per-employee productivity, focus and risk" />
+            <CardHeader title="Workforce" subtitle="Per-employee productivity, focus and risk" action={<InsightsExport people={data?.people ?? []} />} />
             <PaginatedTable
               minWidth="min-w-[640px]"
               head={
@@ -63,6 +119,11 @@ export default async function InsightsPage() {
               ))}
             </ul>
           </Card>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <GroupProductivityCard title="By department" subtitle="Productivity rolled up per department" unitLabel="Department" rows={groups?.byDepartment ?? []} />
+          <GroupProductivityCard title="By team" subtitle="Productivity rolled up per team" unitLabel="Team" rows={groups?.byTeam ?? []} />
         </div>
 
         <p className="text-xs text-slate-400">

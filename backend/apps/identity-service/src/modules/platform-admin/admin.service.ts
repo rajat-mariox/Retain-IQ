@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
-import type { OffsetPage } from "@retainiq/contracts";
+import type { OffsetPage, PlanPricing } from "@retainiq/contracts";
+import { computePrice, effectivePricing, planPricingOf } from "@retainiq/contracts";
 import { AnalyticsReadPrismaService } from "../../common/database/analytics-prisma.service.js";
 import { BillingReadPrismaService } from "../../common/database/billing-prisma.service.js";
 import { NotificationsReadPrismaService } from "../../common/database/notifications-prisma.service.js";
@@ -237,6 +238,7 @@ export class AdminService {
         id: o.id,
         name: o.name,
         slug: o.slug,
+        billingEmail: null, // not needed in the list view; resolved on the detail page
         status: o.status,
         users: members.get(o.id) ?? 0,
         employees: employees.get(o.id) ?? 0,
@@ -348,6 +350,7 @@ export class AdminService {
       id: org.id,
       name: org.name,
       slug: org.slug,
+      billingEmail: subscription?.billingEmail ?? null,
       status: org.status,
       users: memberCount,
       employees: employees.length,
@@ -382,7 +385,16 @@ export class AdminService {
           pricePerSeat: subscription.plan.pricePerSeat,
           // Canonical MRR (cents): paying + live only; trials contribute $0 — same
           // helper the billing page uses, so the two surfaces agree on unit + trials.
-          mrr: this.billableMrrCents(subscription.status, subscription.activeSeats, subscription.plan.pricePerSeat, true),
+          // Uses the subscription's LOCKED rate (falls back to live plan).
+          mrr: this.billableMrrCents(
+            subscription.status,
+            subscription.activeSeats,
+            effectivePricing(
+              { basePrice: subscription.lockedBasePrice ?? undefined, includedSeats: subscription.lockedIncludedSeats ?? undefined, additionalSeatPrice: subscription.lockedAdditionalSeatPrice ?? undefined },
+              planPricingOf(subscription.plan),
+            ),
+            true,
+          ),
           autoRenew: subscription.autoRenew,
           currentPeriodEnd: subscription.currentPeriodEnd.toISOString(),
           trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
@@ -498,9 +510,13 @@ export class AdminService {
         maxSingleBreakMinutes: 0,
         paidBreakMinutesPerDay: 0,
         allowCheckOutOnBreak: false,
+        minMinutesBeforeBreak: 0,
+        minMinutesBeforeCheckOut: 0,
         graceMinutes: 10,
         autoCheckOutAtShiftEnd: false,
         autoCheckOutAfterMinutes: 120,
+        idleCheckoutMinutes: 0,
+        idleCheckoutWarnMinutes: 5,
         overtimeAfterMinutes: 0,
         minHoursForPresent: 240,
         workModel: "WFO",
@@ -636,9 +652,35 @@ export class AdminService {
    * org is live; trials and non-live orgs contribute $0. Single source of truth
    * so the billing page and the org-detail page never disagree on unit or trials.
    */
-  private billableMrrCents(status: string, activeSeats: number, pricePerSeat: number, orgLive: boolean): number {
+  private billableMrrCents(status: string, activeSeats: number, pricing: PlanPricing, orgLive: boolean): number {
     const paying = status === "ACTIVE" || status === "PAST_DUE";
-    return paying && orgLive ? activeSeats * pricePerSeat : 0;
+    return paying && orgLive ? computePrice(pricing, activeSeats).totalPrice : 0;
+  }
+
+  /**
+   * Which live organizations are subscribed to a given plan (id + name + status),
+   * for the "can't delete a plan that's in use" guard in the admin plan manager.
+   * billing-db only knows orgIds, so we resolve names from identity. Soft-deleted
+   * orgs are excluded — they don't block a delete.
+   */
+  async planUsage(planId: string): Promise<{ planId: string; orgs: { id: string; name: string; status: string }[] }> {
+    const subs = await this.billing.subscription.findMany({
+      where: { planId },
+      select: { orgId: true, status: true },
+    });
+    if (subs.length === 0) return { planId, orgs: [] };
+    const ids = subs.map((s) => s.orgId);
+    const orgs = await this.prisma.organization.findMany({
+      where: { id: { in: ids }, status: { not: "DELETED" } },
+      select: { id: true, name: true },
+    });
+    const nameById = new Map(orgs.map((o) => [o.id, o.name]));
+    const statusByOrg = new Map(subs.map((s) => [s.orgId, s.status]));
+    return {
+      planId,
+      // Only orgs that still exist (name resolved) count as blocking the delete.
+      orgs: orgs.map((o) => ({ id: o.id, name: nameById.get(o.id) ?? o.id, status: statusByOrg.get(o.id) ?? "" })),
+    };
   }
 
   private async computeBilling(): Promise<AdminBilling> {
@@ -646,14 +688,28 @@ export class AdminService {
     // whose org is soft-deleted in identity so a dead org never inflates revenue.
     const [plans, allSubs, live] = await Promise.all([
       this.billing.plan.findMany({ orderBy: { sortOrder: "asc" } }),
-      this.billing.subscription.findMany({ select: { orgId: true, planId: true, status: true, activeSeats: true } }),
+      this.billing.subscription.findMany({
+        select: {
+          orgId: true, planId: true, status: true, activeSeats: true,
+          lockedBasePrice: true, lockedIncludedSeats: true, lockedAdditionalSeatPrice: true,
+        },
+      }),
       this.liveOrgIds(),
     ]);
     const subs = allSubs.filter((s) => live.has(s.orgId));
-    const priceByPlan = new Map(plans.map((p) => [p.id, p.pricePerSeat]));
+    const pricingByPlan = new Map(plans.map((p) => [p.id, planPricingOf(p)]));
     const paying = (s: string) => s === "ACTIVE" || s === "PAST_DUE";
-    const mrrCentsOf = (s: { status: string; activeSeats: number; planId: string }) =>
-      this.billableMrrCents(s.status, s.activeSeats, priceByPlan.get(s.planId) ?? 0, true); // already live-filtered
+    // Each sub bills at its own LOCKED rate; fall back to the live plan's model.
+    const mrrCentsOf = (s: { status: string; activeSeats: number; planId: string; lockedBasePrice: number | null; lockedIncludedSeats: number | null; lockedAdditionalSeatPrice: number | null }) =>
+      this.billableMrrCents(
+        s.status,
+        s.activeSeats,
+        effectivePricing(
+          { basePrice: s.lockedBasePrice ?? undefined, includedSeats: s.lockedIncludedSeats ?? undefined, additionalSeatPrice: s.lockedAdditionalSeatPrice ?? undefined },
+          pricingByPlan.get(s.planId) ?? { basePrice: 0, includedSeats: 0, additionalSeatPrice: 0 },
+        ),
+        true,
+      ); // already live-filtered
 
     // Plan distribution (orgs/seats/MRR per plan; MRR in whole dollars).
     const planDist: AdminPlanDist[] = plans.map((p) => {

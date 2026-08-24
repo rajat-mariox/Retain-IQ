@@ -1,4 +1,4 @@
-import { Activity, Ban, Building2, CheckCircle2, RotateCcw, Settings2, ToggleLeft, ToggleRight, UserPlus } from "lucide-react";
+import { Activity, Ban, Building2, CheckCircle2, RotateCcw, Settings2, ShieldCheck, Siren, ToggleLeft, ToggleRight, UserPlus, XCircle } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardHeader } from "@/components/ui/Card";
@@ -19,6 +19,12 @@ const LOOK: Record<string, { icon: typeof Activity; tint: string; label: string 
   "feature.enabled": { icon: ToggleRight, tint: "text-emerald-600 bg-emerald-50", label: "Feature turned on" },
   "feature.disabled": { icon: ToggleLeft, tint: "text-amber-600 bg-amber-50", label: "Feature turned off" },
   "feature.reset": { icon: RotateCcw, tint: "text-slate-600 bg-slate-100", label: "Feature reset" },
+  // Observation -> Escalation -> Incident resolution history.
+  "observation.resolved": { icon: ShieldCheck, tint: "text-emerald-600 bg-emerald-50", label: "Observation resolved" },
+  "observation.dismissed": { icon: XCircle, tint: "text-slate-600 bg-slate-100", label: "Observation dismissed" },
+  "escalation.resolved": { icon: ShieldCheck, tint: "text-emerald-600 bg-emerald-50", label: "Escalation resolved" },
+  "incident.resolved": { icon: ShieldCheck, tint: "text-emerald-600 bg-emerald-50", label: "Incident resolved" },
+  "incident.closed": { icon: Siren, tint: "text-violet-600 bg-violet-50", label: "Incident closed" },
 };
 const lookOf = (type: string) => LOOK[type] ?? { icon: Activity, tint: "text-slate-500 bg-slate-100", label: type.replace(/[._]/g, " ") };
 

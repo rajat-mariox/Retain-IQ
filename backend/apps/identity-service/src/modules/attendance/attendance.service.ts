@@ -7,6 +7,7 @@ import { PrismaService } from "../../common/database/prisma.service.js";
 import { RealtimePublisher } from "../../common/realtime/realtime-publisher.service.js";
 import { AttendancePolicyService } from "./attendance-policy.service.js";
 import { AttendanceRecomputeService } from "./attendance-recompute.service.js";
+import { ShiftRotationService, type RotationStep } from "../org-structure/shift-rotation.service.js";
 import {
   availableActions,
   can,
@@ -28,11 +29,25 @@ const minutesBetween = (from: Date, to: Date): number => Math.max(0, Math.round(
 // checking out before 17:00 is an early exit.
 const EARLY_EXIT_BEFORE_MINUTES = 17 * 60;
 
+/** The per-employee row shape the report column registry reads from. */
+interface ReportRowLike {
+  name: string;
+  department: string | null;
+  workingDays: number;
+  present: number;
+  late: number;
+  absent: number;
+  onLeave: number;
+  overtimeMinutes: number;
+  attendanceRate: number;
+}
+
 interface ShiftLike {
   startMinute: number;
   endMinute: number;
   graceMinutes: number;
   workingDays: number[];
+  daySchedule?: unknown; // optional per-weekday windows; flattened per day in resolveShift
 }
 
 const DEFAULT_WORKING_DAYS = [1, 2, 3, 4, 5]; // Mon–Fri
@@ -65,6 +80,39 @@ function attendanceDayFor(instant: Date, tz: string): Date {
 /** A shift whose end is at or before its start spans midnight (e.g. 22:00–06:00). */
 function isOvernight(shift: ShiftLike): boolean {
   return shift.endMinute <= shift.startMinute;
+}
+
+/** Local weekday (0=Sun … 6=Sat) of an instant in the given IANA timezone. */
+function weekdayInTz(instant: Date, tz: string): number {
+  try {
+    const wd = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(instant);
+    return { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[wd] ?? instant.getUTCDay();
+  } catch {
+    return instant.getUTCDay();
+  }
+}
+
+type DayScheduleEntry = { day: number; startMinute: number; endMinute: number; graceMinutes?: number };
+
+/**
+ * Resolve a shift's effective window for a given weekday. When the shift carries
+ * a per-weekday `daySchedule` and it has an entry for `weekday`, that entry's
+ * start/end/grace override the flat fields; otherwise the flat fields stand. The
+ * returned object is a plain ShiftLike, so every downstream consumer (late/early/
+ * overtime/auto-close) keeps working against a single uniform window per day.
+ */
+function shiftForWeekday(shift: ShiftLike, daySchedule: unknown, weekday: number): ShiftLike {
+  if (!Array.isArray(daySchedule)) return shift;
+  const entry = (daySchedule as DayScheduleEntry[]).find(
+    (e) => e && typeof e.day === "number" && e.day === weekday && typeof e.startMinute === "number" && typeof e.endMinute === "number",
+  );
+  if (!entry) return shift;
+  return {
+    ...shift,
+    startMinute: entry.startMinute,
+    endMinute: entry.endMinute,
+    graceMinutes: typeof entry.graceMinutes === "number" ? entry.graceMinutes : shift.graceMinutes,
+  };
 }
 
 /**
@@ -179,20 +227,50 @@ export class AttendanceService {
    * only — historical UTC-bucketed rows are left untouched (no backfill).
    */
   private async resolveToday(orgId: string, employeeId: string, at = new Date()): Promise<{ day: Date; tz: string; shift: ShiftLike | null }> {
-    const { tz, shift } = await this.resolveShift(orgId, employeeId);
+    const { tz, shift } = await this.resolveShift(orgId, employeeId, at);
     return { day: shiftDayFor(at, tz, shift), tz, shift };
   }
 
-  /** The employee's own shift (assigned → org default) + the org timezone. */
-  private async resolveShift(orgId: string, employeeId: string): Promise<{ tz: string; shift: ShiftLike | null }> {
+  /**
+   * The shift that applies to an employee on `at`, plus the org timezone.
+   * Precedence: an active shift rotation (resolves the step for today) → the
+   * employee's fixed shift → the org default shift.
+   */
+  private async resolveShift(orgId: string, employeeId: string, at = new Date()): Promise<{ tz: string; shift: ShiftLike | null }> {
+    const shiftSelect = { startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, daySchedule: true, status: true } as const;
     const [org, employee] = await Promise.all([
       this.prisma.organization.findUnique({ where: { id: orgId }, select: { timezone: true } }),
-      this.prisma.employee.findUnique({ where: { id: employeeId }, select: { shiftRef: { select: { startMinute: true, endMinute: true, graceMinutes: true, workingDays: true, status: true } } } }),
+      this.prisma.employee.findUnique({
+        where: { id: employeeId },
+        select: {
+          shiftRef: { select: shiftSelect },
+          rotationId: true,
+          rotationRef: { select: { anchorDate: true, steps: true, status: true } },
+        },
+      }),
     ]);
     const tz = org?.timezone || "UTC";
-    let shift: ShiftLike | null = employee?.shiftRef && employee.shiftRef.status === "ACTIVE" ? employee.shiftRef : null;
+
+    // 1) Active rotation: pick the shift its schedule lands on for today's local date.
+    let shift: ShiftLike | null = null;
+    const rot = employee?.rotationRef;
+    if (rot && rot.status === "ACTIVE") {
+      const shiftId = ShiftRotationService.shiftIdOn(rot.anchorDate, (rot.steps as unknown as RotationStep[]) ?? [], attendanceDayFor(at, tz));
+      if (shiftId) {
+        const s = await this.prisma.shift.findFirst({ where: { id: shiftId, orgId, status: "ACTIVE" }, select: shiftSelect });
+        if (s) shift = s;
+      }
+    }
+    // 2) Fixed shift.
+    if (!shift && employee?.shiftRef && employee.shiftRef.status === "ACTIVE") shift = employee.shiftRef;
+    // 3) Org default.
     if (!shift) {
-      shift = await this.prisma.shift.findFirst({ where: { orgId, isDefault: true, status: "ACTIVE" }, select: { startMinute: true, endMinute: true, graceMinutes: true, workingDays: true } });
+      shift = await this.prisma.shift.findFirst({ where: { orgId, isDefault: true, status: "ACTIVE" }, select: shiftSelect });
+    }
+    // Flatten any per-weekday window down to this day's effective start/end/grace,
+    // so every downstream consumer sees one uniform shift. No daySchedule → no-op.
+    if (shift?.daySchedule) {
+      shift = shiftForWeekday(shift, shift.daySchedule, weekdayInTz(at, tz));
     }
     return { tz, shift };
   }
@@ -215,7 +293,7 @@ export class AttendanceService {
    * roll-up we recompute from them.
    */
   private async loadDay(orgId: string, employeeId: string, day: Date) {
-    const [record, holiday, leave, employee] = await Promise.all([
+    const [record, holiday, leave, pendingLeave, employee] = await Promise.all([
       this.prisma.attendanceRecord.findUnique({
         where: { orgId_employeeId_day: { orgId, employeeId, day } },
         include: { sessions: { orderBy: { sequence: "asc" } }, breaks: { orderBy: { startedAt: "asc" } } },
@@ -226,7 +304,14 @@ export class AttendanceService {
       }),
       this.prisma.leaveRequest.findFirst({
         where: { orgId, employeeId, status: "APPROVED", startDate: { lte: day }, endDate: { gte: day } },
-        select: { id: true },
+        select: { id: true, dayPart: true },
+      }),
+      // A still-undecided request covering this day — surfaced as a soft warning on
+      // check-in (we don't block; the manager decides). Kept separate from APPROVED
+      // so ON_LEAVE state only ever reflects a granted leave.
+      this.prisma.leaveRequest.findFirst({
+        where: { orgId, employeeId, status: "PENDING", startDate: { lte: day }, endDate: { gte: day } },
+        select: { id: true, dayPart: true },
       }),
       this.prisma.employee.findUnique({ where: { id: employeeId }, select: { departmentId: true } }),
     ]);
@@ -243,7 +328,9 @@ export class AttendanceService {
     const snapshot: DaySnapshot = {
       isWeekend,
       isHoliday: Boolean(holiday),
-      isOnLeave: Boolean(leave),
+      // Only a FULL-day leave makes the day "on leave"; a half-day still lets the
+      // person work (and check in for) the other half.
+      isOnLeave: Boolean(leave) && leave?.dayPart === "FULL",
       sessionCount: sessions.length,
       hasOpenSession: Boolean(openSession),
       hasClosedSession: sessions.some((s) => s.endedAt !== null),
@@ -251,9 +338,17 @@ export class AttendanceService {
       breakCount: breaks.length,
       breakMinutesSoFar: breaks.reduce((a, b) => a + b.minutes, 0),
       openBreakMinutes: openBreak ? Math.max(0, Math.round((now - openBreak.startedAt.getTime()) / 60000)) : 0,
+      openSessionMinutes: openSession ? Math.max(0, Math.round((now - openSession.startedAt.getTime()) / 60000)) : 0,
     };
 
-    return { record, sessions, breaks, openSession, openBreak, snapshot, tz, shift };
+    return {
+      record, sessions, breaks, openSession, openBreak, snapshot, tz, shift,
+      // Leave that overlaps this day — used to warn (not block) on check-in and to
+      // surface a conflict badge to managers. A HALF-day leave is not a conflict:
+      // the person is expected to work the other half, so only a FULL-day leave warns.
+      approvedLeaveId: leave && leave.dayPart === "FULL" ? leave.id : null,
+      pendingLeaveId: pendingLeave && pendingLeave.dayPart === "FULL" ? pendingLeave.id : null,
+    };
   }
 
   /** Guard an action through the state machine, raising the reason it gave. */
@@ -348,7 +443,22 @@ export class AttendanceService {
       fromState, toState: "WORKING", source, workLocation: location,
     });
     await this.publish(orgId, employeeId, "checked-in", record);
-    return updated ?? record;
+
+    // Leave conflict: they checked in on a day they also have leave. We DON'T block
+    // (policy choice) — instead we warn the employee and flag it for the manager to
+    // reconcile (cancel the leave, or treat as a partial day). Recorded as an event
+    // so it shows on the timeline / manager review, and returned so the client can toast.
+    let leaveWarning: string | null = null;
+    if (before.approvedLeaveId) {
+      leaveWarning = "You have approved leave today. This check-in conflicts with it — cancel the leave or ask your manager to adjust it.";
+      await this.recordEvent({ orgId, employeeId, attendanceId: record.id, type: "LEAVE_CONFLICT", fromState, toState: "WORKING", source, note: "check-in on approved-leave day" });
+    } else if (before.pendingLeaveId) {
+      leaveWarning = "You have a pending leave request for today. Since you've checked in, you may want to withdraw it.";
+      await this.recordEvent({ orgId, employeeId, attendanceId: record.id, type: "LEAVE_CONFLICT", fromState, toState: "WORKING", source, note: "check-in with pending leave" });
+    }
+
+    const result = updated ?? record;
+    return leaveWarning ? { ...result, warning: leaveWarning } : result;
   }
 
   /** Close the open session (and any break still running inside it). */
@@ -521,6 +631,13 @@ export class AttendanceService {
         requireLocation: policy.requireLocation,
         allowedLocations: policy.allowedLocations,
         workModel: policy.workModel,
+        // Minimum minutes after check-in before break / check-out (0 = off) — lets
+        // clients show a disabled button + remaining time.
+        minMinutesBeforeBreak: policy.minMinutesBeforeBreak,
+        minMinutesBeforeCheckOut: policy.minMinutesBeforeCheckOut,
+        // Desktop-agent idle auto-checkout timings (org-configurable). 0 = off.
+        idleCheckoutMinutes: policy.idleCheckoutMinutes,
+        idleCheckoutWarnMinutes: policy.idleCheckoutWarnMinutes,
       },
       sessions: sessions.map((s) => ({
         id: s.id,
@@ -618,7 +735,7 @@ export class AttendanceService {
       }),
       this.prisma.attendanceRecord.findMany({
         where: { orgId, day },
-        select: { employeeId: true, status: true, checkInAt: true, checkOutAt: true, workMinutes: true },
+        select: { employeeId: true, status: true, checkInAt: true, checkOutAt: true, workMinutes: true, overtimeMinutes: true, approvedOvertimeMinutes: true },
       }),
       this.prisma.holiday.findMany({ where: { orgId, date: day }, select: { type: true, departmentId: true } }),
       this.prisma.leaveRequest.findMany({ where: { orgId, status: "APPROVED", startDate: { lte: day }, endDate: { gte: day } }, select: { employeeId: true } }),
@@ -666,6 +783,8 @@ export class AttendanceService {
         workMinutes,
         breakMinutes,
         netWorkMinutes: Math.max(0, workMinutes - breakMinutes),
+        overtimeMinutes: r?.overtimeMinutes ?? 0,
+        approvedOvertimeMinutes: r?.approvedOvertimeMinutes ?? 0,
         earlyExit: earlyExitFor(r?.checkOutAt ?? null, tz, shift),
       };
     });
@@ -774,7 +893,7 @@ export class AttendanceService {
       }),
       this.prisma.attendanceRecord.findMany({
         where: { orgId: ctx.orgId, day: { gte: start, lt: end } },
-        select: { employeeId: true, status: true, day: true },
+        select: { employeeId: true, status: true, day: true, overtimeMinutes: true, approvedOvertimeMinutes: true },
       }),
       this.prisma.holiday.findMany({ where: { orgId: ctx.orgId, date: { gte: start, lt: end } }, select: { date: true, type: true, departmentId: true } }),
       this.prisma.leaveRequest.findMany({ where: { orgId: ctx.orgId, status: "APPROVED", startDate: { lt: end }, endDate: { gte: start } }, select: { employeeId: true, startDate: true, endDate: true } }),
@@ -820,11 +939,16 @@ export class AttendanceService {
       s.add(k);
       m.set(id, s);
     };
+    // Per-employee overtime totals across the month (measured vs approved).
+    const otMeasured = new Map<string, number>();
+    const otApproved = new Map<string, number>();
     for (const r of records) {
       const k = this.dateKey(r.day);
       if (r.status === "PRESENT") add(present, r.employeeId, k);
       else if (r.status === "LATE") add(late, r.employeeId, k);
       else if (r.status === "ON_LEAVE") add(leave, r.employeeId, k);
+      if (r.overtimeMinutes) otMeasured.set(r.employeeId, (otMeasured.get(r.employeeId) ?? 0) + r.overtimeMinutes);
+      if (r.approvedOvertimeMinutes) otApproved.set(r.employeeId, (otApproved.get(r.employeeId) ?? 0) + r.approvedOvertimeMinutes);
     }
     // Approved leave ranges → leave day-set (capped at today).
     for (const lr of approvedLeaves) {
@@ -855,11 +979,421 @@ export class AttendanceService {
         onLeave,
         absent: Math.max(0, workingDays - onSchedule - onLeave),
         workingDays,
+        overtimeMinutes: otMeasured.get(e.id) ?? 0,
+        approvedOvertimeMinutes: otApproved.get(e.id) ?? 0,
         attendanceRate: workingDays > 0 ? Math.round((onSchedule / workingDays) * 100) : 0,
       };
     });
 
     return { month: `${year}-${String(month).padStart(2, "0")}`, workingDays: workingDaySet(defaultShift ? defaultShift.workingDays : DEFAULT_WORKING_DAYS, null).size, rows };
+  }
+
+  /**
+   * Month grid: per-employee, per-day attendance status — the calendar / team-
+   * availability view. Reuses the same batched loads as reportMonthly, but emits a
+   * day-by-day status map per employee (PRESENT/LATE/ABSENT/ON_LEAVE/HOLIDAY/
+   * WEEKLY_OFF) instead of counts. Scoped to the caller's read reach (a scoped
+   * manager sees only their people). Days after "today" are left blank (not ABSENT).
+   */
+  async monthlyCalendar(monthStr?: string) {
+    const ctx = requireTenantContext();
+    const today = await this.orgToday(ctx.orgId);
+    let year = today.getUTCFullYear();
+    let month = today.getUTCMonth() + 1;
+    if (monthStr) {
+      const [y, m] = monthStr.split("-").map(Number);
+      if (!y || !m || m < 1 || m > 12) throw new BadRequestException("Invalid month (expected YYYY-MM).");
+      year = y;
+      month = m;
+    }
+    const start = new Date(Date.UTC(year, month - 1, 1));
+    const end = new Date(Date.UTC(year, month, 1)); // exclusive
+    const todayKey = this.dateKey(today);
+
+    const exclude = await this.orgRoles.ownerEmployeeIds(ctx.orgId);
+    const scope = await this.accessScope.resolveScope(ctx.orgId, ctx.userId, permissions.attendanceRead);
+    const scopeWhere = this.accessScope.employeeWhere(scope);
+
+    const [shifts, employees, records, holidays, approvedLeaves] = await Promise.all([
+      this.prisma.shift.findMany({ where: { orgId: ctx.orgId }, select: { id: true, workingDays: true, isDefault: true, status: true } }),
+      this.prisma.employee.findMany({
+        where: { orgId: ctx.orgId, status: { in: ["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD"] }, ...scopeWhere, ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}) },
+        select: { id: true, firstName: true, lastName: true, shiftId: true, departmentId: true, departmentRef: { select: { name: true } } },
+        orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+      }),
+      this.prisma.attendanceRecord.findMany({ where: { orgId: ctx.orgId, day: { gte: start, lt: end } }, select: { employeeId: true, status: true, day: true } }),
+      this.prisma.holiday.findMany({ where: { orgId: ctx.orgId, date: { gte: start, lt: end } }, select: { date: true, type: true, departmentId: true } }),
+      this.prisma.leaveRequest.findMany({ where: { orgId: ctx.orgId, status: "APPROVED", startDate: { lt: end }, endDate: { gte: start } }, select: { employeeId: true, startDate: true, endDate: true, dayPart: true } }),
+    ]);
+
+    const shiftById = new Map(shifts.map((s) => [s.id, s]));
+    const defaultShift = shifts.find((s) => s.isDefault && s.status === "ACTIVE") ?? null;
+    const companyHolidays = new Set(holidays.filter((h) => h.type !== "DEPARTMENT").map((h) => this.dateKey(h.date)));
+    const deptHolidays = new Map<string, Set<string>>();
+    for (const h of holidays) {
+      if (h.type === "DEPARTMENT" && h.departmentId) {
+        const set = deptHolidays.get(h.departmentId) ?? new Set<string>();
+        set.add(this.dateKey(h.date));
+        deptHolidays.set(h.departmentId, set);
+      }
+    }
+
+    // Record status per (employee, day).
+    const statusByEmpDay = new Map<string, string>();
+    for (const r of records) statusByEmpDay.set(`${r.employeeId}|${this.dateKey(r.day)}`, r.status);
+    // Approved leave ranges → mark leave days (half-day noted separately).
+    const leaveByEmpDay = new Map<string, string>(); // key → dayPart
+    for (const lr of approvedLeaves) {
+      const s = lr.startDate < start ? new Date(start) : new Date(lr.startDate);
+      for (const d = s; d < end && d <= lr.endDate; d.setUTCDate(d.getUTCDate() + 1)) {
+        leaveByEmpDay.set(`${lr.employeeId}|${this.dateKey(d)}`, lr.dayPart);
+      }
+    }
+
+    const daysInMonth: string[] = [];
+    for (const d = new Date(start); d < end; d.setUTCDate(d.getUTCDate() + 1)) daysInMonth.push(this.dateKey(d));
+
+    const rows = employees.map((e) => {
+      const empShift = (e.shiftId ? shiftById.get(e.shiftId) : null) ?? defaultShift;
+      const shift = empShift && empShift.status === "ACTIVE" ? empShift : defaultShift;
+      const pattern = new Set(shift && shift.workingDays.length > 0 ? shift.workingDays : DEFAULT_WORKING_DAYS);
+      const deptHol = e.departmentId ? deptHolidays.get(e.departmentId) : undefined;
+
+      const cells = daysInMonth.map((k) => {
+        const recorded = statusByEmpDay.get(`${e.id}|${k}`);
+        if (recorded) return { date: k, status: recorded };
+        const halfPart = leaveByEmpDay.get(`${e.id}|${k}`);
+        if (halfPart) return { date: k, status: halfPart === "FULL" ? "ON_LEAVE" : "HALF_LEAVE" };
+        if (companyHolidays.has(k) || (deptHol && deptHol.has(k))) return { date: k, status: "HOLIDAY" };
+        const weekday = new Date(`${k}T00:00:00Z`).getUTCDay();
+        if (!pattern.has(weekday)) return { date: k, status: "WEEKLY_OFF" };
+        // A working day with no record: ABSENT only up to today; future days blank.
+        return { date: k, status: k <= todayKey ? "ABSENT" : "" };
+      });
+
+      return { employeeId: e.id, name: `${e.firstName} ${e.lastName}`.trim(), department: e.departmentRef?.name ?? null, cells };
+    });
+
+    return { month: `${year}-${String(month).padStart(2, "0")}`, days: daysInMonth, rows };
+  }
+
+  /**
+   * Overtime trends — approved (and measured) OT rolled up per employee and per
+   * month across a trailing window (default 6 months). Feeds the OT trend card.
+   * Scoped to the caller's read reach; Owners excluded (they're not staff).
+   */
+  async overtimeTrends(monthsBack = 6) {
+    const ctx = requireTenantContext();
+    const span = Math.min(24, Math.max(1, Math.floor(monthsBack) || 6));
+    const today = await this.orgToday(ctx.orgId);
+    // Window = first day of (this month − (span−1)) up to first day of next month.
+    const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - (span - 1), 1));
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1));
+
+    const exclude = await this.orgRoles.ownerEmployeeIds(ctx.orgId);
+    const scope = await this.accessScope.resolveScope(ctx.orgId, ctx.userId, permissions.attendanceRead);
+    const scopeWhere = this.accessScope.employeeWhere(scope);
+
+    const [employees, records] = await Promise.all([
+      this.prisma.employee.findMany({
+        where: { orgId: ctx.orgId, status: { in: ["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD"] }, ...scopeWhere, ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}) },
+        select: { id: true, firstName: true, lastName: true, departmentRef: { select: { name: true } } },
+        orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+      }),
+      this.prisma.attendanceRecord.findMany({
+        where: { orgId: ctx.orgId, day: { gte: start, lt: end }, approvedOvertimeMinutes: { gt: 0 } },
+        select: { employeeId: true, day: true, overtimeMinutes: true, approvedOvertimeMinutes: true },
+      }),
+    ]);
+    const empIds = new Set(employees.map((e) => e.id));
+
+    // Ordered month buckets (YYYY-MM) spanning the window.
+    const months: string[] = [];
+    for (const d = new Date(start); d < end; d.setUTCMonth(d.getUTCMonth() + 1)) {
+      months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
+    }
+    const monthTotals = new Map<string, number>(months.map((m) => [m, 0]));
+    const perEmp = new Map<string, { approved: number; measured: number }>();
+
+    for (const r of records) {
+      if (!empIds.has(r.employeeId)) continue; // out of scope / excluded owner
+      const mk = this.dateKey(r.day).slice(0, 7);
+      monthTotals.set(mk, (monthTotals.get(mk) ?? 0) + r.approvedOvertimeMinutes);
+      const e = perEmp.get(r.employeeId) ?? { approved: 0, measured: 0 };
+      e.approved += r.approvedOvertimeMinutes;
+      e.measured += r.overtimeMinutes;
+      perEmp.set(r.employeeId, e);
+    }
+
+    const byEmployee = employees
+      .map((e) => ({
+        employeeId: e.id,
+        name: `${e.firstName} ${e.lastName}`.trim(),
+        department: e.departmentRef?.name ?? null,
+        approvedMinutes: perEmp.get(e.id)?.approved ?? 0,
+        measuredMinutes: perEmp.get(e.id)?.measured ?? 0,
+      }))
+      .filter((r) => r.approvedMinutes > 0)
+      .sort((a, b) => b.approvedMinutes - a.approvedMinutes);
+
+    const byMonth = months.map((m) => ({ month: m, approvedMinutes: monthTotals.get(m) ?? 0 }));
+    const totalApproved = byMonth.reduce((s, m) => s + m.approvedMinutes, 0);
+
+    return { months: span, from: months[0], to: months[months.length - 1], totalApprovedMinutes: totalApproved, byMonth, byEmployee };
+  }
+
+  /**
+   * Configurable attendance report — the shared builder behind the on-demand view,
+   * the CSV export and the scheduled email. Picks a date window from `period`
+   * (today | week | month) and an employee set from `scope` (org | department |
+   * team | employee), always clamped to the caller's own read reach. Returns
+   * per-employee present/late/absent/leave/OT rows + a summary, for the window.
+   */
+  async buildReport(opts: { scope?: string; scopeId?: string | null; period?: string; from?: string; to?: string }, orgIdOverride?: string, userIdOverride?: string) {
+    const orgId = orgIdOverride ?? requireTenantContext().orgId;
+    const userId = userIdOverride ?? requireTenantContext().userId;
+    const scope = (opts.scope ?? "org").toLowerCase();
+    // A custom from/to range overrides the preset period.
+    const custom = opts.from && opts.to ? { from: opts.from, to: opts.to } : null;
+    const period = custom ? "custom" : (opts.period ?? "month").toLowerCase();
+    if (!["org", "department", "team", "employee"].includes(scope)) throw new BadRequestException("Invalid scope.");
+    if (!custom && !["today", "week", "month"].includes(period)) throw new BadRequestException("Invalid period.");
+    if (scope !== "org" && !opts.scopeId) throw new BadRequestException(`A ${scope} must be selected.`);
+
+    const today = await this.orgToday(orgId);
+    const asDay = (s: string) => {
+      const d = new Date(`${s}T00:00:00.000Z`);
+      if (Number.isNaN(d.getTime())) throw new BadRequestException("Invalid date.");
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    };
+    // Window [start, endExclusive). Never counts days beyond today.
+    let start: Date;
+    let endExclusive: Date;
+    if (custom) {
+      start = asDay(custom.from);
+      const toDay = asDay(custom.to);
+      if (toDay < start) throw new BadRequestException("The end date must be on or after the start date.");
+      // Clamp the end to today so we never report future days.
+      endExclusive = new Date(Math.min(toDay.getTime(), today.getTime()) + 86_400_000);
+    } else {
+      if (period === "today") start = new Date(today);
+      else if (period === "week") {
+        const dow = (today.getUTCDay() + 6) % 7; // 0 = Monday
+        start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - dow));
+      } else start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+      endExclusive = new Date(today.getTime() + 86_400_000); // today inclusive
+    }
+
+    // Access ceiling + the chosen scope narrowing (must be within reach).
+    const exclude = await this.orgRoles.ownerEmployeeIds(orgId);
+    const access = await this.accessScope.resolveScope(orgId, userId, permissions.attendanceRead);
+    const scopeWhere = this.accessScope.employeeWhere(access);
+    const chosen: Record<string, unknown> = {};
+    if (scope === "department") chosen.departmentId = opts.scopeId;
+    else if (scope === "team") chosen.teamId = opts.scopeId;
+    else if (scope === "employee") chosen.id = opts.scopeId;
+
+    const [shifts, employees, records, holidays, approvedLeaves, scopeMeta] = await Promise.all([
+      this.prisma.shift.findMany({ where: { orgId }, select: { id: true, workingDays: true, isDefault: true, status: true } }),
+      this.prisma.employee.findMany({
+        where: { orgId, status: { in: ["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD"] }, ...scopeWhere, ...chosen, ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}) },
+        select: { id: true, firstName: true, lastName: true, shiftId: true, departmentId: true, departmentRef: { select: { name: true } } },
+        orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+      }),
+      this.prisma.attendanceRecord.findMany({
+        where: { orgId, day: { gte: start, lt: endExclusive } },
+        select: { employeeId: true, status: true, day: true, approvedOvertimeMinutes: true },
+      }),
+      this.prisma.holiday.findMany({ where: { orgId, date: { gte: start, lt: endExclusive } }, select: { date: true, type: true, departmentId: true } }),
+      this.prisma.leaveRequest.findMany({ where: { orgId, status: "APPROVED", startDate: { lt: endExclusive }, endDate: { gte: start } }, select: { employeeId: true, startDate: true, endDate: true } }),
+      this.scopeLabel(orgId, scope, opts.scopeId ?? null),
+    ]);
+
+    const shiftById = new Map(shifts.map((s) => [s.id, s]));
+    const defaultShift = shifts.find((s) => s.isDefault && s.status === "ACTIVE") ?? null;
+    const companyHolidays = new Set(holidays.filter((h) => h.type !== "DEPARTMENT").map((h) => this.dateKey(h.date)));
+    const deptHolidays = new Map<string, Set<string>>();
+    for (const h of holidays) {
+      if (h.type === "DEPARTMENT" && h.departmentId) {
+        const set = deptHolidays.get(h.departmentId) ?? new Set<string>();
+        set.add(this.dateKey(h.date));
+        deptHolidays.set(h.departmentId, set);
+      }
+    }
+    const workingDayCount = (pattern: number[], deptId: string | null): number => {
+      const patternSet = new Set(pattern.length > 0 ? pattern : DEFAULT_WORKING_DAYS);
+      const deptSet = deptId ? deptHolidays.get(deptId) : undefined;
+      let count = 0;
+      for (const d = new Date(start); d < endExclusive; d.setUTCDate(d.getUTCDate() + 1)) {
+        const k = this.dateKey(d);
+        if (patternSet.has(d.getUTCDay()) && !companyHolidays.has(k) && !(deptSet && deptSet.has(k))) count += 1;
+      }
+      return count;
+    };
+
+    const present = new Map<string, number>();
+    const late = new Map<string, number>();
+    const ot = new Map<string, number>();
+    const bump = (m: Map<string, number>, id: string, by = 1) => m.set(id, (m.get(id) ?? 0) + by);
+    for (const r of records) {
+      if (r.status === "PRESENT") bump(present, r.employeeId);
+      else if (r.status === "LATE") bump(late, r.employeeId);
+      if (r.approvedOvertimeMinutes) bump(ot, r.employeeId, r.approvedOvertimeMinutes);
+    }
+    // Approved leave days that fall in the window (capped at today).
+    const leaveDays = new Map<string, number>();
+    for (const lr of approvedLeaves) {
+      const s = lr.startDate < start ? new Date(start) : new Date(lr.startDate);
+      for (const d = s; d < endExclusive && d <= lr.endDate; d.setUTCDate(d.getUTCDate() + 1)) bump(leaveDays, lr.employeeId);
+    }
+
+    let totScheduled = 0;
+    let totAttended = 0;
+    const rows = employees.map((e) => {
+      const empShift = (e.shiftId ? shiftById.get(e.shiftId) : null) ?? defaultShift;
+      const shift = empShift && empShift.status === "ACTIVE" ? empShift : defaultShift;
+      const scheduled = workingDayCount(shift ? shift.workingDays : DEFAULT_WORKING_DAYS, e.departmentId);
+      const presentDays = present.get(e.id) ?? 0;
+      const lateDays = late.get(e.id) ?? 0;
+      const onLeave = Math.min(leaveDays.get(e.id) ?? 0, scheduled);
+      const attended = presentDays + lateDays;
+      const expected = Math.max(0, scheduled - onLeave);
+      const absent = Math.max(0, expected - attended);
+      totScheduled += expected;
+      totAttended += attended;
+      return {
+        employeeId: e.id,
+        name: `${e.firstName} ${e.lastName}`.trim(),
+        department: e.departmentRef?.name ?? null,
+        workingDays: scheduled,
+        present: presentDays,
+        late: lateDays,
+        onLeave,
+        absent,
+        overtimeMinutes: ot.get(e.id) ?? 0,
+        attendanceRate: expected > 0 ? Math.round((attended / expected) * 100) : 100,
+      };
+    });
+
+    return {
+      scope,
+      scopeId: opts.scopeId ?? null,
+      scopeLabel: scopeMeta,
+      period,
+      from: this.dateKey(start),
+      to: this.dateKey(today),
+      summary: {
+        employees: rows.length,
+        present: [...present.values()].reduce((s, v) => s + v, 0),
+        late: [...late.values()].reduce((s, v) => s + v, 0),
+        overtimeMinutes: [...ot.values()].reduce((s, v) => s + v, 0),
+        attendanceRate: totScheduled > 0 ? Math.round((totAttended / totScheduled) * 100) : 0,
+      },
+      rows,
+    };
+  }
+
+  /** Human label for a report's scope (department/team name, employee name, or "Organization"). */
+  async scopeLabel(orgId: string, scope: string, scopeId: string | null): Promise<string> {
+    if (scope === "org" || !scopeId) return "Organization";
+    if (scope === "department") {
+      const d = await this.prisma.department.findFirst({ where: { id: scopeId, orgId }, select: { name: true } });
+      return d?.name ?? "Department";
+    }
+    if (scope === "team") {
+      const t = await this.prisma.team.findFirst({ where: { id: scopeId, orgId }, select: { name: true } });
+      return t?.name ?? "Team";
+    }
+    const e = await this.prisma.employee.findFirst({ where: { id: scopeId, orgId }, select: { firstName: true, lastName: true } });
+    return e ? `${e.firstName} ${e.lastName}`.trim() : "Employee";
+  }
+
+  /**
+   * The scope options a caller may pick in the configurable report — only the
+   * departments, teams and employees within their own attendance-read reach. An
+   * org-tier admin gets everything; a scoped manager gets just their units and
+   * people (so the report pickers never list a scope that would return nothing).
+   * `canSelectOrg` is false for a scoped manager (they can't run a whole-org report).
+   */
+  async reportScopeOptions() {
+    const ctx = requireTenantContext();
+    const [scope, exclude] = await Promise.all([
+      this.accessScope.resolveScope(ctx.orgId, ctx.userId, permissions.attendanceRead),
+      this.orgRoles.ownerEmployeeIds(ctx.orgId),
+    ]);
+    const scopeWhere = this.accessScope.employeeWhere(scope);
+
+    // Employees the caller can reach (their people), owners excluded.
+    const employees = await this.prisma.employee.findMany({
+      where: { orgId: ctx.orgId, status: { in: ["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD"] }, ...scopeWhere, ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}) },
+      select: { id: true, firstName: true, lastName: true, departmentId: true, teamId: true },
+      orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+    });
+
+    let departments: { id: string; name: string }[];
+    let teams: { id: string; name: string }[];
+    if (scope.tier === "org") {
+      [departments, teams] = await Promise.all([
+        this.prisma.department.findMany({ where: { orgId: ctx.orgId, status: { not: "ARCHIVED" } }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+        this.prisma.team.findMany({ where: { orgId: ctx.orgId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      ]);
+    } else {
+      // Scoped: departments granted directly + teams reachable (granted, or under a
+      // granted department). A "self" manager reaches neither — only their people.
+      const teamIds = await this.accessScope.reachableTeamIds(ctx.orgId, scope);
+      [departments, teams] = await Promise.all([
+        scope.departmentIds.length > 0
+          ? this.prisma.department.findMany({ where: { orgId: ctx.orgId, id: { in: scope.departmentIds }, status: { not: "ARCHIVED" } }, select: { id: true, name: true }, orderBy: { name: "asc" } })
+          : Promise.resolve([]),
+        teamIds.length > 0
+          ? this.prisma.team.findMany({ where: { orgId: ctx.orgId, id: { in: teamIds } }, select: { id: true, name: true }, orderBy: { name: "asc" } })
+          : Promise.resolve([]),
+      ]);
+    }
+
+    return {
+      canSelectOrg: scope.tier === "org",
+      departments,
+      teams,
+      employees: employees.map((e) => ({ id: e.id, name: `${e.firstName} ${e.lastName}`.trim() })),
+    };
+  }
+
+  // The selectable columns for the attendance report — key → header + value.
+  static readonly REPORT_COLUMNS = [
+    { key: "name", header: "Employee", get: (r: ReportRowLike) => r.name },
+    { key: "department", header: "Department", get: (r: ReportRowLike) => r.department ?? "" },
+    { key: "workingDays", header: "Working days", get: (r: ReportRowLike) => r.workingDays },
+    { key: "present", header: "Present", get: (r: ReportRowLike) => r.present },
+    { key: "late", header: "Late", get: (r: ReportRowLike) => r.late },
+    { key: "absent", header: "Absent", get: (r: ReportRowLike) => r.absent },
+    { key: "onLeave", header: "Leave", get: (r: ReportRowLike) => r.onLeave },
+    { key: "overtimeMinutes", header: "Overtime (min)", get: (r: ReportRowLike) => r.overtimeMinutes },
+    { key: "attendanceRate", header: "Attendance %", get: (r: ReportRowLike) => r.attendanceRate },
+  ] as const;
+
+  /**
+   * A built report as a { baseName, columns, rows } table — for CSV/xlsx export.
+   * `columnKeys` selects & orders which columns to include (default: all). Employee
+   * is always kept first so a row is never anonymous.
+   */
+  reportTable(report: Awaited<ReturnType<AttendanceService["buildReport"]>>, columnKeys?: string[]) {
+    const all = AttendanceService.REPORT_COLUMNS;
+    let cols = all.filter((c) => !columnKeys || columnKeys.includes(c.key));
+    if (cols.length === 0) cols = [...all];
+    if (!cols.some((c) => c.key === "name")) cols = [all[0], ...cols];
+    const columns = cols.map((c) => c.header);
+    const rows = report.rows.map((r) => cols.map((c) => c.get(r)));
+    const safe = report.scopeLabel.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    return { baseName: `attendance-${safe}-${report.period}-${report.to}`, columns, rows };
+  }
+
+  /** CSV rendering of a built report (RFC-4180-ish: quote every field). */
+  reportCsv(report: Awaited<ReturnType<AttendanceService["buildReport"]>>): { filename: string; body: string } {
+    const t = this.reportTable(report);
+    const esc = (v: string | number | null) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const lines = [t.columns.map(esc).join(","), ...t.rows.map((r) => r.map(esc).join(","))];
+    return { filename: `${t.baseName}.csv`, body: lines.join("\r\n") };
   }
 
   private dateKey(d: Date): string {

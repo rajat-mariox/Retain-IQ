@@ -8,10 +8,30 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import type { EmployeeDocumentRow, EmployeeProfile, EmploymentEventRow } from "@/lib/api";
 import { formatDate } from "@/lib/format";
+import { EmployeeCasesPanel } from "./EmployeeCasesPanel";
+import { EmployeeSkillsPanel } from "./EmployeeSkillsPanel";
+import { EmployeeCertificationsPanel } from "./EmployeeCertificationsPanel";
+import { EmployeeCareerPanel } from "./EmployeeCareerPanel";
+import { EmployeeExitPanel } from "./EmployeeExitPanel";
+import { EmployeeProbationPanel } from "./EmployeeProbationPanel";
+import { Employee360Panel } from "./Employee360Panel";
+import { EmployeeRemarksPanel } from "./EmployeeRemarksPanel";
+import { EmployeeRecognitionPanel } from "./EmployeeRecognitionPanel";
+import { EmployeeAuditPanel } from "./EmployeeAuditPanel";
+import { EmployeeRecommendationsPanel } from "./EmployeeRecommendationsPanel";
 
 const input = "w-full rounded-lg border border-hairline bg-panel px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none";
 const label = "mb-1 block text-xs font-medium text-slate-500";
 const toIso = (d: string) => (d ? new Date(`${d}T00:00:00.000Z`).toISOString() : null);
+const WORK_MODEL: Record<string, string> = { WFO: "On-site", WFH: "Remote", HYBRID: "Hybrid" };
+const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** Human label for a work model, appending on-site days for hybrid. */
+function workModelLabel(model: string | null, officeDays: number[] | undefined): string {
+  if (!model) return "Org default";
+  const base = WORK_MODEL[model] ?? model;
+  if (model === "HYBRID" && officeDays && officeDays.length > 0) return `${base} · ${officeDays.map((d) => DOW_SHORT[d]).join(", ")}`;
+  return base;
+}
 const initials = (n: string) => n.split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase();
 const STAGE: Record<string, string> = { ONBOARDING: "bg-sky-50 text-sky-700 ring-sky-200", PROBATION: "bg-amber-50 text-amber-700 ring-amber-200", CONFIRMED: "bg-emerald-50 text-emerald-700 ring-emerald-200", EXITED: "bg-slate-100 text-slate-500 ring-slate-200" };
 const DOC_CATS = [
@@ -29,11 +49,12 @@ type Options = {
   teams: { id: string; name: string }[];
   designations: { id: string; title: string; level: string | null }[];
   shifts: { id: string; name: string }[];
+  rotations: { id: string; name: string }[];
   managers: { id: string; name: string }[];
 };
-type Tab = "overview" | "reporting" | "documents" | "history";
+type Tab = "overview" | "reporting" | "career" | "probation" | "recognition" | "remarks" | "skills" | "certifications" | "documents" | "history" | "cases" | "exit" | "audit";
 
-export function EmployeeProfileWorkspace({ profile, history, documents, canManage, options }: { profile: EmployeeProfile; history: EmploymentEventRow[]; documents: EmployeeDocumentRow[]; canManage: boolean; options: Options }) {
+export function EmployeeProfileWorkspace({ profile, history, documents, canManage, canSeeCases = false, canAudit = false, options }: { profile: EmployeeProfile; history: EmploymentEventRow[]; documents: EmployeeDocumentRow[]; canManage: boolean; canSeeCases?: boolean; canAudit?: boolean; options: Options }) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("overview");
   const [editOpen, setEditOpen] = useState(false);
@@ -101,12 +122,24 @@ export function EmployeeProfileWorkspace({ profile, history, documents, canManag
       <div className="flex flex-wrap gap-1 rounded-xl border border-hairline bg-panel-2 p-1">
         <TabBtn k="overview" l="Overview" />
         <TabBtn k="reporting" l="Reporting" n={profile.directReports.length || undefined} />
+        <TabBtn k="career" l="Career" />
+        {canManage ? <TabBtn k="probation" l="Probation" /> : null}
+        <TabBtn k="recognition" l="Recognition" />
+        <TabBtn k="remarks" l="Remarks" />
+        <TabBtn k="skills" l="Skills" />
+        <TabBtn k="certifications" l="Certifications" />
         <TabBtn k="documents" l="Documents" n={docs.length || undefined} />
         <TabBtn k="history" l="History" n={history.length || undefined} />
+        {canSeeCases ? <TabBtn k="cases" l="Cases" /> : null}
+        {canManage ? <TabBtn k="exit" l="Exit" /> : null}
+        {canAudit ? <TabBtn k="audit" l="Audit" /> : null}
       </div>
 
       {tab === "overview" ? (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="space-y-4">
+          {canManage ? <EmployeeRecommendationsPanel employeeId={profile.id} /> : null}
+          <Employee360Panel employeeId={profile.id} />
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader title="Job details" />
             <CardBody className="grid grid-cols-2 gap-x-6 gap-y-3">
@@ -115,6 +148,7 @@ export function EmployeeProfileWorkspace({ profile, history, documents, canManag
               <Field k="Department" v={profile.departmentRef?.name ?? "—"} />
               <Field k="Team" v={profile.teamName ?? "—"} />
               <Field k="Employment type" v={profile.employmentType ? profile.employmentType.toLowerCase().replace("_", " ") : "—"} />
+              <Field k="Work model" v={workModelLabel(profile.workModel, profile.officeDays)} />
               <Field k="Location" v={profile.location ?? "—"} />
               <Field k="Joined" v={profile.joinedAt ? formatDate(profile.joinedAt) : "—"} />
               <Field k="Employee code" v={profile.employeeCode ?? "—"} />
@@ -132,6 +166,7 @@ export function EmployeeProfileWorkspace({ profile, history, documents, canManag
               <Field k="Emergency contact" v={profile.emergencyContactName ? `${profile.emergencyContactName}${profile.emergencyContactPhone ? ` · ${profile.emergencyContactPhone}` : ""}` : "—"} full />
             </CardBody>
           </Card>
+          </div>
         </div>
       ) : null}
 
@@ -213,6 +248,17 @@ export function EmployeeProfileWorkspace({ profile, history, documents, canManag
         </Card>
       ) : null}
 
+      {tab === "career" ? <EmployeeCareerPanel employeeId={profile.id} canManage={canManage} options={options} /> : null}
+      {tab === "probation" && canManage ? <EmployeeProbationPanel employeeId={profile.id} canManage={canManage} /> : null}
+      {tab === "recognition" ? <EmployeeRecognitionPanel employeeId={profile.id} canManage={canManage} /> : null}
+      {tab === "remarks" ? <EmployeeRemarksPanel employeeId={profile.id} canManage={canManage} /> : null}
+      {tab === "skills" ? <EmployeeSkillsPanel employeeId={profile.id} canManage={canManage} /> : null}
+      {tab === "certifications" ? <EmployeeCertificationsPanel employeeId={profile.id} canManage={canManage} /> : null}
+
+      {tab === "cases" && canSeeCases ? <EmployeeCasesPanel employeeId={profile.id} /> : null}
+      {tab === "exit" && canManage ? <EmployeeExitPanel employeeId={profile.id} canManage={canManage} /> : null}
+      {tab === "audit" && canAudit ? <EmployeeAuditPanel employeeId={profile.id} /> : null}
+
       {editOpen ? <EditModal profile={profile} options={options} onClose={() => setEditOpen(false)} /> : null}
     </div>
   );
@@ -227,16 +273,21 @@ function EditModal({ profile, options, onClose }: { profile: EmployeeProfile; op
   const [f, setF] = useState({
     firstName: profile.firstName, lastName: profile.lastName, email: profile.email ?? "", personalEmail: profile.personalEmail ?? "", employeeCode: profile.employeeCode ?? "",
     title: profile.title ?? "", designationId: profile.designationId ?? "", departmentId: profile.departmentId ?? "", teamId: profile.teamId ?? "",
-    shiftId: profile.shiftId ?? "", managerId: profile.managerId ?? "", status: profile.status, employmentType: profile.employmentType ?? "",
+    shiftId: profile.shiftId ?? "", rotationId: profile.rotationId ?? "", managerId: profile.managerId ?? "", status: profile.status, employmentType: profile.employmentType ?? "",
+    workModel: profile.workModel ?? "",
     joinedAt: profile.joinedAt?.slice(0, 10) ?? "", phone: profile.phone ?? "", dateOfBirth: profile.dateOfBirth?.slice(0, 10) ?? "",
     gender: profile.gender ?? "", location: profile.location ?? "", address: profile.address ?? "",
     emergencyContactName: profile.emergencyContactName ?? "", emergencyContactPhone: profile.emergencyContactPhone ?? "",
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // On-site days for a HYBRID work model (weekday numbers, 0=Sun). Only sent/used
+  // when workModel === "HYBRID"; the backend clears them for WFO/WFH.
+  const [officeDays, setOfficeDays] = useState<number[]>(profile.officeDays ?? []);
   // Set after a work-email change: the new sign-in credentials to hand over.
   const [issued, setIssued] = useState<{ email: string; tempPassword: string } | null>(null);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
+  const toggleOfficeDay = (d: number) => setOfficeDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort((a, b) => a - b)));
 
   const workEmailChanged = (f.email.trim() || null) !== (profile.email ?? null);
 
@@ -245,7 +296,8 @@ function EditModal({ profile, options, onClose }: { profile: EmployeeProfile; op
     const payload = {
       firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim() || null, personalEmail: f.personalEmail.trim() || null, employeeCode: f.employeeCode.trim() || null,
       title: f.title.trim() || null, designationId: f.designationId || null, departmentId: f.departmentId || null, teamId: f.teamId || null,
-      shiftId: f.shiftId || null, managerId: f.managerId || null, status: f.status, employmentType: f.employmentType || null,
+      shiftId: f.shiftId || null, rotationId: f.rotationId || null, managerId: f.managerId || null, status: f.status, employmentType: f.employmentType || null,
+      workModel: f.workModel || null, officeDays: f.workModel === "HYBRID" ? officeDays : [],
       joinedAt: toIso(f.joinedAt), phone: f.phone.trim() || null, dateOfBirth: toIso(f.dateOfBirth), gender: f.gender.trim() || null,
       location: f.location.trim() || null, address: f.address.trim() || null, emergencyContactName: f.emergencyContactName.trim() || null, emergencyContactPhone: f.emergencyContactPhone.trim() || null,
     };
@@ -306,7 +358,19 @@ function EditModal({ profile, options, onClose }: { profile: EmployeeProfile; op
           <div><label className={label}>Team</label><select className={input} value={f.teamId} onChange={set("teamId")}><option value="">None</option>{options.teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
           <div><label className={label}>Reporting manager</label><select className={input} value={f.managerId} onChange={set("managerId")}><option value="">None</option>{options.managers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></div>
           <div><label className={label}>Shift</label><select className={input} value={f.shiftId} onChange={set("shiftId")}><option value="">Default</option>{options.shifts.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+          <div><label className={label}>Shift rotation <span className="font-normal text-slate-400">· overrides the fixed shift</span></label><select className={input} value={f.rotationId} onChange={set("rotationId")}><option value="">None</option>{options.rotations.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
           <div><label className={label}>Employment type</label><select className={input} value={f.employmentType} onChange={set("employmentType")}><option value="">—</option>{["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"].map((t) => <option key={t} value={t}>{t.toLowerCase().replace("_", " ")}</option>)}</select></div>
+          <div><label className={label}>Work model <span className="font-normal text-slate-400">· defaults to the org policy</span></label><select className={input} value={f.workModel} onChange={set("workModel")}><option value="">Org default</option><option value="WFO">On-site (WFO)</option><option value="WFH">Remote (WFH)</option><option value="HYBRID">Hybrid</option></select></div>
+          {f.workModel === "HYBRID" ? (
+            <div className="sm:col-span-2">
+              <label className={label}>On-site days</label>
+              <div className="flex flex-wrap gap-1.5">
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, i) => (
+                  <button key={d} type="button" onClick={() => toggleOfficeDay(i)} className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${officeDays.includes(i) ? "border-brand bg-brand text-white" : "border-hairline bg-panel text-slate-600 hover:bg-slate-50"}`}>{d}</button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div><label className={label}>Status</label><select className={input} value={f.status} onChange={set("status")}>{["ACTIVE", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED"].map((s) => <option key={s} value={s}>{s.toLowerCase().replace("_", " ")}</option>)}</select></div>
           <div><label className={label}>Joined</label><input type="date" className={input} value={f.joinedAt} onChange={set("joinedAt")} /></div>
         </div>

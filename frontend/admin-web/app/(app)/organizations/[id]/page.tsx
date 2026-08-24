@@ -8,6 +8,7 @@ import { StatTile } from "@/components/ui/StatTile";
 import { StatusBadge } from "@/components/ui/badges";
 import { OrgActions } from "@/components/orgs/OrgActions";
 import { EditSubscriptionButton } from "@/components/orgs/EditSubscriptionButton";
+import { TrialActions } from "@/components/orgs/TrialActions";
 import { OrgFeatureFlags, type OrgFeature } from "@/components/orgs/OrgFeatureFlags";
 import { OrgAttendancePolicy, type AttendancePolicy } from "@/components/orgs/OrgAttendancePolicy";
 import { PaginatedTable } from "@/components/ui/Pagination";
@@ -44,6 +45,7 @@ interface AdminOrgDetail {
     id: string;
     name: string;
     slug: string;
+    billingEmail: string | null;
     status: string;
     users: number;
     employees: number;
@@ -138,7 +140,7 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
             <CardHeader title="Company information" />
             <CardBody>
               <dl className="space-y-3 text-sm">
-                <InfoRow label="Slug" value={org.slug} mono />
+                <InfoRow label="Billing email" value={org.billingEmail ?? "—"} />
                 <InfoRow label="Status" value={titleCase(org.status)} />
                 <InfoRow label="Region" value={org.region ?? "—"} />
                 <InfoRow label="Timezone" value={org.timezone ?? "—"} />
@@ -159,7 +161,7 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
                     <EditSubscriptionButton
                       orgId={org.id}
                       current={{ planId: subscription.planId, seats: subscription.seats, autoRenew: subscription.autoRenew }}
-                      plans={plans.map((p) => ({ id: p.id, name: p.name, pricePerSeat: p.pricePerSeat }))}
+                      plans={plans.map((p) => ({ id: p.id, name: p.name, pricePerSeat: p.pricePerSeat, basePrice: p.basePrice, includedSeats: p.includedSeats, additionalSeatPrice: p.additionalSeatPrice }))}
                     />
                   ) : null}
                 </div>
@@ -174,6 +176,12 @@ export default async function OrgDetailPage({ params }: { params: Promise<{ id: 
                   <InfoRow label="MRR" value={usd(subscription.mrr)} />
                   {subscription.trialEndsAt ? <InfoRow label="Trial ends" value={formatDate(subscription.trialEndsAt)} /> : null}
                   <InfoRow label="Renews" value={subscription.currentPeriodEnd ? formatDate(subscription.currentPeriodEnd) : "—"} />
+                  {subscription.status === "TRIALING" ? (
+                    <div className="border-t border-hairline pt-3">
+                      <p className="mb-2 text-xs font-medium text-slate-500">Trial actions</p>
+                      <TrialActions orgId={org.id} trialEndsAt={subscription.trialEndsAt} />
+                    </div>
+                  ) : null}
                 </dl>
               ) : (
                 <p className="text-sm text-slate-500">No active subscription.</p>
@@ -330,6 +338,7 @@ const SUB_TONE: Record<string, string> = {
   PAST_DUE: "bg-amber-500/10 text-amber-700 ring-amber-600/20",
   SUSPENDED: "bg-rose-500/10 text-rose-700 ring-rose-600/20",
   CANCELED: "bg-slate-500/10 text-slate-600 ring-slate-500/20",
+  EXPIRED: "bg-slate-500/10 text-slate-600 ring-slate-500/20",
 };
 
 function SubBadge({ status }: { status: string }) {

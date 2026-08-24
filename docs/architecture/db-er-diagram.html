@@ -1,0 +1,1179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RetainIQ - Full Database ER Diagram</title>
+<style>
+:root{
+  --bg:#0d1017; --panel:#141922; --panel-2:#1a2130; --hair:#232c3d;
+  --ink:#e6ecf5; --dim:#8a96ad; --faint:#5c6880;
+  --identity:#5b9dff; --billing:#f0a13a; --analytics:#37d6a6; --notif:#c07bff; --inbox:#ff6b8b;
+  --mono:'SFMono-Regular',ui-monospace,'Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:
+  radial-gradient(1200px 600px at 80% -10%, #16202f 0%, transparent 60%),
+  var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;
+  -webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1400px;margin:0 auto;padding:0 28px}
+header{border-bottom:1px solid var(--hair);padding:40px 0 30px;background:linear-gradient(180deg,#111722, transparent)}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint)}
+h1{font-size:clamp(28px,4vw,44px);margin:.25em 0 .3em;letter-spacing:-.02em;font-weight:650}
+.sub{color:var(--dim);max-width:70ch;font-size:15px}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+.stat{background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:12px 16px;min-width:110px}
+.stat b{display:block;font-family:var(--mono);font-size:22px;font-weight:600;letter-spacing:-.02em}
+.stat span{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:20px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.legend .k{display:inline-flex;align-items:center;gap:6px}
+.chip{width:10px;height:10px;border-radius:3px;display:inline-block}
+.kf{color:var(--identity)} .uk{color:var(--analytics)} .fk{color:var(--billing)}
+nav.toc{position:sticky;top:0;z-index:20;background:rgba(13,16,23,.86);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--hair);padding:12px 0}
+nav.toc .wrap{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+nav.toc a{font-family:var(--mono);font-size:12px;padding:5px 11px;border:1px solid var(--hair);
+  border-radius:20px;color:var(--dim);transition:.15s}
+nav.toc a:hover{color:var(--ink);border-color:var(--faint);background:var(--panel)}
+.dbhead{display:flex;align-items:center;gap:12px;margin:56px 0 6px;padding-top:8px}
+.dbhead .dbh-dot{width:12px;height:12px;border-radius:3px}
+.dbhead .dbh-name{font-family:var(--mono);font-size:20px;font-weight:600;letter-spacing:.01em}
+.dbhead.identity .dbh-dot{background:var(--identity)} .dbhead.identity .dbh-name{color:var(--identity)}
+.dbhead.billing .dbh-dot{background:var(--billing)} .dbhead.billing .dbh-name{color:var(--billing)}
+.dbhead.analytics .dbh-dot{background:var(--analytics)} .dbhead.analytics .dbh-name{color:var(--analytics)}
+.dbhead.notif .dbh-dot{background:var(--notif)} .dbhead.notif .dbh-name{color:var(--notif)}
+.dbhead.inbox .dbh-dot{background:var(--inbox)} .dbhead.inbox .dbh-name{color:var(--inbox)}
+.er-sec{margin:22px 0}
+.er-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:8px;
+  padding-left:2px;border-left:3px solid var(--hair)}
+.er-sec.identity .er-head{border-color:var(--identity)}
+.er-sec.billing .er-head{border-color:var(--billing)}
+.er-sec.analytics .er-head{border-color:var(--analytics)}
+.er-sec.notif .er-head{border-color:var(--notif)}
+.er-sec.inbox .er-head{border-color:var(--inbox)}
+.er-head h3{margin:0;font-size:17px;font-weight:600;padding-left:12px}
+.er-meta{font-family:var(--mono);font-size:12px;color:var(--faint);white-space:nowrap}
+.er-card{background:var(--panel);border:1px solid var(--hair);border-radius:14px;padding:10px;
+  overflow-x:auto;box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
+.mermaid{margin:0;min-width:min-content}
+footer{border-top:1px solid var(--hair);margin-top:70px;padding:26px 0 60px;color:var(--faint);
+  font-family:var(--mono);font-size:12px}
+@media (max-width:640px){.er-head{flex-direction:column;gap:2px}}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <div class="kicker">RetainIQ &middot; Platform Data Model</div>
+  <h1>Full Database ER Diagram</h1>
+  <p class="sub">Every table across all five service databases, with all columns, types and keys. Database-per-service architecture &mdash; no cross-database foreign keys; the services stay in sync through an event outbox + broker + idempotent inbox.</p>
+  <div class="stats">
+    <div class="stat"><b>5</b><span>Databases</span></div>
+    <div class="stat"><b>79</b><span>Tables</span></div>
+    <div class="stat"><b>866</b><span>Columns</span></div>
+    <div class="stat"><b>87</b><span>Relations</span></div>
+  </div>
+  <div class="legend">
+    <span class="k"><b class="kf">PK</b> primary key</span>
+    <span class="k"><b class="uk">UK</b> unique</span>
+    <span class="k"><b class="fk">FK</b> logical ref (in-db)</span>
+    <span class="k"><span class="chip" style="background:var(--identity)"></span>identity &middot; 63</span>
+    <span class="k"><span class="chip" style="background:var(--billing)"></span>billing &middot; 4</span>
+    <span class="k"><span class="chip" style="background:var(--analytics)"></span>analytics &middot; 6</span>
+    <span class="k"><span class="chip" style="background:var(--notif)"></span>notifications &middot; 5</span>
+    <span class="k"><span class="chip" style="background:var(--inbox)"></span>inbox &middot; 1</span>
+  </div>
+</div></header>
+<nav class="toc"><div class="wrap"><span style="font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.1em">JUMP TO</span><a href="#db-identity-db">identity-db</a><a href="#db-billing-db">billing-db</a><a href="#db-analytics-db">analytics-db</a><a href="#db-notifications-db">notifications-db</a><a href="#db-inbox-db">inbox-db</a></div></nav><main class="wrap"><div class="dbhead identity" id="db-identity-db"><span class="dbh-dot"></span><span class="dbh-name">identity-db</span></div>
+<section class="er-sec identity"><div class="er-head"><h3>Tenancy &amp; Auth</h3><span class="er-meta">7 tables &middot; 72 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  Organization {
+    String id PK &quot;Primary key&quot;
+    String name &quot;Display name&quot;
+    String slug UK &quot;URL-safe unique handle&quot;
+    OrgStatus status &quot;Lifecycle status&quot;
+    String region &quot;Data-residency region&quot;
+    String timezone &quot;Org default IANA timezone&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  User {
+    String id PK &quot;Primary key&quot;
+    String email UK &quot;Login email (unique)&quot;
+    String passwordHash &quot;Argon2/bcrypt password hash&quot;
+    UserStatus status &quot;Lifecycle status&quot;
+    Boolean mfaEnabled &quot;Two-factor turned on&quot;
+    Boolean mustChangePassword &quot;Force change on next login&quot;
+    String passwordResetTokenHash &quot;Hashed reset token&quot;
+    DateTime passwordResetTokenExpiresAt &quot;Reset token expiry&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Session {
+    String id PK &quot;Primary key&quot;
+    String userId FK &quot;Related user account&quot;
+    String membershipId FK &quot;Related membership&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String refreshTokenHash UK &quot;Hashed refresh token&quot;
+    String accessTokenId FK &quot;Current access-token id (jti)&quot;
+    SessionStatus status &quot;Lifecycle status&quot;
+    String ipAddress &quot;Client IP address&quot;
+    String userAgent &quot;Client user-agent&quot;
+    DateTime expiresAt &quot;Expiry time&quot;
+    DateTime lastUsedAt &quot;Last activity on this session&quot;
+    DateTime rotatedAt &quot;Last token-rotation time&quot;
+    DateTime revokedAt &quot;When session was revoked&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  OrganizationMembership {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String userId FK &quot;Related user account&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String roleId FK &quot;Related role&quot;
+    MembershipStatus status &quot;Lifecycle status&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PlatformAdmin {
+    String id PK &quot;Primary key&quot;
+    String email UK &quot;Super-admin login email&quot;
+    String passwordHash &quot;Hashed password&quot;
+    String name &quot;Display name&quot;
+    PlatformRole role &quot;Role&quot;
+    UserStatus status &quot;Lifecycle status&quot;
+    DateTime lastLoginAt &quot;Last login time&quot;
+    String passwordResetTokenHash &quot;Password reset token hash&quot;
+    DateTime passwordResetTokenExpiresAt &quot;Password reset token expires time&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PlatformAdminSession {
+    String id PK &quot;Primary key&quot;
+    String adminId FK &quot;Related admin&quot;
+    String refreshTokenHash UK &quot;Hashed refresh token&quot;
+    String accessTokenId FK &quot;Access-token id (jti)&quot;
+    SessionStatus status &quot;Lifecycle status&quot;
+    String ipAddress &quot;Client IP address&quot;
+    String userAgent &quot;Client user-agent&quot;
+    DateTime expiresAt &quot;Expiry time&quot;
+    DateTime revokedAt &quot;Revocation time&quot;
+    DateTime rotatedAt &quot;Rotation time&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  IdempotencyRecord {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String key &quot;Client idempotency key&quot;
+    String requestHash &quot;Hash of the request&quot;
+    IdempotencyStatus status &quot;Lifecycle status&quot;
+    Int responseCode &quot;Response code&quot;
+    Json responseBody &quot;Cached response (JSON)&quot;
+    DateTime lockedUntil &quot;In-flight lock expiry&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime expiresAt &quot;Expiry time&quot;
+  }
+  User ||--o{ Session : &quot;&quot;
+  Organization ||--o{ OrganizationMembership : &quot;&quot;
+  User ||--o{ OrganizationMembership : &quot;&quot;
+  PlatformAdmin ||--o{ PlatformAdminSession : &quot;&quot;</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>RBAC / ABAC</h3><span class="er-meta">2 tables &middot; 19 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  Role {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    String description &quot;Free-text description&quot;
+    String_arr permissions &quot;Granted permission strings&quot;
+    Boolean isSystem &quot;Built-in, non-deletable role&quot;
+    Int version &quot;Optimistic-lock version&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  RoleAssignment {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String userId FK &quot;Related user account&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String roleId FK &quot;Related role&quot;
+    ScopeType scopeType &quot;ORG / DEPARTMENT / TEAM scope&quot;
+    String scopeId FK &quot;Id of the scoped entity&quot;
+    String status &quot;Lifecycle status&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    String createdBy &quot;User who created it&quot;
+  }
+  Role ||--o{ RoleAssignment : &quot;&quot;</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>Workforce &amp; Structure</h3><span class="er-meta">6 tables &middot; 77 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  Employee {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeCode &quot;Employee code&quot;
+    String email &quot;Email address&quot;
+    String personalEmail &quot;Personal (non-login) email&quot;
+    String firstName &quot;First name&quot;
+    String lastName &quot;Last name&quot;
+    String department &quot;Department name (denormalized)&quot;
+    String title &quot;Title / label&quot;
+    String departmentId FK &quot;Related department&quot;
+    String teamId FK &quot;Related team&quot;
+    String designationId FK &quot;Job title / designation&quot;
+    String shiftId FK &quot;Assigned shift&quot;
+    String rotationId FK &quot;Assigned shift rotation, if any&quot;
+    String managerId FK &quot;Approves this person&#x27;s requests&quot;
+    EmployeeStatus status &quot;Lifecycle status&quot;
+    LifecycleStage lifecycleStage &quot;Applicant / active / exited stage&quot;
+    DateTime joinedAt &quot;Employment start date&quot;
+    DateTime probationEndsAt &quot;Probation ends time&quot;
+    DateTime confirmedAt &quot;Confirmed time&quot;
+    DateTime exitedAt &quot;Exited time&quot;
+    String phone &quot;Phone number&quot;
+    DateTime dateOfBirth &quot;Date of birth&quot;
+    String gender &quot;Gender&quot;
+    String location &quot;Location label&quot;
+    String employmentType &quot;Full-time / contract / etc.&quot;
+    String address &quot;Address&quot;
+    String emergencyContactName &quot;Emergency contact name&quot;
+    String emergencyContactPhone &quot;Emergency contact phone&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+    String createdBy &quot;User who created it&quot;
+    String updatedBy &quot;User who last changed it&quot;
+  }
+  EmployeeDocument {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String category &quot;Grouping category&quot;
+    String fileName &quot;File name&quot;
+    String key UK &quot;Stable key&quot;
+    BigInt sizeBytes &quot;File size in bytes&quot;
+    String contentType &quot;MIME type&quot;
+    String uploadedBy &quot;Uploaded by&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  EmploymentEvent {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String type &quot;Kind / variant&quot;
+    String title &quot;Title / label&quot;
+    String detail &quot;Extra detail&quot;
+    DateTime effectiveDate &quot;Effective date&quot;
+    String createdBy &quot;User who created it&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  Department {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    String slug &quot;URL-safe handle&quot;
+    String description &quot;Free-text description&quot;
+    String leadEmployeeId FK &quot;Department head&quot;
+    String status &quot;Lifecycle status&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Team {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String departmentId FK &quot;Parent department&quot;
+    String name &quot;Display name&quot;
+    String description &quot;Free-text description&quot;
+    String leadEmployeeId FK &quot;Team lead&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Designation {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String title &quot;Title / label&quot;
+    String level &quot;Level&quot;
+    String departmentId FK &quot;Related department&quot;
+    String status &quot;Lifecycle status&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Department ||--o{ Employee : &quot;&quot;
+  Designation ||--o{ Employee : &quot;&quot;
+  Employee ||--o{ EmployeeDocument : &quot;&quot;
+  Employee ||--o{ EmploymentEvent : &quot;&quot;
+  Department ||--o{ Team : &quot;&quot;
+  Department ||--o{ Designation : &quot;&quot;</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>Attendance &amp; Time</h3><span class="er-meta">13 tables &middot; 176 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  AttendanceRecord {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    DateTime day &quot;Calendar day (date-only, UTC)&quot;
+    DateTime checkInAt &quot;First check-in of the day&quot;
+    DateTime checkOutAt &quot;Last check-out of the day&quot;
+    AttendanceStatus status &quot;Day status (present/late/absent)&quot;
+    Int workMinutes &quot;Net worked minutes&quot;
+    Int breakMinutes &quot;Total break minutes&quot;
+    Int unpaidBreakMinutes &quot;Break time not counted as work&quot;
+    Int overtimeMinutes &quot;Minutes beyond shift/threshold&quot;
+    Int approvedOvertimeMinutes &quot;Approved overtime minutes&quot;
+    String overtimeApprovedBy &quot;Overtime approved by&quot;
+    DateTime overtimeApprovedAt &quot;Overtime approved time&quot;
+    Int lateMinutes &quot;Minutes late past grace&quot;
+    Int earlyExitMinutes &quot;Minutes left before shift end&quot;
+    String source &quot;Origin channel&quot;
+    String checkOutSource &quot;Check out source&quot;
+    AttendanceState state &quot;Live state (checked-in/on-break/out)&quot;
+    String workLocation &quot;Work location&quot;
+    String ipAddress &quot;Client IP address&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  AttendanceSession {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String attendanceId FK &quot;Parent attendance record&quot;
+    Int sequence &quot;Nth check-in of the day&quot;
+    DateTime startedAt &quot;Session check-in time&quot;
+    DateTime endedAt &quot;Session check-out (null = open)&quot;
+    Int minutes &quot;Duration in minutes&quot;
+    String startSource &quot;web / desktop / mobile&quot;
+    String endSource &quot;How it was checked out&quot;
+    String workLocation &quot;Work location&quot;
+    String startIp &quot;Start ip&quot;
+    String endIp &quot;End ip&quot;
+    Boolean autoClosed &quot;Whether auto closed&quot;
+    String note &quot;Free-text note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  AttendanceBreak {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String attendanceId FK &quot;Parent attendance record&quot;
+    String sessionId FK &quot;Related session&quot;
+    DateTime startedAt &quot;Break start&quot;
+    DateTime endedAt &quot;Break end (null = on break)&quot;
+    Int minutes &quot;Break length in minutes&quot;
+    String kind &quot;Kind&quot;
+    Boolean paid &quot;Is paid&quot;
+    String source &quot;Origin channel&quot;
+    String note &quot;Free-text note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  AttendanceEvent {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String attendanceId FK &quot;Parent attendance record&quot;
+    String type &quot;Kind / variant&quot;
+    AttendanceState fromState &quot;From state&quot;
+    AttendanceState toState &quot;To state&quot;
+    DateTime occurredAt &quot;When it happened&quot;
+    String source &quot;Origin channel&quot;
+    String actorUserId FK &quot;Acting user&quot;
+    String workLocation &quot;Work location&quot;
+    String ipAddress &quot;Client IP address&quot;
+    String note &quot;Free-text note&quot;
+  }
+  AttendanceCorrection {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String attendanceId FK &quot;Parent attendance record&quot;
+    DateTime day &quot;Calendar day (date-only, UTC)&quot;
+    String type &quot;Kind / variant&quot;
+    String reason &quot;Reason given&quot;
+    DateTime requestedCheckInAt &quot;Requested check in time&quot;
+    DateTime requestedCheckOutAt &quot;Requested check out time&quot;
+    Int requestedOvertimeMinutes &quot;Requested overtime minutes&quot;
+    AttendanceCorrectionStatus status &quot;PENDING / APPROVED / REJECTED&quot;
+    String decidedBy &quot;Approver user id&quot;
+    DateTime decidedAt &quot;Decision time&quot;
+    String decisionNote &quot;Approver&#x27;s note&quot;
+    Json previousState &quot;Previous state&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  AttendancePolicy {
+    String id PK &quot;Primary key&quot;
+    String orgId UK &quot;Owning organization&quot;
+    Boolean allowMultipleSessions &quot;Whether allow multiple sessions&quot;
+    Boolean allowReEntry &quot;Whether allow re entry&quot;
+    Int maxSessionsPerDay &quot;Max sessions per day&quot;
+    Int maxBreaksPerDay &quot;Max breaks per day&quot;
+    Int maxBreakMinutesPerDay &quot;Max break minutes per day&quot;
+    Int maxSingleBreakMinutes &quot;Max single break minutes&quot;
+    Int paidBreakMinutesPerDay &quot;Break minutes counted as work&quot;
+    Boolean allowCheckOutOnBreak &quot;Can check out while on break&quot;
+    Int minMinutesBeforeBreak &quot;Min time in before a break&quot;
+    Int minMinutesBeforeCheckOut &quot;Min time in before check-out&quot;
+    Int graceMinutes &quot;Late-arrival grace window&quot;
+    Boolean autoCheckOutAtShiftEnd &quot;Auto-close forgotten check-outs&quot;
+    Int autoCheckOutAfterMinutes &quot;Buffer after shift end&quot;
+    Int idleCheckoutMinutes &quot;Idle time before auto check-out&quot;
+    Int idleCheckoutWarnMinutes &quot;Countdown warning length&quot;
+    Int overtimeAfterMinutes &quot;OT threshold per day&quot;
+    Int minHoursForPresent &quot;Min hours for present&quot;
+    String workModel &quot;WFO / WFH / Hybrid default&quot;
+    String_arr allowedLocations &quot;Permitted check-in locations&quot;
+    Boolean requireLocation &quot;Location required at check-in&quot;
+    Boolean allowManualCorrection &quot;Whether allow manual correction&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Shift {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    Int startMinute &quot;Start (minute of day 0-1439)&quot;
+    Int endMinute &quot;End (minute of day 0-1439)&quot;
+    Int graceMinutes &quot;Grace window (minutes)&quot;
+    Int_arr workingDays &quot;Working weekday numbers&quot;
+    Json breaks &quot;Breaks&quot;
+  }
+  ShiftRotation {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    DateTime anchorDate &quot;Rotation cycle start date&quot;
+    Json steps &quot;Steps&quot;
+  }
+  Holiday {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    DateTime date &quot;Holiday date (date-only)&quot;
+    String type &quot;PUBLIC / OPTIONAL / DEPARTMENT&quot;
+    String departmentId FK &quot;Related department&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  LeaveType {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    String code &quot;Code&quot;
+    Int annualQuota &quot;Annual quota&quot;
+    Boolean paid &quot;Is paid&quot;
+    String color &quot;Color&quot;
+    String status &quot;Lifecycle status&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  LeaveRequest {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String leaveTypeId FK &quot;Related leave type&quot;
+    DateTime startDate &quot;First day of leave&quot;
+    DateTime endDate &quot;Last day of leave&quot;
+    Int days &quot;Days&quot;
+    String reason &quot;Reason given&quot;
+    LeaveStatus status &quot;PENDING / APPROVED / REJECTED&quot;
+    String decidedBy &quot;Approver user id&quot;
+    DateTime decidedAt &quot;Decision time&quot;
+    String decisionNote &quot;Approver&#x27;s note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  TimeEntry {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    DateTime date &quot;Date (date-only)&quot;
+    String projectId FK &quot;Related project&quot;
+    String taskId FK &quot;Related task&quot;
+    Int minutes &quot;Logged minutes&quot;
+    Boolean billable &quot;Whether billable&quot;
+    String description &quot;Free-text description&quot;
+    String source &quot;Origin channel&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Timesheet {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    DateTime weekStart &quot;Week start&quot;
+    TimesheetStatus status &quot;DRAFT / SUBMITTED / APPROVED&quot;
+    Int totalMinutes &quot;Total minutes&quot;
+    DateTime submittedAt &quot;Submitted time&quot;
+    String decidedBy &quot;Approver / decider&quot;
+    DateTime decidedAt &quot;Decision time&quot;
+    String note &quot;Free-text note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  AttendanceRecord ||--o{ AttendanceSession : &quot;&quot;
+  AttendanceRecord ||--o{ AttendanceBreak : &quot;&quot;
+  AttendanceSession ||--o{ AttendanceBreak : &quot;&quot;
+  AttendanceRecord ||--o{ AttendanceEvent : &quot;&quot;
+  AttendanceRecord ||--o{ AttendanceCorrection : &quot;&quot;
+  LeaveType ||--o{ LeaveRequest : &quot;&quot;</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>HR Suite: Hiring, Onboarding, Performance</h3><span class="er-meta">14 tables &middot; 142 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  Requisition {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String title &quot;Title / label&quot;
+    String departmentId FK &quot;Related department&quot;
+    String designationId FK &quot;Job title / designation&quot;
+    String location &quot;Location label&quot;
+    String employmentType &quot;Employment type&quot;
+    String description &quot;Free-text description&quot;
+    Int openings &quot;Openings&quot;
+    RequisitionStatus status &quot;OPEN / CLOSED / FILLED&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Candidate {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String firstName &quot;First name&quot;
+    String lastName &quot;Last name&quot;
+    String email &quot;Candidate contact email&quot;
+    String phone &quot;Phone number&quot;
+    String source &quot;Origin channel&quot;
+    String resumeKey &quot;Resume key&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Application {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String candidateId FK &quot;Related candidate&quot;
+    String requisitionId FK &quot;Related requisition&quot;
+    ApplicationStage stage &quot;Pipeline stage&quot;
+    Int rating &quot;Score value&quot;
+    String notes &quot;Notes&quot;
+    String rejectedReason &quot;Rejected reason&quot;
+    String hiredEmployeeId FK &quot;Related hired employee&quot;
+    DateTime appliedAt &quot;Applied time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Interview {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String applicationId FK &quot;Related application&quot;
+    String round &quot;Round&quot;
+    DateTime scheduledAt &quot;Interview time&quot;
+    String interviewer &quot;Interviewer&quot;
+    String mode &quot;Mode&quot;
+    InterviewOutcome outcome &quot;Outcome&quot;
+    Int rating &quot;Score value&quot;
+    String feedback &quot;Feedback&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  Offer {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String applicationId FK &quot;Related application&quot;
+    String title &quot;Title / label&quot;
+    String salary &quot;Offered salary amount&quot;
+    DateTime joiningDate &quot;Joining date&quot;
+    OfferStatus status &quot;DRAFT / SENT / ACCEPTED / DECLINED&quot;
+    DateTime sentAt &quot;When it was sent&quot;
+    DateTime decidedAt &quot;Decision time&quot;
+    String note &quot;Free-text note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  OnboardingTemplate {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    Boolean isDefault &quot;Whether is default&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  OnboardingTemplateItem {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String templateId FK &quot;Source template&quot;
+    String title &quot;Title / label&quot;
+    String description &quot;Free-text description&quot;
+    OnboardingItemCategory category &quot;Grouping category&quot;
+    OnboardingAssignee assignee &quot;Assigned employee&quot;
+    Int order &quot;Step ordering&quot;
+    Boolean required &quot;Mandatory step&quot;
+  }
+  OnboardingJourney {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId UK &quot;Related employee&quot;
+    String templateId FK &quot;Source template&quot;
+    OnboardingJourneyStatus status &quot;Onboarding progress state&quot;
+    DateTime startedAt &quot;Start time&quot;
+    DateTime completedAt &quot;Completion time&quot;
+  }
+  OnboardingTask {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String journeyId FK &quot;Related journey&quot;
+    String title &quot;Title / label&quot;
+    String description &quot;Free-text description&quot;
+    OnboardingItemCategory category &quot;Grouping category&quot;
+    OnboardingAssignee assignee &quot;Assigned employee&quot;
+    Int order &quot;Sort order&quot;
+    Boolean required &quot;Is mandatory&quot;
+    OnboardingTaskStatus status &quot;Lifecycle status&quot;
+    DateTime completedAt &quot;When the task was done&quot;
+    String completedBy &quot;Completed by&quot;
+    String note &quot;Free-text note&quot;
+  }
+  ReviewCycle {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    DateTime periodStart &quot;Review period start&quot;
+    DateTime periodEnd &quot;Review period end&quot;
+    ReviewCycleStatus status &quot;Lifecycle status&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PerformanceReview {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String cycleId FK &quot;Related cycle&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String reviewerEmployeeId FK &quot;Related reviewer employee&quot;
+    PerformanceReviewStatus status &quot;Review workflow state&quot;
+    Int overallRating &quot;Overall rating&quot;
+    String selfAssessment &quot;Self assessment&quot;
+    String strengths &quot;Strengths&quot;
+    String improvements &quot;Improvements&quot;
+    String managerComment &quot;Manager comment&quot;
+    DateTime submittedAt &quot;Submitted time&quot;
+    DateTime acknowledgedAt &quot;Acknowledged time&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  ReviewRating {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String reviewId FK &quot;Related review&quot;
+    String competency &quot;Competency&quot;
+    Int score &quot;Score&quot;
+    String comment &quot;Comment&quot;
+  }
+  Achievement {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String title &quot;Title / label&quot;
+    String description &quot;Free-text description&quot;
+    String category &quot;Grouping category&quot;
+    DateTime awardedOn &quot;Awarded on&quot;
+    String createdBy &quot;User who created it&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  Goal {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String projectId FK &quot;Related project&quot;
+    String title &quot;Title / label&quot;
+    String description &quot;Free-text description&quot;
+    GoalStatus status &quot;Lifecycle status&quot;
+    String metric &quot;Metric&quot;
+    Float target &quot;Target&quot;
+    Float current &quot;Current&quot;
+    String ownerEmployeeId FK &quot;Related owner employee&quot;
+    DateTime dueDate &quot;Due date&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Candidate ||--o{ Application : &quot;&quot;
+  Requisition ||--o{ Application : &quot;&quot;
+  Application ||--o{ Interview : &quot;&quot;
+  Application ||--o{ Offer : &quot;&quot;
+  OnboardingTemplate ||--o{ OnboardingTemplateItem : &quot;&quot;
+  OnboardingTemplate ||--o{ OnboardingJourney : &quot;&quot;
+  OnboardingJourney ||--o{ OnboardingTask : &quot;&quot;
+  ReviewCycle ||--o{ PerformanceReview : &quot;&quot;
+  PerformanceReview ||--o{ ReviewRating : &quot;&quot;</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>Payroll &amp; Client Billing</h3><span class="er-meta">8 tables &middot; 92 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  PayrollCycle {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    DateTime periodStart &quot;Pay period start&quot;
+    DateTime periodEnd &quot;Pay period end&quot;
+    PayrollCycleStatus status &quot;DRAFT / PROCESSED / PAID&quot;
+    String currency &quot;ISO currency code&quot;
+    DateTime runAt &quot;Run time&quot;
+    DateTime lockedAt &quot;Locked time&quot;
+    String lockedBy &quot;Locked by&quot;
+    DateTime paidAt &quot;When it was paid&quot;
+    String note &quot;Free-text note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PayrollLine {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String cycleId FK &quot;Related cycle&quot;
+    String employeeId FK &quot;Related employee&quot;
+    Int regularMinutes &quot;Regular minutes&quot;
+    Int overtimeMinutes &quot;Overtime minutes&quot;
+    Int billableMinutes &quot;Billable minutes&quot;
+    Int costRateCents &quot;Cost rate (minor units)&quot;
+    Int regularPayCents &quot;Regular pay (minor units)&quot;
+    Int overtimePayCents &quot;Overtime pay (minor units)&quot;
+    Int grossPayCents &quot;Gross pay (minor units)&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PayrollSetting {
+    String id PK &quot;Primary key&quot;
+    String orgId UK &quot;Owning organization&quot;
+    String currency &quot;ISO currency code&quot;
+    Int overtimeAfterMins &quot;Overtime after mins&quot;
+    Int overtimeMultiplier &quot;Overtime multiplier&quot;
+    PayrollCycleFrequency cycleFrequency &quot;Cycle frequency&quot;
+    String invoicePrefix &quot;Invoice prefix&quot;
+    Boolean requireApproval &quot;Whether require approval&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  EmployeeRate {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    Int costRateCents &quot;Cost rate (minor units)&quot;
+    Int billRateCents &quot;Bill rate (minor units)&quot;
+    DateTime effectiveFrom &quot;Effective from&quot;
+    DateTime effectiveTo &quot;Effective to&quot;
+    String note &quot;Free-text note&quot;
+    String createdBy &quot;User who created it&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  BillRate {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String clientId FK &quot;Related client&quot;
+    String projectId FK &quot;Related project&quot;
+    String employeeId FK &quot;Related employee&quot;
+    Int billRateCents &quot;Client bill rate (minor units)&quot;
+    DateTime effectiveFrom &quot;Effective from&quot;
+    DateTime effectiveTo &quot;Effective to&quot;
+    String note &quot;Free-text note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Client {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Client company name&quot;
+    String code &quot;Code&quot;
+    String contactEmail &quot;Contact email&quot;
+    ClientStatus status &quot;Lifecycle status&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  ClientInvoice {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String clientId FK &quot;Related client&quot;
+    String invoiceNumber &quot;Invoice number&quot;
+    ClientInvoiceStatus status &quot;DRAFT / SENT / PAID&quot;
+    DateTime periodStart &quot;Billed period start&quot;
+    DateTime periodEnd &quot;Billed period end&quot;
+    String currency &quot;ISO currency code&quot;
+    Int subtotalCents &quot;Subtotal (minor units)&quot;
+    Int totalCents &quot;Total (minor units)&quot;
+    DateTime issuedAt &quot;Issued time&quot;
+    DateTime dueAt &quot;Due time&quot;
+    DateTime paidAt &quot;When it was paid&quot;
+    String note &quot;Free-text note&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  ClientInvoiceLine {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String invoiceId FK &quot;Related invoice&quot;
+    String projectId FK &quot;Related project&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String description &quot;Free-text description&quot;
+    Int minutes &quot;Duration in minutes&quot;
+    Int billRateCents &quot;Line rate (minor units)&quot;
+    Int amountCents &quot;Amount (minor units)&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  Client ||--o{ BillRate : &quot;&quot;
+  Client ||--o{ ClientInvoice : &quot;&quot;
+  ClientInvoice ||--o{ ClientInvoiceLine : &quot;&quot;
+  PayrollCycle ||--o{ PayrollLine : &quot;&quot;</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>Projects &amp; Tasks</h3><span class="er-meta">5 tables &middot; 50 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  Project {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String name &quot;Display name&quot;
+    String description &quot;Free-text description&quot;
+    ProjectStatus status &quot;ACTIVE / ARCHIVED&quot;
+    String ownerEmployeeId FK &quot;Project owner&quot;
+    String teamId FK &quot;Related team&quot;
+    String clientId FK &quot;Related client&quot;
+    DateTime startDate &quot;Start date&quot;
+    DateTime dueDate &quot;Due date&quot;
+    Int progress &quot;Progress&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Task {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String projectId FK &quot;Related project&quot;
+    String title &quot;Title / label&quot;
+    String description &quot;Free-text description&quot;
+    TaskStatus status &quot;TODO / IN_PROGRESS / DONE&quot;
+    TaskPriority priority &quot;Priority&quot;
+    String assigneeEmployeeId FK &quot;Related assignee employee&quot;
+    DateTime dueDate &quot;Task due date&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  TaskComment {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String taskId FK &quot;Related task&quot;
+    String authorUserId FK &quot;Related author user&quot;
+    String body &quot;Comment text&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Milestone {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String projectId FK &quot;Related project&quot;
+    String title &quot;Title / label&quot;
+    String description &quot;Free-text description&quot;
+    MilestoneStatus status &quot;Lifecycle status&quot;
+    String ownerEmployeeId FK &quot;Related owner employee&quot;
+    DateTime dueDate &quot;Milestone target date&quot;
+    DateTime completedAt &quot;Completion time&quot;
+    Int progress &quot;Progress&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  ProjectSetting {
+    String id PK &quot;Primary key&quot;
+    String orgId UK &quot;Owning organization&quot;
+    Json statuses &quot;Statuses&quot;
+    Json priorities &quot;Priorities&quot;
+    String defaultProjectStatus &quot;Default project status&quot;
+    String defaultTaskPriority &quot;Default task priority&quot;
+    Json workflow &quot;Workflow&quot;
+  }
+  Project ||--o{ Task : &quot;&quot;
+  Task ||--o{ TaskComment : &quot;&quot;
+  Project ||--o{ Milestone : &quot;&quot;</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>Monitoring &amp; Platform Config</h3><span class="er-meta">6 tables &middot; 42 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  ScreenshotObject {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String key UK &quot;Stable key&quot;
+    BigInt sizeBytes &quot;Image size in bytes&quot;
+    String contentType &quot;MIME type&quot;
+    DateTime capturedAt &quot;Screenshot timestamp&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  MonitoringPolicy {
+    String id PK &quot;Primary key&quot;
+    String orgId UK &quot;Owning organization&quot;
+    Boolean screenshotsEnabled &quot;Whether screenshots enabled&quot;
+    Int screenshotIntervalSeconds &quot;Capture interval&quot;
+    Int screenshotQuality &quot;Screenshot quality&quot;
+    Int screenshotMaxWidth &quot;Screenshot max width&quot;
+    Int screenshotRetentionDays &quot;Screenshot retention days&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  ProductivitySetting {
+    String id PK &quot;Primary key&quot;
+    String orgId UK &quot;Owning organization&quot;
+    String_arr productiveApps &quot;Apps counted productive&quot;
+    String_arr productiveDomains &quot;Productive domains&quot;
+    String_arr distractingApps &quot;Distracting apps&quot;
+    String_arr distractingDomains &quot;Distracting domains&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  OrgFeatureFlag {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String feature &quot;Feature&quot;
+    Boolean enabled &quot;Flag on/off for this org&quot;
+    String reason &quot;Reason given&quot;
+    String updatedBy &quot;User who last changed it&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PlatformSetting {
+    String key PK &quot;Global setting key&quot;
+    Json value &quot;Global setting value&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PlatformEvent {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String actorUserId FK &quot;Acting user&quot;
+    String type &quot;Kind / variant&quot;
+    String summary &quot;Summary&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }</pre></div></section>
+<section class="er-sec identity"><div class="er-head"><h3>Audit &amp; Outbox</h3><span class="er-meta">2 tables &middot; 24 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  AuditEvent {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String actorUserId FK &quot;Who performed it&quot;
+    String action &quot;Audited action performed&quot;
+    String resourceType &quot;Kind of affected resource&quot;
+    String resourceId FK &quot;Affected resource id&quot;
+    String ipAddress &quot;Client IP address&quot;
+    String userAgent &quot;Client user-agent&quot;
+    Json before &quot;Snapshot before the change&quot;
+    Json after &quot;Snapshot after the change&quot;
+    Json metadata &quot;Extra context (JSON)&quot;
+    DateTime occurredAt &quot;When it happened&quot;
+  }
+  OutboxEvent {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String topic &quot;Topic&quot;
+    String eventType &quot;Domain event name&quot;
+    String aggregateType &quot;Aggregate type&quot;
+    String aggregateId FK &quot;Source aggregate id&quot;
+    Json payload &quot;Serialized event body&quot;
+    OutboxStatus status &quot;Lifecycle status&quot;
+    Int attempts &quot;Attempts&quot;
+    DateTime nextRunAt &quot;Next run time&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime publishedAt &quot;When broker-published (null=pending)&quot;
+  }</pre></div></section>
+<div class="dbhead billing" id="db-billing-db"><span class="dbh-dot"></span><span class="dbh-name">billing-db</span></div>
+<section class="er-sec billing"><div class="er-head"><h3>All tables</h3><span class="er-meta">4 tables &middot; 50 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  Plan {
+    String id PK &quot;Primary key&quot;
+    String name &quot;Display name&quot;
+    String description &quot;Free-text description&quot;
+    Int pricePerSeat &quot;Price per seat&quot;
+    String billingPeriod &quot;Billing period&quot;
+    Int seatLimit &quot;Seat limit&quot;
+    Int storageLimitMb &quot;Storage limit mb&quot;
+    String_arr features &quot;Included feature set&quot;
+    String color &quot;Color&quot;
+    Int sortOrder &quot;Sort order&quot;
+    Boolean isActive &quot;Whether is active&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Subscription {
+    String id PK &quot;Primary key&quot;
+    String orgId UK &quot;Owning organization&quot;
+    String planId FK &quot;Subscribed plan&quot;
+    SubscriptionStatus status &quot;ACTIVE / PAST_DUE / CANCELED&quot;
+    Int seats &quot;Seats&quot;
+    Int activeSeats &quot;Active seats&quot;
+    DateTime currentPeriodStart &quot;Billing period start&quot;
+    DateTime currentPeriodEnd &quot;Billing period end&quot;
+    DateTime trialEndsAt &quot;Trial ends time&quot;
+    DateTime canceledAt &quot;Canceled time&quot;
+    Boolean autoRenew &quot;Whether auto renew&quot;
+    String billingEmail &quot;Billing email&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  BillingEvent {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String type &quot;Kind / variant&quot;
+    String summary &quot;Summary&quot;
+    String planId FK &quot;Related plan&quot;
+    Int amountCents &quot;Amount (minor units)&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  Invoice {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String subscriptionId FK &quot;Related subscription&quot;
+    String invoiceNumber UK &quot;Invoice number&quot;
+    InvoiceStatus status &quot;OPEN / PAID / VOID&quot;
+    DateTime issuedAt &quot;Issued time&quot;
+    DateTime dueAt &quot;Due time&quot;
+    DateTime paidAt &quot;When paid&quot;
+    DateTime periodStart &quot;Period start&quot;
+    DateTime periodEnd &quot;Period end&quot;
+    Int subtotal &quot;Subtotal&quot;
+    Int totalAmount &quot;Total amount&quot;
+    Int amountDue &quot;Amount due&quot;
+    String currency &quot;ISO currency code&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  Plan ||--o{ Subscription : &quot;&quot;
+  Subscription ||--o{ Invoice : &quot;&quot;</pre></div></section>
+<div class="dbhead analytics" id="db-analytics-db"><span class="dbh-dot"></span><span class="dbh-name">analytics-db</span></div>
+<section class="er-sec analytics"><div class="er-head"><h3>All tables</h3><span class="er-meta">6 tables &middot; 61 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  ConsumedEvent {
+    String id PK &quot;Primary key&quot;
+    String eventId FK &quot;Processed event id (dedupe)&quot;
+    String consumer &quot;Consumer&quot;
+    String stream &quot;Stream&quot;
+    String eventType &quot;Event kind&quot;
+    String orgId FK &quot;Owning organization&quot;
+    Json payload &quot;Serialized data&quot;
+    DateTime consumedAt &quot;Consumed time&quot;
+  }
+  EmployeeDayFact {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    DateTime day &quot;Calendar day (date-only, UTC)&quot;
+    Int activeSeconds &quot;Active seconds&quot;
+    Int idleSeconds &quot;Idle seconds&quot;
+    Int productiveSeconds &quot;Productive seconds&quot;
+    Int eventCount &quot;Event count&quot;
+    Float productivityScore &quot;Productivity score&quot;
+    Float focusScore &quot;Focus score&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  WorkSession {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    String sessionKey &quot;Session key&quot;
+    DateTime day &quot;Calendar day (date-only, UTC)&quot;
+    DateTime startedAt &quot;Start time&quot;
+    DateTime endedAt &quot;End time (null = open)&quot;
+    Int activeSeconds &quot;Active seconds&quot;
+    Int idleSeconds &quot;Idle seconds&quot;
+    Int breakSeconds &quot;Break seconds&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  AppUsageDaily {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    DateTime day &quot;Calendar day (date-only, UTC)&quot;
+    String appName &quot;App name&quot;
+    String category &quot;Grouping category&quot;
+    Int seconds &quot;Duration in seconds&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  WebsiteUsageDaily {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    DateTime day &quot;Calendar day (date-only, UTC)&quot;
+    String domain &quot;Domain&quot;
+    String category &quot;Grouping category&quot;
+    Int seconds &quot;Duration in seconds&quot;
+    Int visits &quot;Visits&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  ActivityEvent {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String employeeId FK &quot;Related employee&quot;
+    DateTime day &quot;Calendar day (date-only, UTC)&quot;
+    DateTime occurredAt &quot;When it happened&quot;
+    String type &quot;Kind / variant&quot;
+    String title &quot;Title / label&quot;
+    String detail &quot;Extra detail&quot;
+    String category &quot;Grouping category&quot;
+    Int seconds &quot;Duration in seconds&quot;
+  }</pre></div></section>
+<div class="dbhead notif" id="db-notifications-db"><span class="dbh-dot"></span><span class="dbh-name">notifications-db</span></div>
+<section class="er-sec notif"><div class="er-head"><h3>All tables</h3><span class="er-meta">5 tables &middot; 53 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  Notification {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String recipientUserId FK &quot;Related recipient user&quot;
+    NotificationChannel channel &quot;Channel&quot;
+    NotificationCategory category &quot;Grouping category&quot;
+    NotificationPriority priority &quot;Priority&quot;
+    String type &quot;Kind / variant&quot;
+    String title &quot;Title / label&quot;
+    String body &quot;Body&quot;
+    String link &quot;Link&quot;
+    NotificationStatus status &quot;Lifecycle status&quot;
+    String dedupeKey UK &quot;Dedupe key&quot;
+    String sourceEventId FK &quot;Related source event&quot;
+    DateTime sentAt &quot;When it was sent&quot;
+    DateTime readAt &quot;When the user read it&quot;
+    DateTime archivedAt &quot;Archived time&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+  }
+  NotificationPreference {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String userId FK &quot;Related user account&quot;
+    NotificationCategory category &quot;Grouping category&quot;
+    Boolean inApp &quot;Whether in app&quot;
+    Boolean email &quot;Email address&quot;
+    Boolean push &quot;Whether push&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  NotificationSetting {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String userId FK &quot;Related user account&quot;
+    Boolean quietHoursEnabled &quot;Whether quiet hours enabled&quot;
+    Int quietStart &quot;Quiet start&quot;
+    Int quietEnd &quot;Quiet end&quot;
+    String timezone &quot;IANA timezone&quot;
+    String digest &quot;Digest&quot;
+    Int digestHour &quot;Digest hour&quot;
+    DateTime lastDigestAt &quot;Last digest time&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }
+  PushSubscription {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String userId FK &quot;Related user account&quot;
+    String endpoint UK &quot;Endpoint&quot;
+    String p256dh &quot;P256dh&quot;
+    String auth &quot;Auth&quot;
+    String userAgent &quot;Client user-agent&quot;
+    DateTime createdAt &quot;Row creation time&quot;
+    DateTime lastUsedAt &quot;Last used time&quot;
+  }
+  OrgRecipient {
+    String id PK &quot;Primary key&quot;
+    String orgId FK &quot;Owning organization&quot;
+    String userId FK &quot;Related user account&quot;
+    String roleName &quot;Role name&quot;
+    String status &quot;Lifecycle status&quot;
+    String email &quot;Projected recipient email&quot;
+    String name &quot;Display name&quot;
+    DateTime updatedAt &quot;Last update time&quot;
+  }</pre></div></section>
+<div class="dbhead inbox" id="db-inbox-db"><span class="dbh-dot"></span><span class="dbh-name">inbox-db</span></div>
+<section class="er-sec inbox"><div class="er-head"><h3>All tables</h3><span class="er-meta">1 tables &middot; 8 columns</span></div><div class="er-card"><pre class="mermaid">erDiagram
+  ConsumedEvent {
+    String id PK &quot;Primary key&quot;
+    String eventId FK &quot;Processed event id (dedupe)&quot;
+    String consumer &quot;Consumer&quot;
+    String stream &quot;Stream&quot;
+    String eventType &quot;Event kind&quot;
+    String orgId FK &quot;Owning organization&quot;
+    Json payload &quot;Serialized data&quot;
+    DateTime consumedAt &quot;Consumed time&quot;
+  }</pre></div></section></main>
+<footer><div class="wrap">Generated from the live Prisma schemas &middot; backend/packages/database/prisma/{identity,billing,analytics,notifications,inbox}/schema.prisma &middot; Relationships shown are in-database logical references (FKs); cross-service links resolve through domain events, not database constraints.</div></footer>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad:true, theme:'dark',
+  er:{ useMaxWidth:false, entityPadding:10, fontSize:12 },
+  themeVariables:{
+    fontFamily:"'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace",
+    primaryColor:'#1a2130', primaryBorderColor:'#37507a', primaryTextColor:'#e6ecf5',
+    lineColor:'#4a5b7a', background:'#141922'
+  }
+});
+</script>
+</body></html>

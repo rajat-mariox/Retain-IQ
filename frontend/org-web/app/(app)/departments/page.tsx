@@ -5,6 +5,7 @@ import { PageBody } from "@/components/layout/PageBody";
 import { StatTile } from "@/components/ui/StatTile";
 import { ProjectsTabs } from "@/components/projects/ProjectsTabs";
 import { DepartmentsManager } from "@/components/projects/DepartmentsManager";
+import { EscalationRollup } from "@/components/observations/EscalationRollup";
 import { getDepartmentsOverview, getProjectPeople, getSession } from "@/lib/api";
 
 export default async function DepartmentsPage() {
@@ -17,6 +18,7 @@ export default async function DepartmentsPage() {
   const canManageTabs = perms.includes("project.write");
   if (!canManageTabs) redirect("/projects"); // employees don't see Departments
   const canManageStructure = perms.includes("employee.write");
+  const canSeeCases = perms.includes("observation.read") || session?.role.name === "Owner";
   const totalEmployees = depts.reduce((s, d) => s + d.employees, 0);
   const totalProjects = depts.reduce((s, d) => s + d.projects, 0);
   const avgProd = depts.length ? Math.round(depts.reduce((s, d) => s + d.productivity, 0) / depts.length) : 0;
@@ -35,6 +37,7 @@ export default async function DepartmentsPage() {
         </div>
 
         <DepartmentsManager departments={depts} people={people} canManage={canManageStructure} />
+        {canSeeCases ? <EscalationRollup mode="department" /> : null}
       </PageBody>
     </>
   );

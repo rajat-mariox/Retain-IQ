@@ -12,12 +12,16 @@ import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { RequireFeature } from "../../common/settings/require-feature.decorator.js";
 import { StorageService } from "./storage.service.js";
 
-const uploadSchema = z.object({
+// Server-side masked upload: the agent sends the raw image (base64) and the
+// backend masks its PII before storing, so raw captures never reach storage.
+// (There is deliberately NO presign-and-PUT-direct path any more — that would
+// let a raw, unmasked capture reach object storage.)
+const maskedUploadSchema = z.object({
   contentType: z.enum(["image/jpeg", "image/png", "image/webp"]).default("image/jpeg"),
-  sizeBytes: z.coerce.number().int().positive().max(50 * 1024 * 1024), // 50MB/screenshot ceiling
+  data: z.string().min(1).max(24 * 1024 * 1024), // base64 of the raw screenshot
   capturedAt: z.coerce.date().optional(),
 });
-type UploadInput = z.infer<typeof uploadSchema>;
+type MaskedUploadInput = z.infer<typeof maskedUploadSchema>;
 
 const listQuerySchema = offsetPaginationQuerySchema.extend({ employeeId: z.string().uuid().optional() });
 type ListQuery = z.infer<typeof listQuerySchema>;
@@ -41,17 +45,22 @@ export class StorageController {
     return this.storage.usage(requireTenantContext().orgId);
   }
 
-  /** Reserve quota + get a presigned PUT URL; the client uploads the binary directly. */
-  @Post("screenshots")
-  @PublicRoute("the agent uploads the caller's own screenshot")
-  createUpload(@Body(new ZodValidationPipe(uploadSchema)) body: UploadInput) {
+  /**
+   * Masked upload: the agent posts the raw screenshot (base64) and the backend
+   * masks its PII, then stores ONLY the masked image. Raw bytes are processed in
+   * memory and never persisted. If masking is unavailable the request fails and
+   * nothing is stored (fail closed).
+   */
+  @Post("screenshots/upload")
+  @PublicRoute("the agent uploads its own screenshot for server-side masking + storage")
+  uploadMasked(@Body(new ZodValidationPipe(maskedUploadSchema)) body: MaskedUploadInput) {
     const ctx = requireTenantContext();
-    return this.storage.createUpload({
+    return this.storage.storeMaskedScreenshot({
       orgId: ctx.orgId,
       membershipId: ctx.membershipId,
       contentType: body.contentType,
-      sizeBytes: body.sizeBytes,
       capturedAt: body.capturedAt ?? new Date(),
+      data: Buffer.from(body.data, "base64"),
     });
   }
 

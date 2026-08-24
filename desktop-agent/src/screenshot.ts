@@ -5,7 +5,7 @@
  * object storage.
  */
 import { desktopCapturer, screen } from "electron";
-import { requestScreenshotUpload, putBinary } from "./api.js";
+import { uploadScreenshot } from "./api.js";
 
 const CONTENT_TYPE = "image/jpeg";
 
@@ -53,20 +53,21 @@ export interface UploadedShot {
 }
 
 /**
- * Capture every screen and upload each one. Returns the stored objects (one per
- * display that captured and uploaded successfully); empty if screenshots are
- * disabled, over quota, or capture failed. Each image reserves its own quota,
- * so a partial success is fine — whatever uploaded is kept.
+ * Capture every screen and upload each one for server-side PII masking + storage.
+ * The raw JPEG is sent to identity, which masks it and stores ONLY the masked
+ * image — an unmasked capture never reaches object storage. Returns the stored
+ * objects (one per display that captured and stored successfully); empty if
+ * screenshots are disabled, over quota, masking is unavailable, or capture
+ * failed. A partial success is fine — whatever stored is kept.
  */
 export async function captureAndUpload(maxWidth: number, quality: number): Promise<UploadedShot[]> {
   const shots = await captureAll(maxWidth, quality);
   const uploaded: UploadedShot[] = [];
   for (const shot of shots) {
     if (shot.buffer.length === 0) continue;
-    const meta = await requestScreenshotUpload(shot.buffer.length, CONTENT_TYPE);
-    if (!meta) break; // disabled or over quota — stop trying the rest of this pass
-    const ok = await putBinary(meta.uploadUrl, shot.buffer, CONTENT_TYPE);
-    if (ok) uploaded.push({ key: meta.key, display: shot.display, displayCount: shot.displayCount });
+    const stored = await uploadScreenshot(shot.buffer, CONTENT_TYPE);
+    if (!stored) break; // disabled / over quota / masking unavailable — stop this pass
+    uploaded.push({ key: stored.key, display: shot.display, displayCount: shot.displayCount });
   }
   return uploaded;
 }

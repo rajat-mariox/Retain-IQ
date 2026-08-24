@@ -12,6 +12,7 @@ import { permissions } from "@retainiq/authz";
 import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
 import { EmployeeRepository } from "./employee.repository.js";
+import { ExitService } from "./exit.service.js";
 
 export type EmployeeUpdateInput = {
   firstName?: string;
@@ -24,6 +25,7 @@ export type EmployeeUpdateInput = {
   departmentId?: string | null;
   teamId?: string | null;
   shiftId?: string | null;
+  rotationId?: string | null;
   managerId?: string | null;
   status?: string;
   joinedAt?: string | null;
@@ -32,6 +34,8 @@ export type EmployeeUpdateInput = {
   gender?: string | null;
   location?: string | null;
   employmentType?: string | null;
+  workModel?: string | null;
+  officeDays?: number[];
   address?: string | null;
   emergencyContactName?: string | null;
   emergencyContactPhone?: string | null;
@@ -47,6 +51,7 @@ export class EmployeeService {
     private readonly outbox: OutboxService,
     private readonly seatLimit: SeatLimitService,
     private readonly accessScope: AccessScopeService,
+    private readonly exitService: ExitService,
   ) {}
 
   /**
@@ -176,13 +181,16 @@ export class EmployeeService {
     // is NOT a plain scalar edit — changing it re-issues login credentials. The
     // personal email is ordinary HR profile data. Everything else is a scalar.
     const scalarKeys = [
-      "firstName", "lastName", "personalEmail", "employeeCode", "title", "designationId", "departmentId", "teamId", "shiftId", "managerId",
-      "status", "phone", "gender", "location", "employmentType", "address", "emergencyContactName", "emergencyContactPhone",
+      "firstName", "lastName", "personalEmail", "employeeCode", "title", "designationId", "departmentId", "teamId", "shiftId", "rotationId", "managerId",
+      "status", "phone", "gender", "location", "employmentType", "workModel", "address", "emergencyContactName", "emergencyContactPhone",
     ] as const;
     const data: Record<string, unknown> = {};
     for (const k of scalarKeys) if (input[k] !== undefined) data[k] = input[k];
     if (input.dateOfBirth !== undefined) data.dateOfBirth = input.dateOfBirth ? new Date(input.dateOfBirth) : null;
     if (input.joinedAt !== undefined) data.joinedAt = input.joinedAt ? new Date(input.joinedAt) : null;
+    // officeDays only applies to HYBRID; clear it otherwise so stale days can't linger.
+    if (input.officeDays !== undefined) data.officeDays = input.workModel === "HYBRID" ? [...new Set(input.officeDays)].filter((d) => d >= 0 && d <= 6).sort((a, b) => a - b) : [];
+    else if (input.workModel !== undefined && input.workModel !== "HYBRID") data.officeDays = [];
 
     // Work-email change: sync the login account and re-issue a temporary password
     // so the person signs in with the new address. Returns the temp password to
@@ -285,6 +293,11 @@ export class EmployeeService {
     // Only exits reach the platform feed — probation/confirmation are the org's
     // internal HR business, not something a super-admin needs to watch.
     if (input.action === "exit") {
+      // A quick exit still leaves a searchable alumni record (rehire-eligible by
+      // default), so it stays consistent with the structured exit process.
+      await this.prisma.$transaction((tx) =>
+        this.exitService.upsertAlumni(tx, context.orgId, employeeId, "OTHER", true, null, data.exitedAt instanceof Date ? data.exitedAt : new Date()),
+      );
       this.recordPlatformEvent(context.orgId, "user.removed", `${updated.firstName} ${updated.lastName} left the organization`);
     }
     return updated;

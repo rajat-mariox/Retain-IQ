@@ -1,15 +1,20 @@
-import { Check, CreditCard } from "lucide-react";
+import { CreditCard } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { InvoiceBadge, SubscriptionBadge } from "@/components/ui/badges";
 import { PaginatedTable } from "@/components/ui/Pagination";
+import { SeatUpgradeNotice } from "@/components/billing/SeatUpgradeNotice";
+import { PlanCatalog } from "@/components/billing/PlanCatalog";
+import { TrialStatus } from "@/components/billing/TrialStatus";
 import { getBilling } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
-export default async function BillingPage() {
+export default async function BillingPage({ searchParams }: { searchParams: Promise<{ upgrade?: string; reason?: string }> }) {
+  const params = await searchParams;
+  const seatUpgrade = params.upgrade === "seats";
   const billing = await getBilling().catch(() => null);
   const sub = billing?.subscription ?? null;
   const invoices = billing?.invoices ?? [];
@@ -20,6 +25,8 @@ export default async function BillingPage() {
     <>
       <Topbar title="Billing" subtitle="Subscription, seats and invoices" />
       <PageBody>
+        {seatUpgrade ? <SeatUpgradeNotice reason={params.reason} /> : null}
+        {sub ? <TrialStatus sub={sub} /> : null}
         {sub ? (
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
             <Card className="xl:col-span-2">
@@ -28,7 +35,13 @@ export default async function BillingPage() {
                 <div className="flex items-end justify-between">
                   <div>
                     <p className="text-2xl font-semibold text-slate-900">{sub.planName}</p>
-                    <p className="mt-1 text-sm text-slate-500">{usd(sub.pricePerSeat)} / seat / month</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {sub.basePrice > 0
+                        ? `${usd(sub.basePrice)}/mo${sub.includedSeats > 0 ? ` · ${sub.includedSeats} seats included` : ""}${sub.additionalSeatPrice > 0 ? ` · +${usd(sub.additionalSeatPrice)}/seat` : ""}`
+                        : sub.additionalSeatPrice > 0
+                          ? `${usd(sub.additionalSeatPrice)} / seat / month`
+                          : "Free"}
+                    </p>
                   </div>
                   <div className="text-right">
                     <p className="text-2xl font-semibold tabular-nums text-slate-900">{usd(sub.mrr)}</p>
@@ -57,37 +70,44 @@ export default async function BillingPage() {
             </Card>
 
             <Card>
-              <CardHeader title="Plans" subtitle="Available tiers" />
+              <CardHeader title="Plans" subtitle="Upgrade or switch tiers" />
               <CardBody>
-                <ul className="space-y-2.5">
-                  {plans.map((p) => {
-                    const current = p.id === sub.planId;
-                    return (
-                      <li
-                        key={p.id}
-                        className="flex items-center justify-between rounded-xl border border-hairline px-3 py-2.5"
-                        style={current ? { borderColor: `${p.color}66`, backgroundColor: `${p.color}0f` } : undefined}
-                      >
-                        <span className="flex items-center gap-2.5">
-                          <span className="size-2.5 rounded-full" style={{ backgroundColor: p.color }} />
-                          <span className="text-sm font-medium text-slate-800">{p.name}</span>
-                          {current ? <Check className="size-4 text-brand" /> : null}
-                        </span>
-                        <span className="text-xs text-slate-500">{p.pricePerSeat === 0 ? "Free" : `${usd(p.pricePerSeat)}/seat`}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <PlanCatalog plans={plans} sub={sub} highlight />
               </CardBody>
             </Card>
           </div>
         ) : (
-          <Card>
-            <CardBody className="flex items-center gap-3 py-8">
-              <CreditCard className="size-5 text-slate-400" />
-              <p className="text-sm text-slate-600">No active subscription — your organization is on the Free plan.</p>
-            </CardBody>
-          </Card>
+          <div className="space-y-6">
+            <Card>
+              <CardBody className="flex items-center gap-3 py-6">
+                <CreditCard className="size-5 text-slate-400" />
+                <p className="text-sm text-slate-600">No active subscription — your organization is on the Free plan. Choose a plan below to get started.</p>
+              </CardBody>
+            </Card>
+            <Card>
+              <CardHeader title="Plans" subtitle="Available tiers" />
+              <CardBody>
+                <ul className="space-y-2.5">
+                  {plans.map((p) => (
+                    <li key={p.id} className="flex items-center justify-between gap-3 rounded-xl border border-hairline px-3 py-2.5">
+                      <span className="flex min-w-0 items-center gap-2.5">
+                        <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: p.color }} />
+                        <span className="truncate text-sm font-medium text-slate-800">{p.name}</span>
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {p.basePrice > 0
+                          ? `${usd(p.basePrice)}/mo${p.includedSeats > 0 ? ` · ${p.includedSeats} incl` : ""}`
+                          : p.additionalSeatPrice > 0
+                            ? `${usd(p.additionalSeatPrice)}/seat`
+                            : "Free"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-xs text-slate-400">Ask an owner to activate a paid plan, or contact support to subscribe.</p>
+              </CardBody>
+            </Card>
+          </div>
         )}
 
         <Card>

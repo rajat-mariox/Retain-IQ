@@ -9,10 +9,12 @@ import {
   installProcessErrorHandlers,
   startOpsServer,
 } from "@retainiq/observability";
+import { computePrice, planPricingOf } from "@retainiq/contracts";
 import { loadBillingConfig } from "./config.js";
 import { PLAN_CATALOG } from "./plan-catalog.js";
 import { startPlanApi } from "./plan-api.js";
 import { runBillingCycle } from "./lifecycle.js";
+import { runTrialExpiry } from "./trial.js";
 
 const DAY_MS = 86_400_000;
 const config = loadBillingConfig();
@@ -101,7 +103,15 @@ async function handleOrganizationCreated(event: Record<string, unknown>): Promis
   const periodStart = startOfUtcMonth(now);
   const periodEnd = new Date(periodStart);
   periodEnd.setUTCMonth(periodEnd.getUTCMonth() + 1);
-  const status = plan.pricePerSeat === 0 ? "ACTIVE" : "TRIALING";
+  // A free plan starts ACTIVE; a paid plan starts on a trial when the plan allows
+  // one (per-plan trialEnabled/trialDays), else ACTIVE straight away.
+  const startsTrial = plan.pricePerSeat > 0 && plan.trialEnabled;
+  const status = startsTrial ? "TRIALING" : "ACTIVE";
+  const trialDays = plan.trialDays > 0 ? plan.trialDays : 14;
+
+  // Lock the rate at provisioning from the plan's pricing model at the licensed seats.
+  const pricing = planPricingOf(plan);
+  const lockedTotal = computePrice(pricing, seats).totalPrice;
 
   // Idempotent: orgId is unique, so a redelivered event leaves the sub unchanged.
   const sub = await prisma.subscription.upsert({
@@ -112,17 +122,23 @@ async function handleOrganizationCreated(event: Record<string, unknown>): Promis
       status,
       seats,
       activeSeats: 1,
+      lockedBasePrice: pricing.basePrice,
+      lockedAdditionalSeatPrice: pricing.additionalSeatPrice,
+      lockedIncludedSeats: pricing.includedSeats,
+      lockedTotalPrice: lockedTotal,
       currentPeriodStart: periodStart,
       currentPeriodEnd: periodEnd,
-      trialEndsAt: status === "TRIALING" ? new Date(Date.now() + 14 * DAY_MS) : null,
+      trialStartedAt: startsTrial ? new Date() : null,
+      trialEndsAt: startsTrial ? new Date(Date.now() + trialDays * DAY_MS) : null,
       autoRenew: true,
       billingEmail,
     },
     update: {},
   });
 
-  // First invoice (idempotent on invoiceNumber).
-  const amount = 1 * plan.pricePerSeat;
+  // First invoice (idempotent on invoiceNumber). Charge the locked total at the
+  // starting active-seat count (1), so it matches the seat-based pricing model.
+  const amount = computePrice(pricing, sub.activeSeats).totalPrice;
   const invoiceNumber = `INV-${periodStart.toISOString().slice(0, 7).replace("-", "")}-${orgId.replace(/-/g, "").slice(0, 8)}`;
   try {
     await prisma.invoice.create({
@@ -328,11 +344,27 @@ async function main(): Promise<void> {
     publishEvent: publishDomainEvent,
   });
 
-  // Recurring-billing lifecycle: run on boot, then on an interval.
-  const billingCycle = () =>
-    runBillingCycle({ prisma, logger, paymentFailureRate: config.PAYMENT_FAILURE_RATE }).catch((err) =>
+  // Recurring-billing lifecycle + trial expiry: run on boot, then on an interval.
+  const billingCycle = async () => {
+    // Expire due trials FIRST so the renewal loop never charges a lapsed trial.
+    const trial = await runTrialExpiry({ prisma, logger }).catch((err) => {
+      logger.error({ err: String(err) }, "trial expiry sweep failed");
+      return { scanned: 0, expired: 0 };
+    });
+    // A newly-expired trial changed the org's entitlements — tell identity.
+    if (trial.expired > 0) {
+      const expired = await prisma.subscription.findMany({
+        where: { status: "EXPIRED", trialExpiredAt: { gte: new Date(Date.now() - config.LIFECYCLE_INTERVAL_MS) } },
+        select: { orgId: true, planId: true },
+      });
+      for (const s of expired) {
+        await publishDomainEvent("subscription.plan_changed", s.orgId, { orgId: s.orgId, planId: s.planId }).catch(() => {});
+      }
+    }
+    await runBillingCycle({ prisma, logger, paymentFailureRate: config.PAYMENT_FAILURE_RATE }).catch((err) =>
       logger.error({ err: String(err) }, "billing lifecycle cycle failed"),
     );
+  };
   await billingCycle();
   const lifecycleTimer = setInterval(() => void billingCycle(), config.LIFECYCLE_INTERVAL_MS);
 

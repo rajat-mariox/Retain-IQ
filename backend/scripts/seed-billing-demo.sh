@@ -77,9 +77,10 @@ hist AS (
          date_trunc('month', now()) - (g || ' month')::interval + interval '1 day',
          date_trunc('month', now()) - (g || ' month')::interval,
          date_trunc('month', now()) - (g || ' month')::interval + interval '1 month',
-         s."activeSeats" * pl."pricePerSeat", s."activeSeats" * pl."pricePerSeat", 0, 'USD', now(), now()
+         pl."basePrice" + GREATEST(0, s."activeSeats" - pl."includedSeats") * pl."additionalSeatPrice",
+         pl."basePrice" + GREATEST(0, s."activeSeats" - pl."includedSeats") * pl."additionalSeatPrice", 0, 'USD', now(), now()
   FROM ins_sub s JOIN "Plan" pl ON pl.id = s."planId", generate_series(1, 11) g
-  WHERE pl."pricePerSeat" > 0
+  WHERE pl."additionalSeatPrice" > 0 OR pl."basePrice" > 0
   RETURNING 1
 )
 -- Open OVERDUE invoice for PAST_DUE subs (Failed Payments; worker may escalate to Suspended).
@@ -94,12 +95,13 @@ SELECT gen_random_uuid(), s."orgId", s.id,
        now() - pp.overdue_days * interval '1 day',
        NULL,
        now() - interval '1 month', now(),
-       s."activeSeats" * pl."pricePerSeat", s."activeSeats" * pl."pricePerSeat",
-       s."activeSeats" * pl."pricePerSeat", 'USD', now(), now()
+       pl."basePrice" + GREATEST(0, s."activeSeats" - pl."includedSeats") * pl."additionalSeatPrice",
+       pl."basePrice" + GREATEST(0, s."activeSeats" - pl."includedSeats") * pl."additionalSeatPrice",
+       pl."basePrice" + GREATEST(0, s."activeSeats" - pl."includedSeats") * pl."additionalSeatPrice", 'USD', now(), now()
 FROM ins_sub s
 JOIN plan_pick pp ON pp.org_id = s."orgId"
 JOIN "Plan" pl ON pl.id = s."planId"
-WHERE s.status = 'PAST_DUE' AND pl."pricePerSeat" > 0;
+WHERE s.status = 'PAST_DUE' AND (pl."additionalSeatPrice" > 0 OR pl."basePrice" > 0);
 
 SELECT (SELECT count(*) FROM "Subscription") AS subscriptions,
        (SELECT count(*) FROM "Invoice")      AS invoices;

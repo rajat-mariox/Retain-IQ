@@ -318,8 +318,11 @@ for (const person of PEOPLE) {
     // The fact drives everything; generate one only where analytics has none.
     const activeSeconds = existing ? Number(existing.activeSeconds) : profile.activeSeconds;
     if (!existing) {
+      // productivityScore/focusScore are stored on a 0..100 scale (same as the
+      // analytics scoring worker). profile.productivity/focus are 0..1 fractions,
+      // so scale them up — otherwise the UI renders e.g. 0.62 as "1%".
       factRows.push(
-        `('${uuid()}','${ORG}','${person.emp}','${day.iso}',${activeSeconds},${Math.round(activeSeconds * (0.12 + rng() * 0.1))},${Math.round(activeSeconds * profile.productivity)},${300 + Math.round(rng() * 900)},${profile.productivity.toFixed(3)},${profile.focus.toFixed(3)},NOW(),NOW())`,
+        `('${uuid()}','${ORG}','${person.emp}','${day.iso}',${activeSeconds},${Math.round(activeSeconds * (0.12 + rng() * 0.1))},${Math.round(activeSeconds * profile.productivity)},${300 + Math.round(rng() * 900)},${(profile.productivity * 100).toFixed(2)},${(profile.focus * 100).toFixed(2)},NOW(),NOW())`,
       );
     }
 

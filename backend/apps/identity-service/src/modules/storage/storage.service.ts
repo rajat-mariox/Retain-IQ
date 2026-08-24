@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, PayloadTooLargeException, type OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException, PayloadTooLargeException, ServiceUnavailableException, type OnModuleInit } from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
@@ -41,6 +41,10 @@ export class StorageService implements OnModuleInit {
   private readonly s3: S3Client; // server-side ops (internal endpoint)
   private readonly presignS3: S3Client; // presigned URLs the client consumes (public endpoint)
   private readonly bucket = process.env.S3_BUCKET ?? "retainiq-screenshots";
+  // PII-masking micro-service. Every screenshot is masked here BEFORE it is
+  // stored, so a raw (unmasked) capture never lands in object storage.
+  private readonly maskingUrl = (process.env.MASKING_SERVICE_URL ?? "http://host.docker.internal:8099").replace(/\/+$/, "");
+  private readonly maskingTimeoutMs = Number(process.env.MASKING_TIMEOUT_MS ?? 30_000);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -99,52 +103,86 @@ export class StorageService implements OnModuleInit {
     return { usedBytes, limitBytes: limit.limitBytes, planId: limit.planId, planName: limit.planName };
   }
 
-  /** Reserve quota + record metadata, and return a presigned PUT URL for the binary. */
-  async createUpload(input: {
+  /**
+   * Send a raw screenshot to the masking micro-service and get the PII-masked
+   * image back. FAIL CLOSED: any failure throws, so the caller never stores the
+   * raw bytes. PNG in → PNG out; anything else is normalised to JPEG.
+   */
+  private async maskImage(raw: Buffer, contentType: string): Promise<{ masked: Buffer; piiCount: number; outContentType: string }> {
+    const fmt = contentType === "image/png" ? "png" : "jpeg";
+    const outContentType = fmt === "png" ? "image/png" : "image/jpeg";
+    let res: Response;
+    try {
+      res = await fetch(`${this.maskingUrl}/mask?format=${fmt}`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: new Uint8Array(raw),
+        signal: AbortSignal.timeout(this.maskingTimeoutMs),
+      });
+    } catch (err) {
+      throw new ServiceUnavailableException(`Screenshot masking service is unreachable: ${String(err)}`);
+    }
+    if (res.status === 400) {
+      throw new BadRequestException("The uploaded screenshot could not be read for masking.");
+    }
+    if (!res.ok) {
+      throw new ServiceUnavailableException(`Screenshot masking failed (${res.status}).`);
+    }
+    const masked = Buffer.from(await res.arrayBuffer());
+    if (masked.length === 0) throw new ServiceUnavailableException("Screenshot masking returned an empty image.");
+    const piiCount = Number(res.headers.get("x-pii-count") ?? 0) || 0;
+    return { masked, piiCount, outContentType };
+  }
+
+  /**
+   * Mask a screenshot's PII and store ONLY the masked result. The raw bytes are
+   * masked in memory and never persisted. Quota is charged against the actual
+   * masked size. Attribution is derived from the caller's membership, never the
+   * body. Returns the stored key, size and how many PII items were redacted.
+   */
+  async storeMaskedScreenshot(input: {
     orgId: string;
     membershipId: string;
     contentType: string;
-    sizeBytes: number;
     capturedAt: Date;
-  }): Promise<{ key: string; uploadUrl: string; expiresInSeconds: number }> {
-    // The screenshot is ALWAYS attributed to the caller's own membership — the
-    // upload is issued to the authenticated employee's agent, so a client can't
-    // attribute a capture to someone else. Derived from membershipId, never trusted
-    // from the request body.
+    data: Buffer;
+  }): Promise<{ key: string; sizeBytes: number; piiCount: number }> {
     const m = await this.prisma.organizationMembership.findUnique({
       where: { id: input.membershipId },
       select: { employeeId: true },
     });
     const employeeId = m?.employeeId ?? null;
 
+    // 1) Mask FIRST — if this throws, nothing is written (fail closed).
+    const { masked, piiCount, outContentType } = await this.maskImage(input.data, input.contentType);
+
+    // 2) Charge quota against the real stored (masked) size.
     const [used, limit] = await Promise.all([this.usedBytes(input.orgId), this.planLimit(input.orgId)]);
-    if (limit.limitBytes != null && used + input.sizeBytes > limit.limitBytes) {
+    if (limit.limitBytes != null && used + masked.length > limit.limitBytes) {
       throw new PayloadTooLargeException(
         `Storage quota exceeded for the ${limit.planName ?? "current"} plan. Upgrade to add more storage.`,
       );
     }
 
-    const ext = EXT[input.contentType] ?? "bin";
+    // 3) Store the masked image + its metadata.
+    const ext = EXT[outContentType] ?? "bin";
     const day = input.capturedAt.toISOString().slice(0, 10);
     const key = `screenshots/${input.orgId}/${employeeId ?? "org"}/${day}/${randomUUID()}.${ext}`;
 
+    await this.s3.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: masked, ContentType: outContentType }));
     await this.prisma.screenshotObject.create({
       data: {
         orgId: input.orgId,
         employeeId,
         key,
-        sizeBytes: BigInt(input.sizeBytes),
-        contentType: input.contentType,
+        sizeBytes: BigInt(masked.length),
+        contentType: outContentType,
         capturedAt: input.capturedAt,
       },
     });
 
-    const uploadUrl = await getSignedUrl(
-      this.presignS3,
-      new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: input.contentType }),
-      { expiresIn: UPLOAD_URL_TTL_SECONDS },
-    );
-    return { key, uploadUrl, expiresInSeconds: UPLOAD_URL_TTL_SECONDS };
+    this.log.log(`Stored masked screenshot ${key} (${masked.length}B, ${piiCount} PII item(s) redacted)`);
+    return { key, sizeBytes: masked.length, piiCount };
   }
 
   /**

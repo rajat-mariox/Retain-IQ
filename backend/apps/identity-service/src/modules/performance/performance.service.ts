@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import type { Prisma } from "@retainiq/database/identity";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { OutboxService } from "../../common/outbox/outbox.service.js";
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
@@ -10,7 +11,10 @@ export const DEFAULT_COMPETENCIES = ["Quality of work", "Communication", "Owners
 
 @Injectable()
 export class PerformanceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly outbox: OutboxService,
+  ) {}
 
   // ------------------------------ Cycles ------------------------------
   async listCycles() {
@@ -193,8 +197,19 @@ export class PerformanceService {
     const ctx = requireTenantContext();
     const emp = await this.prisma.employee.findFirst({ where: { id: employeeId, orgId: ctx.orgId }, select: { id: true } });
     if (!emp) throw new NotFoundException("Employee not found.");
-    return this.prisma.achievement.create({
-      data: { orgId: ctx.orgId, employeeId, title: input.title, description: input.description ?? null, category: input.category ?? null, awardedOn: input.awardedOn ? new Date(input.awardedOn) : new Date(), createdBy: ctx.userId },
+    // Recognition = a public, celebratory achievement. Notify the recognised
+    // employee (via their membership) so it lands on their timeline/inbox.
+    const membership = await this.prisma.organizationMembership.findFirst({ where: { orgId: ctx.orgId, employeeId, status: "ACTIVE" }, select: { userId: true } });
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.achievement.create({
+        data: { orgId: ctx.orgId, employeeId, title: input.title, description: input.description ?? null, category: input.category ?? null, awardedOn: input.awardedOn ? new Date(input.awardedOn) : new Date(), createdBy: ctx.userId },
+      });
+      await this.outbox.enqueue(tx, {
+        eventType: "recognition.created",
+        aggregateType: "achievement", aggregateId: created.id, orgId: ctx.orgId,
+        payload: { achievementId: created.id, employeeId, title: input.title, category: input.category ?? "OTHER", requesterUserId: membership?.userId ?? null },
+      });
+      return created;
     });
   }
 

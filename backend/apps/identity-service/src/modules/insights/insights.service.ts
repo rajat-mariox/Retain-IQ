@@ -106,7 +106,7 @@ export class InsightsService {
     const ctx = requireTenantContext();
     const since = this.windowStart();
     const rules = await this.productivity.getRules(ctx.orgId);
-    const [byEmployee, employees, prodByEmp] = await Promise.all([
+    const [byEmployee, employees, prodByEmp, prodGoal] = await Promise.all([
       this.analytics.employeeDayFact.groupBy({
         by: ["employeeId"],
         where: { orgId: ctx.orgId, day: { gte: since } },
@@ -116,7 +116,11 @@ export class InsightsService {
       }),
       this.prisma.employee.findMany({ where: { orgId: ctx.orgId }, select: { id: true, firstName: true, lastName: true } }),
       this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since } }, rules),
+      // The org-level productivity target (a Goal with metric='productivity', no
+      // project). Optional — null when the org hasn't set one.
+      this.prisma.goal.findFirst({ where: { orgId: ctx.orgId, metric: "productivity", projectId: null, ownerEmployeeId: null }, select: { target: true }, orderBy: { updatedAt: "desc" } }),
     ]);
+    const productivityTarget = prodGoal?.target != null ? Math.round(prodGoal.target) : null;
 
     const names = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
 
@@ -137,6 +141,7 @@ export class InsightsService {
         activeHours,
         trackedDays: f._count._all,
         risk,
+        targetMet: productivityTarget != null ? productivity >= productivityTarget : null,
       };
     });
 
@@ -156,10 +161,113 @@ export class InsightsService {
         workforceHealth,
         burnoutRisk,
         lowEngagement,
+        productivityTarget, // org's productivity goal (%), or null if unset
+        onTargetCount: productivityTarget != null ? people.filter((p) => p.productivity >= productivityTarget).length : null,
       },
       topPerformers,
       people: [...people].sort((a, b) => b.productivity - a.productivity),
     };
+  }
+
+  /** The org's productivity target (%), stored as an org-level Goal. Null if unset. */
+  async getProductivityTarget() {
+    const ctx = requireTenantContext();
+    const g = await this.prisma.goal.findFirst({ where: { orgId: ctx.orgId, metric: "productivity", projectId: null, ownerEmployeeId: null }, select: { target: true }, orderBy: { updatedAt: "desc" } });
+    return { target: g?.target != null ? Math.round(g.target) : null };
+  }
+
+  /** Set (or clear) the org's productivity target. Stored as a single org-level Goal. */
+  async setProductivityTarget(target: number | null) {
+    const ctx = requireTenantContext();
+    const existing = await this.prisma.goal.findFirst({ where: { orgId: ctx.orgId, metric: "productivity", projectId: null, ownerEmployeeId: null }, select: { id: true } });
+    if (target == null) {
+      if (existing) await this.prisma.goal.delete({ where: { id: existing.id } });
+      return { target: null };
+    }
+    const t = Math.max(0, Math.min(100, Math.round(target)));
+    if (existing) await this.prisma.goal.update({ where: { id: existing.id }, data: { target: t, status: "ACTIVE" } });
+    else await this.prisma.goal.create({ data: { orgId: ctx.orgId, title: "Productivity target", metric: "productivity", target: t, status: "ACTIVE" } });
+    return { target: t };
+  }
+
+  /**
+   * Productivity rolled up by department and by team — averages of productivity,
+   * focus and active hours across each group's tracked employees, plus headcount
+   * and a burnout-risk count. Scope-aware: an org-wide role sees every group; a
+   * department/team-scoped manager sees only their own.
+   */
+  async byGroup() {
+    const ctx = requireTenantContext();
+    const since = this.windowStart();
+    const rules = await this.productivity.getRules(ctx.orgId);
+
+    const scope = await this.accessScope.resolveScope(ctx.orgId, ctx.userId, permissions.employeeRead);
+    const visible = await this.accessScope.visibleEmployeeIds(ctx.orgId, scope);
+    const empWhere = visible === null ? { orgId: ctx.orgId } : { orgId: ctx.orgId, id: { in: visible } };
+
+    const [employees, departments, teams, facts, prodByEmp] = await Promise.all([
+      this.prisma.employee.findMany({ where: empWhere, select: { id: true, departmentId: true, teamId: true } }),
+      this.prisma.department.findMany({ where: { orgId: ctx.orgId }, select: { id: true, name: true } }),
+      this.prisma.team.findMany({ where: { orgId: ctx.orgId }, select: { id: true, name: true } }),
+      this.analytics.employeeDayFact.groupBy({
+        by: ["employeeId"],
+        where: { orgId: ctx.orgId, day: { gte: since } },
+        _avg: { focusScore: true },
+        _sum: { activeSeconds: true },
+        _count: { _all: true },
+      }),
+      this.productiveSecondsByEmployee({ orgId: ctx.orgId, day: { gte: since } }, rules),
+    ]);
+
+    // Per-employee productivity/focus/hours, keyed for grouping.
+    const factByEmp = new Map(facts.map((f) => [f.employeeId, f]));
+    const perEmp = new Map<string, { productivity: number; focus: number; activeHours: number; risk: boolean }>();
+    for (const e of employees) {
+      const f = factByEmp.get(e.id);
+      if (!f) continue; // no tracked activity in the window — excluded from the average
+      const activeSec = f._sum.activeSeconds ?? 0;
+      const days = f._count._all || 1;
+      const activeHours = hours(activeSec);
+      const productivity = pct(prodByEmp.get(e.id) ?? 0, activeSec);
+      const focus = score(f._avg.focusScore);
+      const risk = activeHours / days > 9 && focus < 70;
+      perEmp.set(e.id, { productivity, focus, activeHours, risk });
+    }
+
+    // Aggregate a list of employee ids into one group row.
+    const rollup = (name: string, empIds: string[]) => {
+      const tracked = empIds.map((id) => perEmp.get(id)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+      const n = tracked.length;
+      const avg = (sel: (t: (typeof tracked)[number]) => number) => (n > 0 ? Math.round(tracked.reduce((s, t) => s + sel(t), 0) / n) : 0);
+      return {
+        name,
+        headcount: empIds.length,
+        trackedEmployees: n,
+        avgProductivity: avg((t) => t.productivity),
+        avgFocus: avg((t) => t.focus),
+        avgActiveHours: n > 0 ? Math.round((tracked.reduce((s, t) => s + t.activeHours, 0) / n) * 10) / 10 : 0,
+        burnoutRisk: tracked.filter((t) => t.risk).length,
+      };
+    };
+
+    const byDeptIds = new Map<string, string[]>();
+    const byTeamIds = new Map<string, string[]>();
+    for (const e of employees) {
+      if (e.departmentId) byDeptIds.set(e.departmentId, [...(byDeptIds.get(e.departmentId) ?? []), e.id]);
+      if (e.teamId) byTeamIds.set(e.teamId, [...(byTeamIds.get(e.teamId) ?? []), e.id]);
+    }
+
+    const deptName = new Map(departments.map((d) => [d.id, d.name]));
+    const teamName = new Map(teams.map((t) => [t.id, t.name]));
+
+    const byDepartment = [...byDeptIds.entries()]
+      .map(([id, ids]) => ({ id, ...rollup(deptName.get(id) ?? "Unknown", ids) }))
+      .sort((a, b) => b.avgProductivity - a.avgProductivity);
+    const byTeam = [...byTeamIds.entries()]
+      .map(([id, ids]) => ({ id, ...rollup(teamName.get(id) ?? "Unknown", ids) }))
+      .sort((a, b) => b.avgProductivity - a.avgProductivity);
+
+    return { byDepartment, byTeam };
   }
 
   /**
@@ -298,13 +406,34 @@ export class InsightsService {
     };
 
     // --- Workforce Health Score (0-100 composite) ---
+    // With NO tracked activity yet (e.g. a brand-new org), the health score and
+    // its pillars are undefined — not a fabricated 100. A "risk" or "burnout"
+    // pillar shown as 100 for an org with zero data reads as "100% risk" and is
+    // misleading; return null so the UI shows "—" / "No activity data yet".
+    const hasData = per.length > 0;
     const engagement = focusScore; // proxy for engagement
-    const riskPillar = per.length ? Math.round(100 - ((high + critical) / per.length) * 100) : 100;
-    const burnoutPillar = per.length ? Math.round(100 - (burnoutCount / per.length) * 100) : 100;
-    const pillars = { productivity: companyProductivity, attendance: attendanceRate, engagement, risk: riskPillar, burnout: burnoutPillar };
-    const healthScore = Math.round(0.3 * pillars.productivity + 0.2 * pillars.attendance + 0.2 * pillars.engagement + 0.15 * pillars.risk + 0.15 * pillars.burnout);
+    const riskPillar = Math.round(100 - ((high + critical) / per.length) * 100);
+    const burnoutPillar = Math.round(100 - (burnoutCount / per.length) * 100);
+    const pillars = hasData
+      ? { productivity: companyProductivity, attendance: attendanceRate, engagement, risk: riskPillar, burnout: burnoutPillar }
+      : { productivity: null, attendance: null, engagement: null, risk: null, burnout: null };
+    const healthScore = hasData
+      ? Math.round(0.3 * companyProductivity + 0.2 * attendanceRate + 0.2 * engagement + 0.15 * riskPillar + 0.15 * burnoutPillar)
+      : null;
 
-    return { workforce, health: { score: healthScore, pillars }, attrition, productivity };
+    // --- Workflow alerts (Observation → Escalation → Incident funnel) ---
+    // The open-case counts across the action spine, scoped to the caller's reach.
+    const empScope = visible === null ? {} : { employeeId: { in: visible.length > 0 ? visible : ["00000000-0000-0000-0000-000000000000"] } };
+    const [openObservations, criticalObservations, activeEscalations, overdueEscalations, openIncidents] = await Promise.all([
+      this.prisma.observation.count({ where: { orgId: ctx.orgId, status: { in: ["OPEN", "ACKNOWLEDGED"] }, ...empScope } }),
+      this.prisma.observation.count({ where: { orgId: ctx.orgId, severity: "CRITICAL", status: { notIn: ["RESOLVED", "DISMISSED"] }, ...empScope } }),
+      this.prisma.escalation.count({ where: { orgId: ctx.orgId, status: { in: ["PENDING", "ACKNOWLEDGED"] }, ...empScope } }),
+      this.prisma.escalation.count({ where: { orgId: ctx.orgId, status: "PENDING", dueAt: { not: null, lt: new Date() }, ...empScope } }),
+      this.prisma.incident.count({ where: { orgId: ctx.orgId, status: { in: ["OPEN", "INVESTIGATING"] }, ...(visible === null ? {} : { employeeId: { in: visible.length > 0 ? visible : ["00000000-0000-0000-0000-000000000000"] } }) } }),
+    ]);
+    const alerts = { openObservations, criticalObservations, activeEscalations, overdueEscalations, openIncidents };
+
+    return { workforce, health: { score: healthScore, pillars }, attrition, productivity, alerts };
   }
 }
 

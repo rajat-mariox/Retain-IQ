@@ -19,6 +19,8 @@ export interface AgentConfig {
   screenshotQuality: number; // JPEG quality 0-100
   policyRefreshSeconds: number; // how often to re-fetch the org monitoring policy
   focusBlockMinSeconds: number; // uninterrupted time on one app/site to count as a focus block
+  autoCheckoutIdleMinutes: number; // idle this long (no input) → auto check-out (0 = off)
+  idleWarnMinutes: number; // show the countdown warning this many minutes BEFORE auto check-out
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -37,4 +39,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
   screenshotQuality: Number(process.env.RETAINIQ_SCREENSHOT_QUALITY ?? 55),
   policyRefreshSeconds: Number(process.env.RETAINIQ_POLICY_SECONDS ?? 300), // re-check policy every 5 min
   focusBlockMinSeconds: Number(process.env.RETAINIQ_FOCUS_BLOCK_SECONDS ?? 300), // ≥5 min on one thing = a focus block
+  autoCheckoutIdleMinutes: Number(process.env.RETAINIQ_AUTO_CHECKOUT_IDLE_MINUTES ?? 30), // 30 min idle → auto check-out
+  idleWarnMinutes: Number(process.env.RETAINIQ_IDLE_WARN_MINUTES ?? 5), // warn 5 min before (i.e. at 25 min idle)
 };

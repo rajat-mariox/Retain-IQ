@@ -15,10 +15,12 @@ export interface FieldIssue {
 export interface ApiErrorBody {
   error: string;
   fields?: Record<string, string>;
+  /** Machine code from the API envelope (e.g. "seat_limit_reached"), when present. */
+  code?: string;
 }
 
 interface ApiEnvelope {
-  error?: { message?: string; details?: { path?: string; message?: string }[] };
+  error?: { code?: string; message?: string; details?: { path?: string; message?: string }[] };
   message?: string;
 }
 
@@ -70,6 +72,7 @@ export function errorMessage(body: unknown, fallback: string): string {
 export async function toFormError(res: Response, fallback: string): Promise<ApiErrorBody> {
   const body = (await res.json().catch(() => ({}))) as ApiEnvelope;
   const envelope = body.error;
+  const code = envelope?.code;
   const details = envelope?.details ?? [];
 
   if (details.length > 0) {
@@ -81,10 +84,12 @@ export async function toFormError(res: Response, fallback: string): Promise<ApiE
     return {
       error: count === 1 ? Object.values(fields)[0] : `Fix ${count} fields below to continue.`,
       fields,
+      ...(code ? { code } : {}),
     };
   }
 
   // A business-rule rejection (e.g. "Basic allows at most 50 seats.") — no field
-  // path, but the message is written for a human and is the whole point.
-  return { error: envelope?.message ?? body.message ?? fallback };
+  // path, but the message is written for a human and is the whole point. The
+  // machine code (if any) rides along so the caller can branch on it.
+  return { error: envelope?.message ?? body.message ?? fallback, ...(code ? { code } : {}) };
 }

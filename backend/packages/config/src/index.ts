@@ -67,6 +67,10 @@ const envSchema = z
     // it does not already exist. Leave unset to manage admins another way.
     PLATFORM_ADMIN_EMAIL: z.string().email().optional(),
     PLATFORM_ADMIN_PASSWORD: z.string().min(12).optional(),
+    // billing-service plan-admin API (plan/subscription writes). identity calls it
+    // server-to-server with a platform-scoped service token to apply org-initiated
+    // plan/seat upgrades. Defaults to the in-cluster service address.
+    BILLING_API_URL: z.string().url().default("http://billing-service:3007"),
     PERMISSION_CACHE_DRIVER: z.enum(["memory", "redis"]).default("memory"),
     AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(10),
     AUTH_RATE_TTL_SECONDS: z.coerce.number().int().positive().default(60),

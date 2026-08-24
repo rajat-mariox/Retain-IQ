@@ -14,7 +14,9 @@ installProcessErrorHandlers(logger);
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter(),
+    // 25MB body cap: screenshots are uploaded base64-encoded to /storage/screenshots/upload
+    // for server-side masking (a downscaled JPEG + base64 overhead stays well under this).
+    new FastifyAdapter({ bodyLimit: 25 * 1024 * 1024 }),
     { bufferLogs: true },
   );
 

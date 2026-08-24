@@ -321,6 +321,7 @@ export class RatesService {
     cycleFrequency?: "WEEKLY" | "BIWEEKLY" | "MONTHLY";
     invoicePrefix?: string;
     requireApproval?: boolean;
+    overtimeHandling?: "PAY" | "COMP_OFF";
   }) {
     const ctx = requireTenantContext();
     await this.getSettings(); // ensure the row exists

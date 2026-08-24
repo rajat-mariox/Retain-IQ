@@ -4,11 +4,8 @@ import { Topbar } from "@/components/layout/Topbar";
 import { PageBody } from "@/components/layout/PageBody";
 import { Card } from "@/components/ui/Card";
 import { PageNav } from "@/components/ui/PageNav";
-import { ScreenshotThumb } from "@/components/screenshots/ScreenshotThumb";
-import { DeleteScreenshotButton } from "@/components/screenshots/DeleteScreenshotButton";
-import { LocalTime } from "@/components/ui/LocalTime";
+import { ScreenshotGrid } from "@/components/screenshots/ScreenshotGrid";
 import { getScreenshots, getSession } from "@/lib/api";
-import { formatBytes } from "@/lib/format";
 
 const PAGE_SIZE = 24;
 
@@ -45,20 +42,7 @@ export default async function EmployeeScreenshotsPage({
           </Card>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-              {data.items.map((shot) => (
-                <div key={shot.id} className="group relative overflow-hidden rounded-xl border border-hairline bg-panel">
-                  <div className="aspect-video w-full bg-panel-2">
-                    <ScreenshotThumb src={shot.viewUrl} alt={`Screenshot from ${shot.capturedAt.slice(0, 10)}`} />
-                  </div>
-                  {canDelete ? <DeleteScreenshotButton id={shot.id} /> : null}
-                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-slate-500">
-                    <span className="truncate"><LocalTime iso={shot.capturedAt} mode="datetime" /></span>
-                    <span className="shrink-0 tabular-nums">{formatBytes(shot.sizeBytes)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <ScreenshotGrid shots={data.items} showDelete={canDelete} />
 
             <Card>
               <PageNav page={data.page} pageSize={data.pageSize} total={data.total} basePath={`/screenshots/${employeeId}`} />

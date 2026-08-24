@@ -11,7 +11,8 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "package": "npm run build && electron-builder",
-    "test": "npm run build && node test/renderer-flow.test.mjs && node --test test/focus-tracking.test.mjs test/sse-parse.test.mjs test/queue-logic.test.mjs test/store.test.mjs",
+    "package:dir": "npm run build && electron-builder --dir",
+    "test": "npm run build && node test/renderer-flow.test.mjs && node test/idle-warning.test.mjs && node --test test/focus-tracking.test.mjs test/sse-parse.test.mjs test/queue-logic.test.mjs test/store.test.mjs",
     "test:renderer": "node test/renderer-flow.test.mjs"
   },
   "dependencies": {

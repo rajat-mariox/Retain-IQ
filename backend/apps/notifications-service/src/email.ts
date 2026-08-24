@@ -1,6 +1,13 @@
 import nodemailer, { type Transporter } from "nodemailer";
 import type { Logger } from "@retainiq/observability";
 
+export type EmailAttachment = {
+  filename: string;
+  /** Raw content (e.g. CSV text). */
+  content: string;
+  contentType?: string;
+};
+
 export type EmailMessage = {
   to: string;
   subject: string;
@@ -9,6 +16,8 @@ export type EmailMessage = {
   link?: string | null;
   /** Extra rows rendered as a list — used by digest emails. */
   items?: { title: string; body: string; when: string }[];
+  /** File attachments (e.g. a scheduled report's CSV). */
+  attachments?: EmailAttachment[];
 };
 
 /**
@@ -49,6 +58,7 @@ export class EmailSender {
         subject: msg.subject,
         text: this.renderText(msg),
         html: this.renderHtml(msg),
+        attachments: msg.attachments?.map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType ?? "text/csv" })),
       });
       this.logger.info({ to: msg.to, subject: msg.subject }, "email sent");
       return true;

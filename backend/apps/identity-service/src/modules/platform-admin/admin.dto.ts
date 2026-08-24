@@ -18,6 +18,8 @@ export interface AdminOrg {
   id: string;
   name: string;
   slug: string;
+  /** Billing/contact email for the org (from its subscription), or null. */
+  billingEmail: string | null;
   status: string;
   /** People with a login (memberships). */
   users: number;

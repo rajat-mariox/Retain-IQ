@@ -75,6 +75,8 @@ export interface DailyReportRow {
   workMinutes: number;
   breakMinutes: number;
   netWorkMinutes: number;
+  overtimeMinutes: number;
+  approvedOvertimeMinutes: number;
   earlyExit: boolean;
 }
 export interface DailyReport {
@@ -95,6 +97,8 @@ export interface MonthlyReportRow {
   onLeave: number;
   absent: number;
   workingDays: number;
+  overtimeMinutes: number;
+  approvedOvertimeMinutes: number;
   attendanceRate: number;
 }
 export interface MonthlyReport {
@@ -212,9 +216,14 @@ export interface OrgBilling {
     seats: number;
     activeSeats: number;
     seatLimit: number | null;
+    basePrice: number;
+    includedSeats: number;
+    additionalSeatPrice: number;
+    lockedTotalPrice: number;
     currentPeriodStart: string;
     currentPeriodEnd: string;
     trialEndsAt: string | null;
+    trialDaysRemaining: number | null;
     autoRenew: boolean;
     mrr: number;
   } | null;
@@ -228,7 +237,20 @@ export interface OrgBilling {
     amountDue: number;
     currency: string;
   }[];
-  plans: { id: string; name: string; pricePerSeat: number; seatLimit: number | null; features: string[]; color: string }[];
+  plans: {
+    id: string;
+    name: string;
+    pricePerSeat: number;
+    seatLimit: number | null;
+    basePrice: number;
+    includedSeats: number;
+    additionalSeatPrice: number;
+    minSeats: number;
+    maxSeats: number | null;
+    allowCustomSeats: boolean;
+    features: string[];
+    color: string;
+  }[];
 }
 export const getBilling = cache(() => apiFetch<OrgBilling>("billing"));
 
@@ -297,6 +319,7 @@ export interface PayrollSettings {
   cycleFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY";
   invoicePrefix: string;
   requireApproval: boolean;
+  overtimeHandling: "PAY" | "COMP_OFF";
 }
 export const getPayrollSettings = cache(() => apiFetch<PayrollSettings>("payroll/rates/settings"));
 export const getBillRates = cache(() => apiFetch<BillRateRow[]>("payroll/rates/bill-rates"));
@@ -728,6 +751,7 @@ export const getMyTimesheets = cache(() => apiFetch<MyTimesheet[]>("time/timeshe
 
 // ---- HR: employee profile / documents / history / org chart ----
 export interface EmployeeProfile extends EmployeeRow {
+  rotationId: string | null;
   updatedAt: string;
   personalEmail: string | null;
   phone: string | null;
@@ -735,6 +759,8 @@ export interface EmployeeProfile extends EmployeeRow {
   gender: string | null;
   location: string | null;
   employmentType: string | null;
+  workModel: string | null;
+  officeDays: number[];
   address: string | null;
   emergencyContactName: string | null;
   emergencyContactPhone: string | null;
@@ -851,17 +877,34 @@ export interface TalentRisk {
 export const getTalentRisk = cache(() => apiFetch<TalentRisk>("hr-analytics/talent-risk"));
 
 export interface InsightsTeam {
-  summary: { trackedEmployees: number; avgProductivity: number; avgFocus: number; workforceHealth: number; burnoutRisk: number; lowEngagement: number };
+  summary: { trackedEmployees: number; avgProductivity: number; avgFocus: number; workforceHealth: number; burnoutRisk: number; lowEngagement: number; productivityTarget: number | null; onTargetCount: number | null };
   topPerformers: { employeeId: string; name: string; productivity: number; focus: number; activeHours: number; risk: string }[];
-  people: { employeeId: string; name: string; productivity: number; focus: number; activeHours: number; trackedDays: number; risk: string }[];
+  people: { employeeId: string; name: string; productivity: number; focus: number; activeHours: number; trackedDays: number; risk: string; targetMet: boolean | null }[];
 }
 export const getInsightsTeam = cache(() => apiFetch<InsightsTeam>("insights/team"));
 
+export interface ProductivityGroupRow {
+  id: string;
+  name: string;
+  headcount: number;
+  trackedEmployees: number;
+  avgProductivity: number;
+  avgFocus: number;
+  avgActiveHours: number;
+  burnoutRisk: number;
+}
+export interface InsightsByGroup {
+  byDepartment: ProductivityGroupRow[];
+  byTeam: ProductivityGroupRow[];
+}
+export const getInsightsByGroup = cache(() => apiFetch<InsightsByGroup>("insights/by-group"));
+
 export interface ExecutiveOverview {
   workforce: { total: number; active: number; newJoinees: number; onLeave: number; noticePeriod: number; openPositions: number };
-  health: { score: number; pillars: { productivity: number; attendance: number; engagement: number; risk: number; burnout: number } };
+  health: { score: number | null; pillars: { productivity: number | null; attendance: number | null; engagement: number | null; risk: number | null; burnout: number | null } };
   attrition: { high: number; medium: number; critical: number; atRiskPct: number; trend: string; trendDelta: number };
   productivity: { companyProductivity: number; focusScore: number; activeHours: number; utilization: number };
+  alerts?: { openObservations: number; criticalObservations: number; activeEscalations: number; overdueEscalations: number; openIncidents: number };
 }
 export const getExecutiveOverview = cache(() => apiFetch<ExecutiveOverview>("insights/executive"));
 
@@ -959,12 +1002,27 @@ export interface OrgShift {
   endMinute: number;
   graceMinutes: number;
   workingDays: number[];
+  daySchedule: { day: number; startMinute: number; endMinute: number; graceMinutes?: number }[] | null;
   breaks: ShiftBreak[];
   isDefault: boolean;
   status: string;
   employeeCount: number;
 }
 export const getShifts = cache(() => apiFetch<OrgShift[]>("shifts"));
+
+export interface RotationStep {
+  shiftId: string;
+  days: number;
+}
+export interface ShiftRotation {
+  id: string;
+  name: string;
+  anchorDate: string; // YYYY-MM-DD
+  steps: RotationStep[];
+  status: string;
+  employeeCount: number;
+}
+export const getShiftRotations = cache(() => apiFetch<ShiftRotation[]>("shift-rotations"));
 
 export interface EmployeeRow {
   id: string;
@@ -1040,7 +1098,10 @@ export interface LeaveRequest {
   startDate: string;
   endDate: string;
   days: number;
+  dayPart: string; // FULL | FIRST_HALF | SECOND_HALF
   reason: string | null;
+  // Team/department leave overlap for the approval center (null = no conflict).
+  conflict?: { count: number; peers: { name: string; startDate: string; endDate: string; status: string }[] } | null;
   status: string;
   decidedAt: string | null;
   decisionNote: string | null;
@@ -1048,6 +1109,15 @@ export interface LeaveRequest {
 }
 export const getMyLeaveRequests = cache(() => apiFetch<LeaveRequest[]>("leave/requests"));
 export const getAllLeaveRequests = cache((status = "") => apiFetch<LeaveRequest[]>(`leave/requests/all${status ? `?status=${status}` : ""}`));
+
+export interface LeaveAnalytics {
+  pending: number;
+  outNow: number;
+  upcoming14: number;
+  totalDaysYear: number;
+  byType: { leaveTypeId: string; name: string; code: string; color: string | null; days: number; requests: number }[];
+}
+export const getLeaveAnalytics = cache(() => apiFetch<LeaveAnalytics>("leave/analytics"));
 
 export interface Holiday {
   id: string;
@@ -1064,7 +1134,7 @@ export interface LeaveCalendar {
   workingDays: number[];
   shiftName: string | null;
   holidays: { date: string; name: string; type: string }[];
-  leaves: { date: string; status: string; typeName: string; code: string; color: string | null }[];
+  leaves: { date: string; status: string; typeName: string; code: string; color: string | null; dayPart: string }[];
 }
 
 export interface OrgLeaveEntry {
@@ -1077,6 +1147,7 @@ export interface OrgLeaveEntry {
   startDate: string;
   endDate: string;
   days: number;
+  dayPart: string; // FULL | FIRST_HALF | SECOND_HALF
   status: string;
   typeName: string;
   code: string;
@@ -1130,6 +1201,32 @@ export interface MonitoringPolicy {
   screenshotRetentionDays: number;
 }
 export const getMonitoringPolicy = cache(() => apiFetch<MonitoringPolicy>("monitoring/policy"));
+
+/** The org's attendance rules — editable by admins with attendance.manage. */
+export interface AttendancePolicy {
+  allowMultipleSessions: boolean;
+  allowReEntry: boolean;
+  maxSessionsPerDay: number;
+  maxBreaksPerDay: number;
+  maxBreakMinutesPerDay: number;
+  maxSingleBreakMinutes: number;
+  paidBreakMinutesPerDay: number;
+  allowCheckOutOnBreak: boolean;
+  minMinutesBeforeBreak: number;
+  minMinutesBeforeCheckOut: number;
+  graceMinutes: number;
+  autoCheckOutAtShiftEnd: boolean;
+  autoCheckOutAfterMinutes: number;
+  idleCheckoutMinutes: number;
+  idleCheckoutWarnMinutes: number;
+  overtimeAfterMinutes: number;
+  minHoursForPresent: number;
+  workModel: "WFO" | "WFH" | "HYBRID";
+  allowedLocations: ("OFFICE" | "HOME" | "CLIENT_SITE" | "REMOTE")[];
+  requireLocation: boolean;
+  allowManualCorrection: boolean;
+}
+export const getAttendancePolicy = cache(() => apiFetch<{ configured: boolean; policy: AttendancePolicy }>("attendance/policy"));
 
 export interface ProductivityRulesData {
   productiveApps: string[];
@@ -1301,4 +1398,116 @@ export interface StorageUsage {
   planName: string | null;
 }
 export const getStorageUsage = cache(() => apiFetch<StorageUsage>("storage/usage"));
+
+// ---- Payroll & Payout workspace (§2) --------------------------------------
+// The enterprise payout workspace (payroll-workspace module). Money is returned
+// as plain decimal numbers alongside a 3-letter ISO currency code — NOT cents.
+
+/** §6 payout dashboard: scoped, owner-excluded aggregates for the current period. */
+export interface PayoutDashboard {
+  period: { id: string; start: string; end: string; status: string } | null;
+  eligibleEmployees: number;
+  totals: { gross: number; deductions: number; tax: number; net: number; employerCost: number; employeeCount: number };
+  pendingApprovals: number;
+  onHold: number;
+  failedPayments: number;
+  recordStatusDistribution: Record<string, number>;
+  batchStatusDistribution: Record<string, number>;
+  paymentStatusDistribution: Record<string, number>;
+  departmentCost: { departmentId: string | null; department: string; headcount: number; net: number; employerCost: number }[];
+  recentActivity: { recordId: string; employeeId: string; employeeName: string; status: string; net: number; at: string }[];
+}
+export const getPayoutDashboard = cache(() => apiFetch<PayoutDashboard>("payroll/dashboard"));
+
+/** A payroll batch summary row. */
+export interface PayoutBatch {
+  id: string;
+  periodId: string;
+  period?: { periodStart: string; periodEnd: string };
+  legalEntityId: string | null;
+  payrollEntityId: string | null;
+  countryCode: string | null;
+  currencyCode: string;
+  name: string;
+  status: string;
+  grossTotal: number;
+  deductionTotal: number;
+  netTotal: number;
+  employerCost: number;
+  employeeCount: number;
+  calculatedAt: string | null;
+  approvedAt: string | null;
+  paidAt: string | null;
+  closedAt: string | null;
+  createdBy: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface PayoutBatchDetail extends PayoutBatch {
+  members: { employeeId: string; included: boolean; excludeReason: string | null }[];
+}
+
+/** A pay period (created against a payroll calendar). */
+export interface PayoutPeriod {
+  id: string;
+  calendarId?: string;
+  periodStart: string;
+  periodEnd: string;
+  payDate: string | null;
+  status: string;
+  taxYear?: number | null;
+  frequency?: string;
+}
+
+/** A payroll record row (one employee within a batch). */
+export interface PayoutRecord {
+  id: string;
+  batchId: string;
+  employeeId: string;
+  periodId: string;
+  currencyCode: string;
+  profileVersionId: string | null;
+  regularEarnings: number;
+  variableEarnings: number;
+  overtimeAmount: number;
+  reimbursements: number;
+  grossEarnings: number;
+  preTaxDeductions: number;
+  taxableIncome: number;
+  taxDeduction: number;
+  employeeStatutory: number;
+  postTaxDeductions: number;
+  adjustments: number;
+  netPayable: number;
+  employerContrib: number;
+  employerCost: number;
+  prorationFactor: number;
+  status: string;
+  warnings: unknown;
+  errors: unknown;
+  calcVersion: number;
+  calculatedAt: string | null;
+  statementStatus: string;
+}
+export interface PayoutRecordComponent {
+  id: string;
+  code: string;
+  name: string;
+  direction: "EARNING" | "DEDUCTION" | string;
+  category: string;
+  amount: number;
+  taxable: boolean;
+  statutory: boolean;
+  employerPaid: boolean;
+  payslipVisible: boolean;
+  calcType: string;
+  formula: string | null;
+  inputs: unknown;
+  componentVersionId: string | null;
+  sortOrder: number;
+}
+export interface PayoutRecordDetail extends PayoutRecord {
+  components: PayoutRecordComponent[];
+}
 

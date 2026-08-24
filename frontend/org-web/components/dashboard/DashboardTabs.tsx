@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Briefcase, CalendarOff, Gauge, HeartPulse, LogOut, Target, TrendingUp, UserCheck, UserPlus, Users } from "lucide-react";
+import Link from "next/link";
+import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Briefcase, CalendarOff, Gauge, HeartPulse, LogOut, ShieldAlert, Siren, Target, TrendingUp, UserCheck, UserPlus, Users } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { AttendanceBadge } from "@/components/ui/badges";
@@ -59,10 +60,14 @@ export function DashboardTabs({ exec, roster }: { exec: ExecutiveOverview; roste
           <Card>
             <CardHeader title="Workforce health score" subtitle="Composite of productivity, attendance, engagement, risk & burnout" />
             <CardBody className="space-y-4">
-              <div className="flex items-end gap-3">
-                <span className="text-4xl font-semibold tabular-nums" style={{ color: tone(health.score) }}>{health.score}</span>
-                <span className="pb-1 text-sm text-slate-400">/ 100</span>
-              </div>
+              {health.score == null ? (
+                <p className="py-2 text-sm text-slate-500">No activity data yet — the health score appears once employees start tracking work.</p>
+              ) : (
+                <div className="flex items-end gap-3">
+                  <span className="text-4xl font-semibold tabular-nums" style={{ color: tone(health.score) }}>{health.score}</span>
+                  <span className="pb-1 text-sm text-slate-400">/ 100</span>
+                </div>
+              )}
               <div className="grid gap-2.5 sm:grid-cols-2">
                 {PILLARS.map((pl) => {
                   const v = health.pillars[pl.key];
@@ -70,10 +75,10 @@ export function DashboardTabs({ exec, roster }: { exec: ExecutiveOverview; roste
                     <div key={pl.key}>
                       <div className="mb-1 flex items-center justify-between text-xs">
                         <span className="text-slate-600">{pl.label}</span>
-                        <span className="tabular-nums text-slate-500">{v}</span>
+                        <span className="tabular-nums text-slate-500">{v ?? "—"}</span>
                       </div>
                       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                        <div className="h-full rounded-full" style={{ width: `${v}%`, backgroundColor: tone(v) }} />
+                        <div className="h-full rounded-full" style={{ width: `${v ?? 0}%`, backgroundColor: tone(v ?? 0) }} />
                       </div>
                     </div>
                   );
@@ -81,6 +86,26 @@ export function DashboardTabs({ exec, roster }: { exec: ExecutiveOverview; roste
               </div>
             </CardBody>
           </Card>
+
+          {/* Critical alerts — the Observation → Escalation → Incident funnel */}
+          {exec.alerts ? (
+            <Card>
+              <CardHeader
+                title="Critical alerts"
+                subtitle="Open items across the observation → escalation → incident workflow"
+                action={<Link href="/observations" className="text-xs font-medium text-brand hover:underline">Review →</Link>}
+              />
+              <CardBody>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                  <AlertCard href="/observations" label="Open observations" value={exec.alerts.openObservations} icon={ShieldAlert} tone="text-sky-700 bg-sky-50 ring-sky-200" />
+                  <AlertCard href="/observations" label="Critical" value={exec.alerts.criticalObservations} icon={AlertTriangle} tone="text-rose-700 bg-rose-50 ring-rose-200" />
+                  <AlertCard href="/observations" label="Escalations" value={exec.alerts.activeEscalations} icon={ArrowUpRight} tone="text-orange-700 bg-orange-50 ring-orange-200" />
+                  <AlertCard href="/observations" label="Overdue SLA" value={exec.alerts.overdueEscalations} icon={AlertTriangle} tone="text-rose-700 bg-rose-50 ring-rose-200" />
+                  <AlertCard href="/incidents" label="Open incidents" value={exec.alerts.openIncidents} icon={Siren} tone="text-violet-700 bg-violet-50 ring-violet-200" />
+                </div>
+              </CardBody>
+            </Card>
+          ) : null}
         </div>
       ) : null}
 
@@ -178,6 +203,16 @@ function RiskCard({ label, value, tone }: { label: string; value: number; tone: 
       <p className="text-2xl font-semibold tabular-nums">{value}</p>
       <p className="mt-0.5 text-xs font-medium opacity-80">{label}</p>
     </div>
+  );
+}
+
+function AlertCard({ href, label, value, icon: Icon, tone }: { href: string; label: string; value: number; icon: React.ComponentType<{ className?: string }>; tone: string }) {
+  return (
+    <Link href={href} className={`block rounded-xl px-3 py-3 text-center ring-1 ring-inset transition-opacity hover:opacity-80 ${value > 0 ? tone : "bg-slate-50 text-slate-400 ring-slate-200"}`}>
+      <Icon className="mx-auto mb-1 size-4 opacity-70" />
+      <p className="text-2xl font-semibold tabular-nums">{value}</p>
+      <p className="mt-0.5 text-[11px] font-medium opacity-80">{label}</p>
+    </Link>
   );
 }
 

@@ -7,6 +7,7 @@ import { PermissionGuard } from "../../common/guards/permission.guard.js";
 import { TenantGuard } from "../../common/guards/tenant.guard.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
 import { OrgStructureService } from "./org-structure.service.js";
+import { ShiftRotationService } from "./shift-rotation.service.js";
 
 const createDeptSchema = z.object({ name: z.string().min(1).max(80), description: z.string().max(280).optional() });
 const updateDeptSchema = z
@@ -57,12 +58,23 @@ const shiftBreak = z
   .object({ name: z.string().min(1).max(30), startMinute: minute, endMinute: minute })
   .refine((b) => b.endMinute > b.startMinute, { message: "Break end must be after its start." });
 const breaks = z.array(shiftBreak).max(6);
+// Optional per-weekday windows: at most one entry per weekday (0=Sun … 6=Sat),
+// each with its own start/end (and optional grace). null clears them.
+const shiftDay = z
+  .object({ day: z.coerce.number().int().min(0).max(6), startMinute: minute, endMinute: minute, graceMinutes: z.coerce.number().int().min(0).max(240).optional() })
+  .refine((d) => d.endMinute !== d.startMinute, { message: "A day's end can't equal its start." });
+const daySchedule = z
+  .array(shiftDay)
+  .max(7)
+  .refine((arr) => new Set(arr.map((d) => d.day)).size === arr.length, { message: "Only one window per weekday." })
+  .nullable();
 const createShiftSchema = z.object({
   name: z.string().min(1).max(80),
   startMinute: minute,
   endMinute: minute,
   graceMinutes: z.coerce.number().int().min(0).max(240).optional(),
   workingDays: workingDays.optional(),
+  daySchedule: daySchedule.optional(),
   breaks: breaks.optional(),
   isDefault: z.boolean().optional(),
 });
@@ -73,8 +85,26 @@ const updateShiftSchema = z
     endMinute: minute,
     graceMinutes: z.coerce.number().int().min(0).max(240),
     workingDays,
+    daySchedule,
     breaks,
     isDefault: z.boolean(),
+    status: z.enum(["ACTIVE", "ARCHIVED"]),
+  })
+  .partial()
+  .refine((v) => Object.keys(v).length > 0, { message: "Provide at least one field." });
+
+const rotationStep = z.object({ shiftId: z.string().uuid(), days: z.coerce.number().int().min(1).max(60) });
+const rotationSteps = z.array(rotationStep).min(2).max(14);
+const createRotationSchema = z.object({
+  name: z.string().min(1).max(80),
+  anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  steps: rotationSteps,
+});
+const updateRotationSchema = z
+  .object({
+    name: z.string().min(1).max(80),
+    anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    steps: rotationSteps,
     status: z.enum(["ACTIVE", "ARCHIVED"]),
   })
   .partial()
@@ -103,7 +133,10 @@ const updateTeamSchema = z
 @Controller()
 @UseGuards(AuthGuard, TenantGuard, PermissionGuard)
 export class OrgStructureController {
-  constructor(private readonly svc: OrgStructureService) {}
+  constructor(
+    private readonly svc: OrgStructureService,
+    private readonly rotations: ShiftRotationService,
+  ) {}
 
   @Get("departments")
   @RequirePermissions(permissions.employeeRead)
@@ -264,6 +297,33 @@ export class OrgStructureController {
     @Body(new ZodValidationPipe(updateShiftSchema)) body: z.infer<typeof updateShiftSchema>,
   ) {
     return this.svc.updateShift(id, body);
+  }
+
+  @Get("shift-rotations")
+  @RequirePermissions(permissions.employeeRead)
+  listRotations() {
+    return this.rotations.list();
+  }
+
+  @Post("shift-rotations")
+  @RequirePermissions(permissions.employeeWrite)
+  createRotation(@Body(new ZodValidationPipe(createRotationSchema)) body: z.infer<typeof createRotationSchema>) {
+    return this.rotations.create(body);
+  }
+
+  @Patch("shift-rotations/:id")
+  @RequirePermissions(permissions.employeeWrite)
+  updateRotation(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(updateRotationSchema)) body: z.infer<typeof updateRotationSchema>,
+  ) {
+    return this.rotations.update(id, body);
+  }
+
+  @Delete("shift-rotations/:id")
+  @RequirePermissions(permissions.employeeWrite)
+  archiveRotation(@Param("id", ParseUUIDPipe) id: string) {
+    return this.rotations.archive(id);
   }
 
   @Delete("shifts/:id")
