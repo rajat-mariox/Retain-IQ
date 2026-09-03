@@ -259,6 +259,22 @@ const RULES: Record<string, NotificationSpec[]> = {
       link: () => "/payslips",
     },
   ],
+  // A platform admin approved or rejected the org's seat/plan change request.
+  "subscription.change_decided": [
+    {
+      type: "subscription.change_decided",
+      audience: "org-admins", // Owner / Admin / HR — whoever manages billing
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => (str(p.outcome, "") === "approved" ? "Seat change approved" : "Seat change declined"),
+      body: (p) =>
+        str(p.outcome, "") === "approved"
+          ? `Your subscription change (${Number(p.fromSeats) || 0} → ${Number(p.toSeats) || 0} seats) was approved and is now active.`
+          : `Your subscription change request (${Number(p.fromSeats) || 0} → ${Number(p.toSeats) || 0} seats) was declined.`,
+      link: () => "/billing",
+    },
+  ],
   "certification.expiring": [
     {
       type: "certification.expiring",

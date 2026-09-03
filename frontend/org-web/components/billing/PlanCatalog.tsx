@@ -24,7 +24,7 @@ function fromPrice(p: Plan): number {
  * headcount (billing-service enforces this too). On success the page refreshes so
  * the current-plan card and seat bar reflect the change.
  */
-export function PlanCatalog({ plans, sub, highlight }: { plans: Plan[]; sub: Sub; highlight?: boolean }) {
+export function PlanCatalog({ plans, sub, highlight, pending }: { plans: Plan[]; sub: Sub; highlight?: boolean; pending?: boolean }) {
   const router = useRouter();
   const [target, setTarget] = useState<Plan | null>(null);
   const [seats, setSeats] = useState(sub.seats);
@@ -114,9 +114,11 @@ export function PlanCatalog({ plans, sub, highlight }: { plans: Plan[]; sub: Sub
                     <button
                       type="button"
                       onClick={() => openFor(p)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1 text-xs font-semibold text-brand transition-colors hover:bg-brand/15"
+                      disabled={pending}
+                      title={pending ? "A change is already awaiting approval." : undefined}
+                      className="inline-flex items-center gap-1 rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1 text-xs font-semibold text-brand transition-colors hover:bg-brand/15 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <Plus className="size-3" /> Add seats
+                      <Plus className="size-3" /> Request seats
                     </button>
                   ) : (
                     <span className="text-xs font-medium text-slate-400">Current</span>
@@ -125,7 +127,9 @@ export function PlanCatalog({ plans, sub, highlight }: { plans: Plan[]; sub: Sub
                   <button
                     type="button"
                     onClick={() => openFor(p)}
-                    className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-brand-soft"
+                    disabled={pending}
+                    title={pending ? "A change is already awaiting approval." : undefined}
+                    className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-brand-soft disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {p.pricePerSeat > sub.pricePerSeat ? "Upgrade" : "Switch"}
                   </button>
@@ -139,7 +143,7 @@ export function PlanCatalog({ plans, sub, highlight }: { plans: Plan[]; sub: Sub
       <Modal
         open={target !== null}
         onClose={() => (busy ? undefined : setTarget(null))}
-        title={target ? (targetIsCurrent ? `Add seats to ${target.name}` : `Switch to ${target.name}`) : ""}
+        title={target ? (targetIsCurrent ? `Request more seats` : `Request switch to ${target.name}`) : ""}
         size="sm"
       >
         {target ? (
@@ -224,7 +228,7 @@ export function PlanCatalog({ plans, sub, highlight }: { plans: Plan[]; sub: Sub
               <span className="text-slate-500">New monthly cost</span>
               <span className="text-base font-semibold tabular-nums text-slate-900">{usd(projectedTotal)}<span className="text-xs font-normal text-slate-400"> / mo</span></span>
             </div>
-            <p className="text-xs text-slate-400">The new rate applies from your next billing period. Seats are available immediately.</p>
+            <p className="text-xs text-slate-400">This change needs platform approval. Once approved, the new seats/plan take effect and the new rate applies from your next billing period.</p>
 
             {error ? <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
 
@@ -237,7 +241,7 @@ export function PlanCatalog({ plans, sub, highlight }: { plans: Plan[]; sub: Sub
                 className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-soft disabled:opacity-60"
               >
                 {busy ? <Loader2 className="size-4 animate-spin" /> : null}
-                {targetIsCurrent ? "Add seats" : "Confirm change"}
+                {targetIsCurrent ? "Request seats" : "Request change"}
               </button>
             </div>
           </div>

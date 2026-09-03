@@ -56,6 +56,30 @@ export interface ApiSubscriptions {
 }
 export const getSubscriptionsView = cache(() => adminFetch<ApiSubscriptions>("subscriptions"));
 
+export interface ApiChangeRequest {
+  id: string;
+  orgId: string;
+  orgName: string | null;
+  fromPlanId: string;
+  fromPlanName: string;
+  toPlanId: string;
+  toPlanName: string;
+  fromSeats: number;
+  toSeats: number;
+  estimatedTotalPrice: number;
+  estimatedDeltaPrice: number;
+  status: string;
+  requestedByEmail: string | null;
+  note: string | null;
+  createdAt: string;
+  decidedByName: string | null;
+  decidedAt: string | null;
+}
+/** Org seat/plan change requests awaiting platform approval. */
+export const getChangeRequests = cache((status = "PENDING") =>
+  adminFetch<{ items: ApiChangeRequest[] }>(`change-requests?status=${status}`),
+);
+
 export interface ApiActivityItem {
   id: string;
   source: "org" | "billing";

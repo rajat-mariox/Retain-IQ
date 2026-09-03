@@ -5,15 +5,16 @@ import { PlanDonut } from "@/components/charts/PlanDonut";
 import { SubscriptionsTabs } from "@/components/plans/SubscriptionsTabs";
 import { SubscriptionLifecycle } from "@/components/plans/SubscriptionLifecycle";
 import { getPlanDistribution } from "@/lib/data/billing";
-import { getSubscriptionsView } from "@/lib/admin-api";
+import { getSubscriptionsView, getChangeRequests } from "@/lib/admin-api";
 import { getPlans } from "@/lib/plans-api";
 import { formatCompact, formatCurrency, formatNumber } from "@/lib/format";
 
 export default async function SubscriptionsPage() {
-  const [plans, catalog, lifecycle] = await Promise.all([
+  const [plans, catalog, lifecycle, changeRequests] = await Promise.all([
     getPlanDistribution(),
     getPlans().catch(() => []),
     getSubscriptionsView().catch(() => null),
+    getChangeRequests().then((d) => d.items).catch(() => []),
   ]);
 
   const totalOrgs = plans.reduce((s, p) => s + p.orgs, 0);
@@ -84,7 +85,7 @@ export default async function SubscriptionsPage() {
     <>
       <Topbar title="Subscriptions" subtitle="Plan distribution, seats & plan catalog · live" />
       <PageBody>
-        <SubscriptionsTabs overview={overview} plans={catalog} />
+        <SubscriptionsTabs overview={overview} plans={catalog} changeRequests={changeRequests} />
       </PageBody>
     </>
   );

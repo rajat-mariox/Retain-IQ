@@ -1023,6 +1023,50 @@ export class AdminService {
   }
 
   /**
+   * Org seat/plan change requests for the platform approval queue. Reads the request
+   * rows from billing-db and joins identity-db for org names + billing-db plan names,
+   * so the queue shows "Acme: Basic/10 → Pro/25" rather than raw ids.
+   */
+  async listChangeRequests(status?: string) {
+    const valid = ["PENDING", "APPROVED", "REJECTED", "CANCELLED"] as const;
+    const s = valid.find((v) => v === status);
+    const rows = await this.billing.subscriptionChangeRequest.findMany({
+      where: s ? { status: s } : {},
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+    const orgIds = [...new Set(rows.map((r) => r.orgId))];
+    const planIds = [...new Set(rows.flatMap((r) => [r.fromPlanId, r.toPlanId]))];
+    const [orgs, plans] = await Promise.all([
+      this.prisma.organization.findMany({ where: { id: { in: orgIds } }, select: { id: true, name: true } }),
+      this.billing.plan.findMany({ where: { id: { in: planIds } }, select: { id: true, name: true } }),
+    ]);
+    const orgName = new Map(orgs.map((o) => [o.id, o.name]));
+    const planName = new Map(plans.map((p) => [p.id, p.name]));
+    return {
+      items: rows.map((r) => ({
+        id: r.id,
+        orgId: r.orgId,
+        orgName: orgName.get(r.orgId) ?? null,
+        fromPlanId: r.fromPlanId,
+        fromPlanName: planName.get(r.fromPlanId) ?? r.fromPlanId,
+        toPlanId: r.toPlanId,
+        toPlanName: planName.get(r.toPlanId) ?? r.toPlanId,
+        fromSeats: r.fromSeats,
+        toSeats: r.toSeats,
+        estimatedTotalPrice: r.estimatedTotalPrice,
+        estimatedDeltaPrice: r.estimatedDeltaPrice,
+        status: r.status,
+        requestedByEmail: r.requestedByEmail,
+        note: r.note,
+        createdAt: r.createdAt.toISOString(),
+        decidedByName: r.decidedByName,
+        decidedAt: r.decidedAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
+  /**
    * Audit & compliance log. Merges login logs (tenant + super-admin sessions),
    * organization activities (PlatformEvent), and subscription/plan changes
    * (BillingEvent) into one filterable, paginated stream with actor + IP.

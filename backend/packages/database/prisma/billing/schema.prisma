@@ -30,6 +30,13 @@ enum InvoiceStatus {
   VOID
 }
 
+enum ChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 model Plan {
   id            String   @id // free | basic | professional | enterprise
   name          String
@@ -159,4 +166,30 @@ model Invoice {
   @@index([orgId, issuedAt])
   @@index([status, paidAt])
   @@index([subscriptionId])
+}
+
+// A pending seat/plan change an org requested that a platform super-admin must
+// approve before it is applied. Only on APPROVED does billing-service apply the
+// change (re-lock the rate). orgId is a plain UUID (no cross-db FK), like the rest.
+model SubscriptionChangeRequest {
+  id                  String              @id @default(uuid()) @db.Uuid
+  orgId               String              @db.Uuid
+  fromPlanId          String
+  toPlanId            String
+  fromSeats           Int
+  toSeats             Int
+  estimatedTotalPrice Int // USD cents at the requested seats (base + extra seats), locked-rate model
+  estimatedDeltaPrice Int // to − from (can be negative for a downgrade)
+  status              ChangeRequestStatus @default(PENDING)
+  requestedByUserId   String?             @db.Uuid
+  requestedByEmail    String?
+  note                String?
+  decidedByName       String?
+  decisionNote        String?
+  decidedAt           DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@index([status, createdAt])
+  @@index([orgId])
 }

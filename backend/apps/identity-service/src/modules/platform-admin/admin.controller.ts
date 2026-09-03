@@ -232,6 +232,11 @@ export class AdminController {
     return this.admin.planUsage(planId);
   }
 
+  @Get("change-requests")
+  changeRequests(@Query("status") status?: string) {
+    return this.admin.listChangeRequests(status);
+  }
+
   @Get("activity")
   activity(@Query(new ZodValidationPipe(activityQuerySchema)) query: ActivityQuery) {
     return this.admin.activity(query);

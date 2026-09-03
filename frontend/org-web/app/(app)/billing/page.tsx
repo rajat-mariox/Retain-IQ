@@ -6,6 +6,7 @@ import { InvoiceBadge, SubscriptionBadge } from "@/components/ui/badges";
 import { PaginatedTable } from "@/components/ui/Pagination";
 import { SeatUpgradeNotice } from "@/components/billing/SeatUpgradeNotice";
 import { PlanCatalog } from "@/components/billing/PlanCatalog";
+import { PendingChangeNotice } from "@/components/billing/PendingChangeNotice";
 import { TrialStatus } from "@/components/billing/TrialStatus";
 import { getBilling } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -19,6 +20,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const sub = billing?.subscription ?? null;
   const invoices = billing?.invoices ?? [];
   const plans = billing?.plans ?? [];
+  const pendingChange = billing?.pendingChangeRequest ?? null;
   const seatUse = sub && sub.seats > 0 ? Math.round((sub.activeSeats / sub.seats) * 100) : 0;
 
   return (
@@ -26,6 +28,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       <Topbar title="Billing" subtitle="Subscription, seats and invoices" />
       <PageBody>
         {seatUpgrade ? <SeatUpgradeNotice reason={params.reason} /> : null}
+        {pendingChange ? <PendingChangeNotice request={pendingChange} /> : null}
         {sub ? <TrialStatus sub={sub} /> : null}
         {sub ? (
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
@@ -72,7 +75,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
             <Card>
               <CardHeader title="Plans" subtitle="Upgrade or switch tiers" />
               <CardBody>
-                <PlanCatalog plans={plans} sub={sub} highlight />
+                <PlanCatalog plans={plans} sub={sub} highlight pending={Boolean(pendingChange)} />
               </CardBody>
             </Card>
           </div>

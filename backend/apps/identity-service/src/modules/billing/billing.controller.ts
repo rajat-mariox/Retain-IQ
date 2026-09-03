@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from "@nestjs/common";
 import { z } from "zod";
 import { permissions } from "@retainiq/authz";
 import { RequirePermissions } from "../../common/decorators/permissions.decorator.js";
@@ -34,10 +34,17 @@ export class BillingController {
     return this.billing.getOrgBilling();
   }
 
-  /** Change this org's own plan / seats / auto-renew. Proxied to billing-service. */
+  /** Submit a plan/seat change (held for platform approval; auto-renew applies now). */
   @Patch("subscription")
   @RequirePermissions(permissions.billingManage)
   changeSubscription(@Body(new ZodValidationPipe(changeSubscriptionSchema)) body: z.infer<typeof changeSubscriptionSchema>) {
     return this.billing.changeSubscription(body);
+  }
+
+  /** Withdraw this org's own pending change request. */
+  @Post("change-request/:id/cancel")
+  @RequirePermissions(permissions.billingManage)
+  cancelChangeRequest(@Param("id", ParseUUIDPipe) id: string) {
+    return this.billing.cancelChangeRequest(id);
   }
 }

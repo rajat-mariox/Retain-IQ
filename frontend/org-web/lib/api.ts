@@ -251,6 +251,18 @@ export interface OrgBilling {
     features: string[];
     color: string;
   }[];
+  // A seat/plan change the org submitted that is awaiting platform approval.
+  pendingChangeRequest: {
+    id: string;
+    fromPlanId: string;
+    toPlanId: string;
+    fromSeats: number;
+    toSeats: number;
+    estimatedTotalPrice: number;
+    estimatedDeltaPrice: number;
+    status: string;
+    createdAt: string;
+  } | null;
 }
 export const getBilling = cache(() => apiFetch<OrgBilling>("billing"));
 
