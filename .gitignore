@@ -17,7 +17,9 @@ docs/RetainIQ-Task-Tracker.*
 # QA findings & fix plans (internal, not committed)
 docs/qa/
 
-# AI: large model checkpoints (multi-GB) and Python bytecode — kept local
-ai/Quantization/
+# AI: everything under ai/ is local (models, checkpoints, experiments) EXCEPT the
+# masking micro-service, which is a deployed component (docker-compose builds ./ai/masking).
+ai/*
+!ai/masking/
 __pycache__/
 *.pyc
