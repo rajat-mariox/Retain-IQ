@@ -101,4 +101,12 @@ export class PayrollBatchController {
   close(@Param("id", ParseUUIDPipe) id: string) {
     return this.batches.close(id);
   }
+
+  /** Cancel (abandon) a batch before payment — releases claimed variable pay/overtime. */
+  @Post(":id/cancel")
+  @HttpCode(200)
+  @RequirePermissions(permissions.payrollBatchClose)
+  cancel(@Param("id", ParseUUIDPipe) id: string, @Body(new ZodValidationPipe(rejectSchema)) body: z.infer<typeof rejectSchema>) {
+    return this.batches.cancel(id, body.reason);
+  }
 }

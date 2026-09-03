@@ -5,5 +5,6 @@ import { StorageService } from "./storage.service.js";
 @Module({
   controllers: [StorageController],
   providers: [StorageService],
+  exports: [StorageService], // reused by payroll for payslip PDF storage
 })
 export class StorageModule {}

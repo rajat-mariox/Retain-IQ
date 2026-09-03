@@ -113,6 +113,9 @@ export const managerPermissions: Permission[] = [
   permissions.screenshotsRead,
   permissions.screenshotsDownload,
   permissions.screenshotsDelete,
+  // A manager is also a paid employee — they can read + download their OWN payslip.
+  permissions.payrollStatementOwnRead,
+  permissions.payrollStatementDownload,
 ];
 
 /**
@@ -147,6 +150,8 @@ export const hrManagerPermissions: Permission[] = [
   permissions.payrollBatchRelease,
   permissions.payrollBatchClose,
   permissions.payrollRecordRead,
+  permissions.payrollStatementOwnRead, // HR are paid employees too — read their own payslip
+  permissions.payrollStatementDownload,
   permissions.payrollStatementEmployeeRead,
   permissions.payrollStatementGenerate,
   permissions.payrollDisputeRead,
@@ -168,10 +173,15 @@ export const hrManagerPermissions: Permission[] = [
 ];
 
 /**
- * Standard employee: read projects. Employees see their OWN productivity via
- * /insights/me — NOT a screenshot gallery — so they get no screenshots.read.
+ * Standard employee: read projects, and read + download their OWN payslips.
+ * Employees see their OWN productivity via /insights/me — NOT a screenshot
+ * gallery — so they get no screenshots.read.
  */
-export const employeePermissions: Permission[] = [permissions.projectRead];
+export const employeePermissions: Permission[] = [
+  permissions.projectRead,
+  permissions.payrollStatementOwnRead,
+  permissions.payrollStatementDownload,
+];
 
 export interface SystemRole {
   name: string;

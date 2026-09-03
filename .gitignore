@@ -16,3 +16,8 @@ docs/RetainIQ-Task-Tracker.*
 
 # QA findings & fix plans (internal, not committed)
 docs/qa/
+
+# AI: large model checkpoints (multi-GB) and Python bytecode — kept local
+ai/Quantization/
+__pycache__/
+*.pyc

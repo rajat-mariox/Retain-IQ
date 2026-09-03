@@ -214,6 +214,11 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       S3_FORCE_PATH_STYLE: "true"
       PORT: "3001"
+      # PII masking micro-service — screenshots are masked here before storage,
+      # so a raw (unmasked) capture never reaches object storage.
+      MASKING_SERVICE_URL: ${MASKING_SERVICE_URL:-http://masking-service:8099}
+      # CPU OCR on a dense screenshot takes tens of seconds; give it headroom.
+      MASKING_TIMEOUT_MS: ${MASKING_TIMEOUT_MS:-120000}
     ports:
       - "3001:3001"
     depends_on:
@@ -231,6 +236,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      masking-service:
+        condition: service_healthy
 
   activity-ingestion:
     build:
@@ -354,6 +361,21 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # PII screenshot masking (docTR OCR). identity-service sends every screenshot
+  # here to be masked before it is stored, so a raw capture never reaches storage.
+  masking-service:
+    build:
+      context: ./ai/masking
+      dockerfile: Dockerfile
+    image: retainiq/masking-service
+    container_name: retainiq-masking-service
+    environment:
+      MASKING_PORT: "8099"
+      PYTHONUNBUFFERED: "1" # flush the service's log lines to `docker logs`
+    ports:
+      - "8099:8099"
+    restart: unless-stopped
 
 volumes:
   postgres_identity_data:

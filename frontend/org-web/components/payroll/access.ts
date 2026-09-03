@@ -39,6 +39,16 @@ export interface PayrollAccess {
   // Reports
   canReportRead: boolean;
   canReportExport: boolean;
+  // Tax & statutory (Phase 2)
+  canTaxRead: boolean;
+  canTaxConfigure: boolean;
+  canStatutoryRead: boolean;
+  canStatutoryConfigure: boolean;
+  // Filing (Phase 3)
+  canFilingRead: boolean;
+  canFilingPrepare: boolean;
+  canFilingApprove: boolean;
+  canFilingSubmit: boolean;
 }
 
 /** Resolve the workspace's permission booleans from a session's permission strings. */
@@ -75,6 +85,14 @@ export function buildAccess(perms: string[]): PayrollAccess {
     canAdjustmentReview: has("payroll.adjustment.review"),
     canReportRead: has("payroll.report.read"),
     canReportExport: has("payroll.report.export"),
+    canTaxRead: has("payroll.tax.read"),
+    canTaxConfigure: has("payroll.tax.configure"),
+    canStatutoryRead: has("payroll.statutory.read"),
+    canStatutoryConfigure: has("payroll.statutory.configure"),
+    canFilingRead: has("payroll.filing.read"),
+    canFilingPrepare: has("payroll.filing.prepare"),
+    canFilingApprove: has("payroll.filing.approve"),
+    canFilingSubmit: has("payroll.filing.submit"),
   };
 }
 

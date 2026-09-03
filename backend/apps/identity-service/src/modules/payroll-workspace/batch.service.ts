@@ -76,7 +76,20 @@ export class PayrollBatchService {
       take: 200,
       include: { period: { select: { periodStart: true, periodEnd: true } } },
     });
-    return rows.map((b) => this.serializeBatch(b));
+
+    // "payslipsPending": a paid batch that still has PAID/CLOSED records whose payslip
+    // hasn't been generated yet. Used by the Generate-statements picker so it only
+    // offers batches that actually need generating (most auto-generate on payment).
+    const pending = rows.length
+      ? await this.prisma.payrollRecord.groupBy({
+          by: ["batchId"],
+          where: { orgId, batchId: { in: rows.map((b) => b.id) }, status: { in: ["PAID", "CLOSED"] }, statementStatus: { not: "GENERATED" } },
+          _count: { _all: true },
+        })
+      : [];
+    const pendingSet = new Set(pending.filter((p) => p._count._all > 0).map((p) => p.batchId));
+
+    return rows.map((b) => ({ ...this.serializeBatch(b), payslipsPending: pendingSet.has(b.id) }));
   }
 
   async get(id: string) {
@@ -457,6 +470,40 @@ export class PayrollBatchService {
       });
     });
     await this.audit.record({ orgId, actorUserId: userId, resourceType: "PayrollBatch", resourceId: batch.id, action: "payroll.batch.close" });
+    return this.get(batch.id);
+  }
+
+  /**
+   * Cancel (abandon) a batch before it is paid. Any records are marked CANCELLED and
+   * — crucially — the variable pay (bonus/incentive/reimbursement) and overtime that
+   * were claimed into this batch are RELEASED (back to APPROVED, batch unlinked) so
+   * they aren't stranded in a dead run and can be picked up by another batch. Not
+   * allowed once money has moved (PAYMENT_PROCESSING/PAID/CLOSED). Requires a reason.
+   */
+  async cancel(id: string, reason: string) {
+    const { orgId, userId } = requireTenantContext();
+    const trimmed = reason?.trim();
+    if (!trimmed) throw new BadRequestException("A reason is required to cancel a batch.");
+    const batch = await this.loadForMutation(orgId, id, [
+      "DRAFT", "INPUT_COLLECTION", "CALCULATION", "VALIDATION", "REVIEW", "PENDING_APPROVAL", "ON_HOLD", "REJECTED",
+    ]);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.payrollBatch.update({ where: { id: batch.id }, data: { status: "CANCELLED" } });
+      await tx.payrollRecord.updateMany({ where: { orgId, batchId: batch.id, status: { notIn: ["PAID", "CLOSED"] } }, data: { status: "CANCELLED" } });
+      // Un-claim variable pay + overtime so it can be used in another batch.
+      const release = { status: "APPROVED", batchId: null } as const;
+      await tx.payrollBonus.updateMany({ where: { orgId, batchId: batch.id, status: "INCLUDED_IN_PAYROLL" }, data: release });
+      await tx.payrollIncentive.updateMany({ where: { orgId, batchId: batch.id, status: "INCLUDED_IN_PAYROLL" }, data: release });
+      await tx.payrollReimbursement.updateMany({ where: { orgId, batchId: batch.id, status: "INCLUDED_IN_PAYROLL" }, data: release });
+      await tx.payrollOvertime.updateMany({ where: { orgId, batchId: batch.id }, data: { batchId: null } });
+      await tx.payrollApproval.updateMany({ where: { orgId, batchId: batch.id, status: "PENDING" }, data: { status: "REJECTED", decidedBy: userId, decidedAt: new Date(), comment: trimmed } });
+      await this.outbox.enqueue(tx, {
+        eventType: "payroll.batch.cancelled", aggregateType: "payroll_batch", aggregateId: batch.id, orgId, actorUserId: userId,
+        payload: { batchId: batch.id, periodId: batch.periodId, cancelledBy: userId, reason: trimmed },
+      });
+    });
+    await this.audit.record({ orgId, actorUserId: userId, resourceType: "PayrollBatch", resourceId: batch.id, action: "payroll.batch.cancel", after: { reason: trimmed } });
     return this.get(batch.id);
   }
 

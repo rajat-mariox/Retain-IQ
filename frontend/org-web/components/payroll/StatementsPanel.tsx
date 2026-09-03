@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState, useTransition } from "react";
-import { FileCheck2, FileText, Sparkles } from "lucide-react";
+import { Download, FileCheck2, FileText, Sparkles } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { SkeletonTableCard } from "@/components/ui/Skeleton";
-import type { OrgSession } from "@/lib/api";
+import type { OrgSession, PayoutBatch } from "@/lib/api";
 import { can, EmployeePicker, inputCls, labelCls, money, NoAccess, primaryBtn, readError, useEmployeeDirectory } from "./workspace-shared";
 
 interface Statement {
@@ -19,19 +19,32 @@ interface Statement {
   grossAmount: number;
   netAmount: number;
   generatedAt: string;
+  status?: string;
+  publishedAt?: string | null;
+  downloadUrl?: string | null;
+  periodLabel?: string | null;
+  periodEnd?: string | null;
+}
+
+/** "August 2026" from a period end (or a YYYY-MM label). */
+function monthLabel(label?: string | null, end?: string | null): string {
+  const src = end ?? (label ? `${label}-01` : null);
+  if (!src) return "—";
+  const d = new Date(src);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
 }
 
 function StatementTable({ items, empty }: { items: Statement[]; empty: string }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[620px] text-sm">
+      <table className="w-full min-w-[660px] text-sm">
         <thead>
           <tr className="border-b border-hairline text-xs text-slate-500">
-            <th className="px-5 py-3 text-left font-medium">Statement</th>
+            <th className="px-5 py-3 text-left font-medium">Pay period</th>
             <th className="px-5 py-3 text-right font-medium">Gross</th>
             <th className="px-5 py-3 text-right font-medium">Net</th>
-            <th className="px-5 py-3 text-left font-medium">Checksum</th>
-            <th className="px-5 py-3 text-right font-medium">Generated</th>
+            <th className="px-5 py-3 text-left font-medium">Status</th>
+            <th className="px-5 py-3 text-right font-medium">Payslip</th>
           </tr>
         </thead>
         <tbody>
@@ -40,14 +53,31 @@ function StatementTable({ items, empty }: { items: Statement[]; empty: string })
               <td className="px-5 py-3">
                 <span className="flex items-center gap-2 font-medium text-slate-800">
                   <FileText className="size-4 text-slate-400" />
-                  {s.kind.replace(/_/g, " ").toLowerCase()}
+                  {monthLabel(s.periodLabel, s.periodEnd)}
                   <span className="rounded-full bg-panel-2 px-1.5 text-xs tabular-nums text-slate-500">v{s.documentVersion}</span>
                 </span>
               </td>
               <td className="px-5 py-3 text-right tabular-nums text-slate-600">{money(s.grossAmount, s.currencyCode)}</td>
               <td className="px-5 py-3 text-right tabular-nums font-medium text-slate-900">{money(s.netAmount, s.currencyCode)}</td>
-              <td className="px-5 py-3 font-mono text-xs text-slate-400" title={s.checksum}>{s.checksum.slice(0, 12)}…</td>
-              <td className="px-5 py-3 text-right text-xs text-slate-500">{s.generatedAt.slice(0, 10)}</td>
+              <td className="px-5 py-3">
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.status === "PUBLISHED" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                  {(s.status ?? "DRAFT").toLowerCase()}
+                </span>
+              </td>
+              <td className="px-5 py-3 text-right">
+                {s.downloadUrl ? (
+                  <a
+                    href={s.downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <Download className="size-3.5" /> PDF
+                  </a>
+                ) : (
+                  <span className="text-xs text-slate-400" title={s.checksum}>—</span>
+                )}
+              </td>
             </tr>
           ))}
           {items.length === 0 ? (
@@ -78,6 +108,18 @@ export function StatementsPanel({ session }: { session: OrgSession }) {
   // generate
   const [batchId, setBatchId] = useState("");
   const [genResult, setGenResult] = useState<string | null>(null);
+  const [batches, setBatches] = useState<PayoutBatch[] | null>(null);
+  const loadBatches = useCallback(() => {
+    fetch("/api/payroll/batches", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((d) => setBatches(Array.isArray(d) ? d : []))
+      .catch(() => setBatches([]));
+  }, []);
+  useEffect(() => {
+    if (canGenerate) loadBatches();
+  }, [canGenerate, loadBatches]);
+  // Only batches that are paid AND still have payslips to generate (auto-gen covers the rest).
+  const pendingBatches = (batches ?? []).filter((b) => b.payslipsPending);
 
   // employee lookup
   const [employeeId, setEmployeeId] = useState("");
@@ -106,7 +148,9 @@ export function StatementsPanel({ session }: { session: OrgSession }) {
       const res = await fetch(`/api/payroll/batches/${id}/statements`, { method: "POST" });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) return setError(readError(d, "Could not generate statements for that batch."));
-      setGenResult(`Generated ${d?.generated ?? 0} statement${d?.generated === 1 ? "" : "s"}.`);
+      setGenResult(`Generated ${d?.generated ?? 0} payslip${d?.generated === 1 ? "" : "s"}.`);
+      setBatchId("");
+      loadBatches(); // the batch drops out of the picker once its payslips exist
     });
 
   const lookup = useCallback((id: string) => {
@@ -145,14 +189,23 @@ export function StatementsPanel({ session }: { session: OrgSession }) {
 
       {canGenerate ? (
         <Card>
-          <CardHeader title="Generate statements" subtitle="Produce a checksummed payout statement for every finalized record in a batch" />
+          <CardHeader title="Generate payslips" subtitle="Payslips auto-generate on payment — this covers any paid batch still pending" />
           <CardBody className="space-y-3">
             <div className="flex flex-wrap items-end gap-3">
-              <div className="min-w-[18rem] flex-1">
-                <label className={labelCls}>Batch id</label>
-                <input className={inputCls} value={batchId} onChange={(e) => setBatchId(e.target.value)} placeholder="payroll batch UUID" />
+              <div className="min-w-[20rem] flex-1">
+                <label className={labelCls}>Batch</label>
+                <select className={inputCls} value={batchId} onChange={(e) => setBatchId(e.target.value)}>
+                  <option value="">
+                    {batches === null ? "Loading batches…" : pendingBatches.length ? "Select a paid batch…" : "No batches need payslips — all up to date"}
+                  </option>
+                  {pendingBatches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} — {monthLabel(undefined, b.period?.periodEnd)} ({b.status.toLowerCase()})
+                    </option>
+                  ))}
+                </select>
               </div>
-              <button onClick={generate} disabled={pending || !batchId.trim()} className={primaryBtn}>
+              <button onClick={generate} disabled={pending || !batchId} className={primaryBtn}>
                 <Sparkles className="size-4" /> {pending ? "Generating…" : "Generate"}
               </button>
             </div>

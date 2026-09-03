@@ -3,6 +3,7 @@ import {
   CalendarCheck,
   CalendarDays,
   CreditCard,
+  FileText,
   FolderKanban,
   BarChart3,
   Bell,
@@ -30,6 +31,7 @@ export interface NavItem {
   icon: LucideIcon;
   adminOnly?: boolean;
   employeeOnly?: boolean; // hidden from anyone who can manage projects (Owner/Manager)
+  hideForOwner?: boolean; // hidden for the Owner specifically (still shown to Managers/staff)
   flag?: string; // hidden when this platform feature flag is off
   permission?: string; // hidden unless the member holds this permission
 }
@@ -54,6 +56,7 @@ export const NAV_ITEMS: NavEntry[] = [
   { label: "My Time", href: "/time", icon: Timer, flag: "timeTracking" },
   { label: "Attendance", href: "/attendance", icon: CalendarCheck, flag: "attendance" },
   { label: "Leave", href: "/leave", icon: CalendarDays, flag: "leave" },
+  { label: "Payslips", href: "/payslips", icon: FileText, flag: "payroll", hideForOwner: true },
   { label: "Projects & Teams", href: "/projects", icon: FolderKanban, flag: "projects" },
   { label: "My Tasks", href: "/tasks", icon: ListTodo, flag: "projects", employeeOnly: true },
   { label: "Notifications", href: "/notifications", icon: Bell },

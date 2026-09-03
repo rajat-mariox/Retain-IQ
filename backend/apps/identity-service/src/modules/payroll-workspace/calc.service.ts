@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@retainiq/database/identity";
 import { PrismaService } from "../../common/database/prisma.service.js";
+import { TaxEngineService } from "./tax-engine.service.js";
 
 type Direction = "EARNING" | "DEDUCTION";
 
@@ -33,7 +34,7 @@ const D = (v: number | string | Prisma.Decimal): Prisma.Decimal => new Prisma.De
 const money = (d: Prisma.Decimal): Prisma.Decimal => d.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
 /** One computed payslip line, with the explainability metadata §26 requires. */
-interface CalcLine {
+export interface CalcLine {
   code: string;
   name: string;
   direction: Direction;
@@ -67,7 +68,10 @@ interface CalcLine {
  */
 @Injectable()
 export class PayrollCalcService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly taxEngine: TaxEngineService,
+  ) {}
 
   /**
    * Calculate one employee's record for a batch and persist it (idempotently:
@@ -193,7 +197,24 @@ export class PayrollCalcService {
     // included-in-payroll without a matching record (and vice versa).
     const persisted = await this.prisma.$transaction(async (tx) => {
       const variable = await this.claimVariableAndOvertime(tx, orgId, batch, employeeId, order);
-      const allLines = [...lines, ...variable.lines];
+      let allLines = [...lines, ...variable.lines];
+      // ---- Tax + statutory (Phase 2, §12/§13) ----
+      // Compute on the taxable income + statutory base assembled so far, then fold
+      // the TDS / PF / ESI / PT lines in BEFORE the final totals. Config-driven:
+      // if no rule set is in force the engine adds nothing and records a warning.
+      const pre = this.computeTotals(allLines);
+      const tax = await this.taxEngine.compute({
+        orgId,
+        employeeId,
+        onDate: batch.periodEnd ?? batch.periodStart ?? new Date(),
+        countryCode: batch.countryCode ?? version.payrollCountry ?? version.workCountry ?? null,
+        fallbackRegime: version.taxRegime ?? null,
+        payFrequency: version.payFrequency,
+        periodTaxable: pre.taxableIncome,
+        statutoryBase: baseEarning,
+      });
+      if (tax.warnings.length) warnings.push(...tax.warnings);
+      allLines = [...allLines, ...tax.lines];
       const totals = this.computeTotals(allLines);
       if (totals.netPayable.lessThan(0)) warnings.push("Net payable is negative — deductions exceed earnings.");
 
@@ -307,6 +328,7 @@ export class PayrollCalcService {
     let employeeStatutory = ZERO;
     let employerContrib = ZERO;
     let taxableIncome = ZERO;
+    let taxDeduction = ZERO;
 
     for (const l of lines) {
       if (l.employerPaid) {
@@ -319,6 +341,8 @@ export class PayrollCalcService {
         else if (l.code === "REIMBURSEMENT") reimbursements = reimbursements.plus(l.amount);
         else regularEarnings = regularEarnings.plus(l.amount); // BASE + structural allowances
         if (l.taxable) taxableIncome = taxableIncome.plus(l.amount);
+      } else if (l.category === "TAX" || l.code === "TDS") {
+        taxDeduction = taxDeduction.plus(l.amount);
       } else if (l.statutory) {
         employeeStatutory = employeeStatutory.plus(l.amount);
       } else {
@@ -326,7 +350,6 @@ export class PayrollCalcService {
       }
     }
 
-    const taxDeduction = ZERO; // TODO(phase-2): compute from taxRegime + taxableIncome.
     const postTaxDeductions = ZERO;
     const totalDeductions = preTaxDeductions.plus(employeeStatutory).plus(taxDeduction).plus(postTaxDeductions);
     const grossEarnings = money(regularEarnings.plus(variableEarnings).plus(overtimeAmount).plus(reimbursements));

@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, type OnModuleInit } from "@nestjs/common";
+import { Prisma } from "@retainiq/database/identity";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { hashPassword } from "../../common/crypto/password.util.js";
 import { generateTempPassword } from "../../common/crypto/temp-password.util.js";
@@ -136,6 +137,35 @@ export class MembersService implements OnModuleInit {
         data: { orgId: ctx.orgId, userId: user.id, employeeId: emp.id, roleId, scopeType, scopeId, status: "ACTIVE", createdBy: ctx.userId },
       });
       const role = await tx.role.findUnique({ where: { id: roleId }, select: { name: true } });
+
+      // --- Salary decided AT HIRE ---
+      // Staff (any non-Owner role) MUST have a base salary; it seeds the payroll
+      // profile v1 here, atomically with the hire, so the person's approved
+      // timesheets, attendance and leave flow straight into payroll from day one.
+      // The Owner runs the org but is not payroll staff — exempt, no profile.
+      const roleName = role?.name ?? "Employee";
+      if (roleName !== "Owner") {
+        if (input.baseAmount == null || !(input.baseAmount > 0)) {
+          throw new BadRequestException("A base salary is required when hiring a staff member.");
+        }
+        const effectiveFrom = new Date(`${input.effectiveFrom ?? new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+        const profile = await tx.payrollProfile.create({ data: { orgId: ctx.orgId, employeeId: emp.id } });
+        await tx.payrollProfileVersion.create({
+          data: {
+            orgId: ctx.orgId,
+            profileId: profile.id,
+            version: 1,
+            currencyCode: (input.currencyCode ?? "USD").trim().toUpperCase(),
+            payFrequency: input.payFrequency ?? "MONTHLY",
+            paymentBasis: input.paymentBasis ?? "FIXED",
+            baseAmount: new Prisma.Decimal(input.baseAmount),
+            prorationPolicy: "CALENDAR_DAYS",
+            effectiveFrom,
+            joinDate: effectiveFrom,
+            createdBy: ctx.userId,
+          },
+        });
+      }
 
       // Project the new membership to downstream read models. Without this the
       // notifications service never learns about invited members, so role-based

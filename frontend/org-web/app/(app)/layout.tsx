@@ -40,6 +40,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const isAdmin = Boolean(
     session && (session.role.permissions.includes("employee.read") || session.role.name === "Owner"),
   );
+  // The Owner isn't payroll staff, so self-service items like Payslips are hidden for them.
+  const isOwner = session?.role.name === "Owner";
   const notification = config.notification;
 
   return (
@@ -49,6 +51,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <Sidebar
           orgName={session?.org.name ?? "Organization"}
           isAdmin={isAdmin}
+          isOwner={isOwner}
           permissions={session?.role.permissions ?? []}
           platformName={config.branding.platformName}
           // Org-resolved flags (global ∩ this org's override), not the public

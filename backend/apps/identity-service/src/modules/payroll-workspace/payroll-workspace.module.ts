@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { AccessScopeModule } from "../../common/access-scope/access-scope.module.js";
 import { OrgRolesModule } from "../../common/org-roles/org-roles.module.js";
 import { ObservationModule } from "../observation/observation.module.js";
+import { StorageModule } from "../storage/storage.module.js";
 
 // Services
 import { PayrollCalendarService } from "./calendar.service.js";
@@ -9,6 +10,7 @@ import { PayrollProfileService } from "./profile.service.js";
 import { PayrollComponentService } from "./component.service.js";
 import { PayrollInputService } from "./input-snapshot.service.js";
 import { PayrollCalcService } from "./calc.service.js";
+import { TaxEngineService } from "./tax-engine.service.js";
 import { PayrollBatchService } from "./batch.service.js";
 import { VariablePayService } from "./variable-pay.service.js";
 import { OvertimeService } from "./overtime.service.js";
@@ -35,6 +37,10 @@ import { DisputeController } from "./dispute.controller.js";
 import { AdjustmentController } from "./adjustment.controller.js";
 import { DashboardController } from "./dashboard.controller.js";
 import { PayrollReportsController } from "./reports.controller.js";
+import { TaxConfigController } from "./tax-config.controller.js";
+import { TaxConfigService } from "./tax-config.service.js";
+import { PayrollFilingController } from "./filing.controller.js";
+import { PayrollFilingService } from "./filing.service.js";
 
 /**
  * Payroll & Payout Workspace (spec §2). One consolidated in-portal module that
@@ -45,7 +51,7 @@ import { PayrollReportsController } from "./reports.controller.js";
  * portal's RBAC/ABAC (AccessScope), audit and outbox infrastructure.
  */
 @Module({
-  imports: [AccessScopeModule, OrgRolesModule, ObservationModule],
+  imports: [AccessScopeModule, OrgRolesModule, ObservationModule, StorageModule],
   controllers: [
     PayrollCalendarController,
     PayrollProfileController,
@@ -61,6 +67,8 @@ import { PayrollReportsController } from "./reports.controller.js";
     AdjustmentController,
     DashboardController,
     PayrollReportsController,
+    TaxConfigController,
+    PayrollFilingController,
   ],
   providers: [
     PayrollCalendarService,
@@ -68,6 +76,9 @@ import { PayrollReportsController } from "./reports.controller.js";
     PayrollComponentService,
     PayrollInputService,
     PayrollCalcService,
+    TaxEngineService,
+    TaxConfigService,
+    PayrollFilingService,
     PayrollBatchService,
     VariablePayService,
     OvertimeService,

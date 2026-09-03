@@ -1668,6 +1668,10 @@ model PayrollSetting {
   cycleFrequency     PayrollCycleFrequency @default(MONTHLY)
   invoicePrefix      String                @default("INV")
   requireApproval    Boolean               @default(true) // only approved timesheets feed payroll
+  // Org opt-in for the Phase-2 tax + statutory engine. OFF by default: an org
+  // runs income tax / PF / ESI / PT only when its owner turns this on. When off,
+  // payroll computes earnings + components with NO TDS/statutory deductions.
+  taxEnabled         Boolean               @default(false)
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
 
@@ -3168,10 +3172,15 @@ model PayrollStatement {
   kind            String   @default("PAYOUT_STATEMENT") // PAYOUT_STATEMENT | PAYSLIP
   documentVersion Int      @default(1)
   storageKey      String
+  contentType     String   @default("application/pdf")
   checksum        String
   currencyCode    String   @default("USD")
   grossAmount     Decimal  @default(0) @db.Decimal(18, 4)
   netAmount       Decimal  @default(0) @db.Decimal(18, 4)
+  // Publish lifecycle: a payslip is generated on PAYMENT (DRAFT), then released to
+  // the employee (PUBLISHED) which is when they can see/download it and are notified.
+  status          String   @default("DRAFT") // DRAFT | PUBLISHED
+  publishedAt     DateTime?
   generatedAt     DateTime @default(now())
 
   @@unique([recordId, documentVersion])
@@ -3219,4 +3228,156 @@ model PayrollAdjustment {
   updatedAt         DateTime @updatedAt
 
   @@index([orgId, employeeId, status])
+}
+
+// ============================================================
+// PHASE 2 — TAX & STATUTORY (config-driven; rates are DATA, never code)
+// ============================================================
+// Income-tax rules are versioned + effective-dated per country + regime. The
+// engine reads these tables; it never hard-codes slabs/rates. `source` records
+// provenance (the statutory notification the rates came from) — nothing here is
+// engine-invented.
+model TaxRuleSet {
+  id                String    @id @default(uuid()) @db.Uuid
+  orgId             String?   @db.Uuid // null = platform-global pack; set = org override
+  countryCode       String // ISO-2, e.g. "IN"
+  regime            String    @default("DEFAULT") // NEW | OLD | DEFAULT
+  taxYear           String // e.g. "2025-26"
+  name              String
+  currencyCode      String    @default("INR")
+  standardDeduction Decimal   @default(0) @db.Decimal(18, 4)
+  // The month the country's tax year starts (1-12). 4 = April (India/UK), 1 =
+  // January (US, calendar-year). Drives which "tax year" a pay date falls in.
+  fiscalYearStartMonth Int    @default(4)
+  rebateLimit       Decimal?  @db.Decimal(18, 4) // taxable-income ceiling for a full rebate (87A-style)
+  rebateMaxAmount   Decimal?  @db.Decimal(18, 4) // max rebate granted under that ceiling
+  surchargePercent  Decimal   @default(0) @db.Decimal(6, 4)
+  cessPercent       Decimal   @default(0) @db.Decimal(6, 4) // health & education cess on tax
+  effectiveFrom     DateTime  @db.Date
+  effectiveTo       DateTime? @db.Date
+  version           Int       @default(1)
+  status            String    @default("ACTIVE") // ACTIVE | ARCHIVED
+  source            String? // provenance note (e.g. "Finance Act 2025")
+  createdBy         String?   @db.Uuid
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  slabs TaxSlab[]
+
+  @@index([countryCode, regime, effectiveFrom])
+  @@index([orgId])
+}
+
+model TaxSlab {
+  id          String   @id @default(uuid()) @db.Uuid
+  ruleSetId   String   @db.Uuid
+  seq         Int
+  lowerBound  Decimal  @db.Decimal(18, 4)
+  upperBound  Decimal? @db.Decimal(18, 4) // null = top slab (no ceiling)
+  ratePercent Decimal  @db.Decimal(6, 4)
+
+  ruleSet TaxRuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleSetId, seq])
+}
+
+// A statutory contribution (PF / ESI / PT / LWF): rate, wage ceiling, applicability,
+// employee vs employer split — effective-dated + versioned.
+model StatutoryRule {
+  id             String    @id @default(uuid()) @db.Uuid
+  orgId          String?   @db.Uuid
+  countryCode    String
+  kind           String // PF | ESI | PT | LWF
+  name           String
+  employeeRate   Decimal   @default(0) @db.Decimal(8, 4) // % of the contribution base
+  employerRate   Decimal   @default(0) @db.Decimal(8, 4)
+  wageCeiling    Decimal?  @db.Decimal(18, 4) // cap the base (PF 15000, ESI 21000)
+  applicableUpto Decimal?  @db.Decimal(18, 4) // only applies when base <= this (ESI)
+  flatAmount     Decimal?  @db.Decimal(18, 4) // fixed amount instead of a % (PT)
+  baseComponents String[]  @default([]) // earning codes forming the base; empty = gross
+  config         Json? // extra rules (per-state PT slabs, min contribution, etc.)
+  effectiveFrom  DateTime  @db.Date
+  effectiveTo    DateTime? @db.Date
+  version        Int       @default(1)
+  status         String    @default("ACTIVE")
+  source         String?
+  createdBy      String?   @db.Uuid
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([countryCode, kind, effectiveFrom])
+  @@index([orgId])
+}
+
+// Per-employee tax declaration for a year: chosen regime + declared exemptions
+// (80C/80D/HRA...). Drives taxable income; the raw declaration is sensitive.
+model EmployeeTaxProfile {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  taxYear    String
+  regime     String   @default("DEFAULT") // NEW | OLD | DEFAULT
+  exemptions Decimal  @default(0) @db.Decimal(18, 4) // total declared deductions/exemptions
+  metadata   Json? // breakdown (80C, 80D, HRA, ...) for reproducibility
+  createdBy  String?  @db.Uuid
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([orgId, employeeId, taxYear])
+  @@index([orgId, employeeId])
+}
+
+// ============================================================
+// PHASE 3 — STATUTORY FILING & RETURNS
+// ============================================================
+// A filing aggregates finalized PayrollRecords for a period into the return an
+// employer submits (Form-24Q/Form-16 for TDS, PF ECR, ESI, PT). Maker-checker
+// lifecycle mirrors the batch (generator can't approve). Export FORMATS are
+// statutory too, so the CSV/text is a best-effort layout flagged for verification
+// — the AMOUNTS come straight from the reproducible payroll records.
+model PayrollFiling {
+  id            String    @id @default(uuid()) @db.Uuid
+  orgId         String    @db.Uuid
+  kind          String // FORM24Q | FORM16 | PF_ECR | ESI | PT
+  countryCode   String    @default("IN")
+  periodStart   DateTime  @db.Date
+  periodEnd     DateTime  @db.Date
+  periodLabel   String // "2026-07" | "2026-Q2" | "FY2025-26"
+  status        String    @default("DRAFT") // DRAFT|PREPARED|REVIEWED|APPROVED|SUBMITTED|FILED|REJECTED
+  employeeCount Int       @default(0)
+  totalWages    Decimal   @default(0) @db.Decimal(18, 4)
+  totalEmployee Decimal   @default(0) @db.Decimal(18, 4) // employee-side contribution/TDS
+  totalEmployer Decimal   @default(0) @db.Decimal(18, 4) // employer-side contribution
+  totalTax      Decimal   @default(0) @db.Decimal(18, 4)
+  reference     String? // challan / acknowledgement number once submitted
+  notes         String?
+  generatedBy   String?   @db.Uuid
+  reviewedBy    String?   @db.Uuid
+  approvedBy    String?   @db.Uuid
+  submittedBy   String?   @db.Uuid
+  generatedAt   DateTime  @default(now())
+  submittedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines PayrollFilingLine[]
+
+  @@index([orgId, kind, periodStart])
+  @@index([orgId, status])
+}
+
+model PayrollFilingLine {
+  id          String  @id @default(uuid()) @db.Uuid
+  orgId       String  @db.Uuid
+  filingId    String  @db.Uuid
+  employeeId  String  @db.Uuid
+  wageBase    Decimal @default(0) @db.Decimal(18, 4)
+  employeeAmt Decimal @default(0) @db.Decimal(18, 4)
+  employerAmt Decimal @default(0) @db.Decimal(18, 4)
+  taxAmt      Decimal @default(0) @db.Decimal(18, 4)
+  meta        Json?
+
+  filing PayrollFiling @relation(fields: [filingId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, filingId])
 }

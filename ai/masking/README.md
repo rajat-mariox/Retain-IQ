@@ -27,20 +27,32 @@ agent captureAndUpload()                         desktop-agent/src/screenshot.ts
 The raw bytes are processed in memory and **never persisted**. If the masking
 service is unreachable the upload fails and nothing is stored (**fail closed**).
 
-## Run the service (local dev)
-The repo ships a virtualenv with docTR+torch already installed:
+## Run the service
+
+**Primary — as a container (auto-started with the stack).** It is a service in
+both `docker-compose.local.yml` and `docker-compose.yml`, so it comes up with
+everything else and `identity-service` waits for it to be healthy:
 
 ```powershell
-# from repo root
-ai\.venv\Scripts\python.exe ai\masking\service.py        # listens on :8099
+npm run up:local:all   # local stack (single Postgres) + web/desktop
+npm run up             # full/production stack
 ```
+
+The image (`Dockerfile`) is CPU-only torch with the docTR model baked in, so the
+container starts offline. identity reaches it at `http://masking-service:8099`
+(compose DNS), overridable via `MASKING_SERVICE_URL`.
+
+**Alternative — standalone (no Docker).** The repo ships a virtualenv with
+docTR+torch installed; run the service directly on the host:
+
+```powershell
+ai\.venv\Scripts\python.exe ai\masking\service.py     # listens on :8099
+```
+(then point the backend at it: `MASKING_SERVICE_URL=http://host.docker.internal:8099`).
+To set up a fresh env elsewhere: `pip install -r requirements.txt`.
 
 Env: `MASKING_PORT` (default 8099), `MASKING_MAX_BYTES`, `OUTPUT_DIR`,
 `MAX_DIMENSION`, `ENV_LINE_THRESHOLD`.
-
-The backend reaches it via `MASKING_SERVICE_URL` (default
-`http://host.docker.internal:8099`, set in `docker-compose.local.yml`). To run
-fresh elsewhere: `pip install -r requirements.txt`.
 
 ## CLI
 ```powershell

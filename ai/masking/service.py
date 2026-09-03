@@ -18,11 +18,16 @@
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import masking  # noqa: E402
+
+# One inference at a time: concurrent docTR runs on a CPU thrash each other
+# (and torch models aren't guaranteed thread-safe). Requests queue instead.
+_MASK_LOCK = threading.Lock()
 
 HOST = os.getenv("MASKING_HOST", "0.0.0.0")
 PORT = int(os.getenv("MASKING_PORT", os.getenv("PORT", "8099")))
@@ -83,7 +88,8 @@ class Handler(BaseHTTPRequestHandler):
         env_mode = None if env_raw is None else _truthy(env_raw)
 
         try:
-            masked, detected = masking.mask_image_bytes(data, out_format=fmt, env_mode=env_mode)
+            with _MASK_LOCK:
+                masked, detected = masking.mask_image_bytes(data, out_format=fmt, env_mode=env_mode)
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
             return
@@ -94,7 +100,12 @@ class Handler(BaseHTTPRequestHandler):
 
         types = ",".join(sorted({t for t, _ in detected}))
         masking._say(f"🖼️  masked {len(data)}B -> {len(masked)}B, {len(detected)} PII item(s) [{types}]")
-        self._send(200, masked, _CT[fmt], {"X-PII-Count": str(len(detected)), "X-PII-Types": types})
+        try:
+            self._send(200, masked, _CT[fmt], {"X-PII-Count": str(len(detected)), "X-PII-Types": types})
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller timed out and went away while we were masking — the
+            # result is simply dropped (they'll retry); not an error.
+            masking._say("caller gone before the masked result could be sent (timed out?)")
 
 
 def main():

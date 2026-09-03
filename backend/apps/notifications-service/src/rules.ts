@@ -246,6 +246,19 @@ const RULES: Record<string, NotificationSpec[]> = {
       link: (p) => str(p.link, "/attendance"),
     },
   ],
+  // A payslip was published (released) to the employee — they can now view/download it.
+  "payroll.statement.published": [
+    {
+      type: "payroll.statement.published",
+      audience: "requester", // the employee whose payslip it is (requesterUserId)
+      category: "SYSTEM",
+      priority: "NORMAL",
+      channels: ["IN_APP", "EMAIL"],
+      title: (p) => `Payslip ready — ${str(p.period, "this period")}`,
+      body: (p) => `Your payslip for ${str(p.period, "this period")} is now available to view and download${str(p.currencyCode, "") ? ` (net ${str(p.currencyCode, "")} ${Number(p.netAmount) || 0}).` : "."}`,
+      link: () => "/payslips",
+    },
+  ],
   "certification.expiring": [
     {
       type: "certification.expiring",

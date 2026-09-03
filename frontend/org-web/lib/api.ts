@@ -1430,6 +1430,7 @@ export interface PayoutBatch {
   currencyCode: string;
   name: string;
   status: string;
+  payslipsPending?: boolean; // paid batch with payslips still to generate
   grossTotal: number;
   deductionTotal: number;
   netTotal: number;

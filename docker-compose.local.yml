@@ -68,25 +68,6 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
-
-  minio-init:
-    image: minio/mc:latest
-    container_name: retainiq-minio-init
-    depends_on:
-      - minio
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      BUCKET: ${S3_BUCKET:-retainiq-screenshots}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - >
-        until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do sleep 1; done &&
-        mc mb -p local/$$BUCKET || true &&
-        echo "bucket $$BUCKET ready"
-    restart: "no"
-
   mailpit:
     image: axllent/mailpit:latest
     container_name: retainiq-mailpit
@@ -151,11 +132,10 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       S3_FORCE_PATH_STYLE: "true"
       PORT: "3001"
-      # PII masking micro-service (runs on the host via ai/.venv). Screenshots are
-      # masked here before storage; host.docker.internal reaches the host from the container.
-      MASKING_SERVICE_URL: ${MASKING_SERVICE_URL:-http://host.docker.internal:8099}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # PII masking micro-service — screenshots are masked here before storage.
+      MASKING_SERVICE_URL: ${MASKING_SERVICE_URL:-http://masking-service:8099}
+      # CPU OCR on a dense screenshot takes tens of seconds; give it headroom.
+      MASKING_TIMEOUT_MS: ${MASKING_TIMEOUT_MS:-120000}
     ports:
       - "3001:3001"
     depends_on:
@@ -167,6 +147,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      masking-service:
+        condition: service_healthy
 
   activity-ingestion:
     build:
@@ -275,6 +257,21 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # PII screenshot masking (docTR OCR). identity-service sends every screenshot
+  # here to be masked before it is stored, so a raw capture never reaches MinIO.
+  masking-service:
+    build:
+      context: ./ai/masking
+      dockerfile: Dockerfile
+    image: retainiq/masking-service
+    container_name: retainiq-masking-service
+    environment:
+      MASKING_PORT: "8099"
+      PYTHONUNBUFFERED: "1" # flush the service's log lines to `docker logs`
+    ports:
+      - "8099:8099"
+    restart: unless-stopped
 
 volumes:
   postgres_local_data:

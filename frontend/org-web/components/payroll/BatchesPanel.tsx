@@ -1,16 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Layers, Plus } from "lucide-react";
+import { AlertTriangle, Check, FileText, Layers, Plus, Search, Send, UserPlus } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { SkeletonTableCard } from "@/components/ui/Skeleton";
 import { LocalTime } from "@/components/ui/LocalTime";
 import { formatDate } from "@/lib/format";
-import type { EmployeeRow, OffsetPage, PayoutBatch, PayoutBatchDetail, PayoutPeriod, PayoutRecord } from "@/lib/api";
+import type { PayoutBatch, PayoutBatchDetail, PayoutPeriod, PayoutRecord } from "@/lib/api";
 import type { PayrollAccess } from "./access";
 import { RecordPanel } from "./RecordPanel";
 import { EmployeeRef, EmptyState, PayoutStatusBadge, btn, field, money } from "./payout-ui";
+import { useEmployeeDirectory } from "./workspace-shared";
 
 function shortRange(start: string, end: string): string {
   return `${formatDate(start).replace(/, \d{4}$/, "")} – ${formatDate(end)}`;
@@ -19,7 +20,7 @@ function shortRange(start: string, end: string): string {
 // A lifecycle action, shown only when the caller holds `perm` AND the batch is in
 // one of `statuses`. Mirrors the batch/approval service's allowed-state guards.
 interface Action {
-  key: "freeze" | "calculate" | "validate" | "submit" | "approve" | "reject" | "hold" | "release" | "close";
+  key: "freeze" | "calculate" | "validate" | "submit" | "approve" | "reject" | "hold" | "release" | "close" | "cancel";
   label: string;
   perm: keyof PayrollAccess;
   statuses: string[];
@@ -37,14 +38,21 @@ const LIFECYCLE: Action[] = [
   { key: "hold", label: "Hold", perm: "canHold", statuses: ["INPUT_COLLECTION", "CALCULATION", "VALIDATION", "REVIEW", "PENDING_APPROVAL", "APPROVED"], variant: "ghost", needsReason: true },
   { key: "release", label: "Release hold", perm: "canRelease", statuses: ["ON_HOLD"], variant: "primary" },
   { key: "close", label: "Close", perm: "canClose", statuses: ["APPROVED", "PAID"], variant: "ghost" },
+  // Abandon a run before payment. Releases any claimed variable pay/overtime.
+  { key: "cancel", label: "Cancel batch", perm: "canClose", statuses: ["DRAFT", "INPUT_COLLECTION", "CALCULATION", "VALIDATION", "REVIEW", "PENDING_APPROVAL", "ON_HOLD", "REJECTED"], variant: "danger", needsReason: true },
 ];
+
+// Payslips are produced only AFTER payment — mirrors the statement service's
+// PAYABLE_STATEMENT_STATUSES. (Generation also runs automatically on payment.)
+const PAID_BATCH = new Set(["PAID", "CLOSED"]);
 
 const deductionsOf = (r: PayoutRecord) => r.preTaxDeductions + r.employeeStatutory + r.postTaxDeductions + r.taxDeduction;
 
 export function BatchesPanel({ can }: { can: PayrollAccess }) {
   const [batches, setBatches] = useState<PayoutBatch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [names, setNames] = useState<Record<string, string>>({});
+  // Reachable employees for name display + the add-to-batch picker (Owner excluded, ABAC-scoped).
+  const { byId: dirById, list: directory } = useEmployeeDirectory();
 
   // create
   const [createOpen, setCreateOpen] = useState(false);
@@ -66,6 +74,17 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
   const [reason, setReason] = useState("");
   const [recordId, setRecordId] = useState<string | null>(null);
 
+  // add-employees picker
+  const [addOpen, setAddOpen] = useState(false);
+  const [addSel, setAddSel] = useState<Set<string>>(new Set());
+  const [addSearch, setAddSearch] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  // generate payslips (payout statements) for a finalized batch
+  const [genBusy, setGenBusy] = useState(false);
+  const [genMsg, setGenMsg] = useState<string | null>(null);
+
   const loadBatches = useCallback(() => {
     fetch("/api/payroll/batches", { cache: "no-store" })
       .then(async (r) => {
@@ -82,17 +101,6 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
 
   useEffect(() => {
     loadBatches();
-    // Best-effort directory for display names; a finance role without employee.read
-    // simply sees short employee references instead.
-    fetch("/api/employees?page=1&pageSize=500", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: OffsetPage<EmployeeRow> | null) => {
-        if (!d?.items) return;
-        const map: Record<string, string> = {};
-        for (const e of d.items) map[e.id] = `${e.firstName} ${e.lastName}`.trim();
-        setNames(map);
-      })
-      .catch(() => undefined);
   }, [loadBatches]);
 
   const openCreate = () => {
@@ -125,6 +133,7 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
   const openDetail = (id: string) => {
     setDetail(null);
     setRecords(null);
+    setGenMsg(null);
     setDetailOpen(true);
     loadDetail(id);
   };
@@ -185,6 +194,73 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
     }
   };
 
+  // Add selected employees to the open batch. Only allowed while the batch is still
+  // collecting inputs (DRAFT / INPUT_COLLECTION); the backend enforces reach, the
+  // Owner exclusion and currency/entity compatibility and surfaces any rejection.
+  const addEmployees = () => {
+    if (!detail || addSel.size === 0) return;
+    setAdding(true);
+    setAddError(null);
+    fetch(`/api/payroll/batches/${detail.id}/employees`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ employeeIds: [...addSel] }),
+    })
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(typeof d?.error === "string" ? d.error : "Could not add employees to the batch.");
+      })
+      .then(() => {
+        setAddOpen(false);
+        setAddSel(new Set());
+        setAddSearch("");
+        loadDetail(detail.id);
+        loadBatches();
+      })
+      .catch((e) => setAddError(e.message))
+      .finally(() => setAdding(false));
+  };
+
+  // Reachable employees not already in the batch, filtered by the search box.
+  const addCandidates = useMemo(() => {
+    const memberIds = new Set((detail?.members ?? []).filter((m) => m.included).map((m) => m.employeeId));
+    const q = addSearch.trim().toLowerCase();
+    return directory
+      .filter((e) => !memberIds.has(e.id))
+      .filter((e) => !q || e.name.toLowerCase().includes(q) || (e.title ?? "").toLowerCase().includes(q) || (e.department ?? "").toLowerCase().includes(q));
+  }, [directory, detail, addSearch]);
+
+  const includedCount = detail?.members?.filter((m) => m.included).length ?? 0;
+  const canAddMembers = can.canBatchCreate && (detail?.status === "DRAFT" || detail?.status === "INPUT_COLLECTION");
+
+  // Payslips are generated automatically on payment; these admin actions let you
+  // (re)generate and then publish (release) them to employees. Paid batches only.
+  const canGenPayslips = Boolean(can.canStatementGenerate && detail && PAID_BATCH.has(detail.status));
+  const postStatements = (path: string, ok: (d: { generated?: number; published?: number }) => string) => {
+    if (!detail) return;
+    setGenBusy(true);
+    setGenMsg(null);
+    fetch(`/api/payroll/batches/${detail.id}/statements${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(typeof d?.error === "string" ? d.error : "Could not complete the payslip action.");
+        return d as { generated?: number; published?: number };
+      })
+      .then((d) => setGenMsg(ok(d)))
+      .catch((e) => setGenMsg(e.message))
+      .finally(() => setGenBusy(false));
+  };
+  const generatePayslips = () => postStatements("", (d) => {
+    const n = d.generated ?? 0;
+    return n === 0 ? "No payslips to generate — the batch has no paid records yet." : `✓ ${n} payslip${n === 1 ? "" : "s"} generated.`;
+  });
+  const publishPayslips = () => postStatements("/publish", (d) => {
+    const n = d.published ?? 0;
+    return n === 0
+      ? "Nothing to publish — these payslips are already published (or none are generated yet)."
+      : `✓ ${n} payslip${n === 1 ? "" : "s"} published — those employees were notified.`;
+  });
+
   const submitReason = () => {
     if (!reasonFor) return;
     if (reason.trim().length < 3) return;
@@ -197,7 +273,7 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
     return LIFECYCLE.filter((a) => can[a.perm] && a.statuses.includes(detail.status));
   }, [detail, can]);
 
-  const nameFor = (id: string) => names[id];
+  const nameFor = (id: string) => dirById.get(id)?.name;
 
   return (
     <div className="space-y-6">
@@ -324,6 +400,23 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
               </div>
             ) : null}
 
+            {/* Members + add employees */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Members · {includedCount}</p>
+              {canAddMembers ? (
+                <button onClick={() => { setAddSel(new Set()); setAddSearch(""); setAddError(null); setAddOpen(true); }} className={btn.ghost}>
+                  <UserPlus className="size-4" /> Add employees
+                </button>
+              ) : null}
+            </div>
+
+            {includedCount === 0 && canAddMembers ? (
+              <div className="flex gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800 ring-1 ring-inset ring-blue-200">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                <span>This batch has no employees yet. Add employees first — then Freeze inputs and Calculate to populate it.</span>
+              </div>
+            ) : null}
+
             {/* Records */}
             <div className="overflow-x-auto rounded-xl border border-hairline/70">
               <table className="w-full min-w-[620px] text-sm">
@@ -354,15 +447,30 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
             </div>
 
             {actionError ? <p className="text-sm text-rose-600">{actionError}</p> : null}
+            {genMsg ? <p className={`text-sm ${genMsg.startsWith("✓") ? "text-emerald-700" : "text-rose-600"}`}>{genMsg}</p> : null}
 
-            {/* Lifecycle actions */}
-            {availableActions.length > 0 ? (
-              <div className="flex flex-wrap justify-end gap-2 border-t border-hairline pt-4">
-                {availableActions.map((a) => (
-                  <button key={a.key} onClick={() => onAction(a)} disabled={acting !== null} className={btn[a.variant]}>
-                    {acting === a.key ? "Working…" : a.label}
-                  </button>
-                ))}
+            {/* Payslips + lifecycle actions */}
+            {availableActions.length > 0 || canGenPayslips ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-4">
+                <div className="flex flex-wrap gap-2">
+                  {canGenPayslips ? (
+                    <>
+                      <button onClick={generatePayslips} disabled={genBusy} className={btn.ghost}>
+                        <FileText className="size-4" /> {genBusy ? "Working…" : "Generate payslips"}
+                      </button>
+                      <button onClick={publishPayslips} disabled={genBusy} className={btn.ghost}>
+                        <Send className="size-4" /> Publish to employees
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap justify-end gap-2">
+                  {availableActions.map((a) => (
+                    <button key={a.key} onClick={() => onAction(a)} disabled={acting !== null} className={btn[a.variant]}>
+                      {acting === a.key ? "Working…" : a.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : (
               <p className="border-t border-hairline pt-4 text-right text-xs text-slate-400">
@@ -371,6 +479,57 @@ export function BatchesPanel({ can }: { can: PayrollAccess }) {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* add employees picker */}
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add employees to batch" size="md">
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">
+            Only employees within your reach are shown; the Owner is excluded. Each employee&rsquo;s pay profile must match this batch&rsquo;s currency and entity — the server will flag any that don&rsquo;t.
+          </p>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input className={`${field.input} pl-9`} placeholder="Search employees…" value={addSearch} onChange={(e) => setAddSearch(e.target.value)} />
+          </div>
+          <div className="max-h-72 divide-y divide-hairline/60 overflow-y-auto rounded-xl border border-hairline/70">
+            {addCandidates.length === 0 ? (
+              <p className="px-4 py-8 text-center text-sm text-slate-500">
+                {directory.length === 0 ? "No reachable employees found." : "Everyone within your reach is already in this batch."}
+              </p>
+            ) : (
+              addCandidates.map((e) => {
+                const on = addSel.has(e.id);
+                return (
+                  <button
+                    key={e.id}
+                    type="button"
+                    onClick={() => setAddSel((prev) => { const n = new Set(prev); if (n.has(e.id)) n.delete(e.id); else n.add(e.id); return n; })}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50"
+                  >
+                    <span className={`flex size-5 items-center justify-center rounded border ${on ? "border-brand bg-brand text-white" : "border-hairline"}`}>
+                      {on ? <Check className="size-3.5" /> : null}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-slate-800">{e.name}</span>
+                      {e.title || e.department ? <span className="block truncate text-xs text-slate-400">{[e.title, e.department].filter(Boolean).join(" · ")}</span> : null}
+                    </span>
+                    {e.status !== "ACTIVE" ? <span className="ml-auto shrink-0 text-xs text-slate-400">{e.status.toLowerCase()}</span> : null}
+                  </button>
+                );
+              })
+            )}
+          </div>
+          {addError ? <p className="text-sm text-rose-600">{addError}</p> : null}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-slate-500">{addSel.size} selected</span>
+            <div className="flex gap-2">
+              <button onClick={() => setAddOpen(false)} className={btn.ghost}>Cancel</button>
+              <button onClick={addEmployees} disabled={adding || addSel.size === 0} className={btn.primary}>
+                <UserPlus className="size-4" /> {adding ? "Adding…" : addSel.size ? `Add ${addSel.size}` : "Add"}
+              </button>
+            </div>
+          </div>
+        </div>
       </Modal>
 
       {/* reason prompt for reject / hold */}

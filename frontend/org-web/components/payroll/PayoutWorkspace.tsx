@@ -4,7 +4,7 @@ import { useState } from "react";
 import {
   BarChart3, CalendarClock, Coins, FileText, Gift, LayoutDashboard, Layers,
   MessageSquareWarning, SlidersHorizontal, Users, Wallet, type LucideIcon,
-  CalendarPlus,
+  CalendarPlus, Landmark, FileCheck2,
 } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
@@ -13,6 +13,8 @@ import { buildAccess } from "./access";
 import { OverviewPanel } from "./OverviewPanel";
 import { BatchesPanel } from "./BatchesPanel";
 import { CalendarPanel } from "./CalendarPanel";
+import { TaxConfigPanel } from "./TaxConfigPanel";
+import { FilingsPanel } from "./FilingsPanel";
 import { EmployeesPanel } from "./EmployeesPanel";
 import { ComponentsPanel } from "./ComponentsPanel";
 import { VariablePayPanel } from "./VariablePayPanel";
@@ -26,7 +28,7 @@ import { EmptyState } from "./payout-ui";
 
 type TabKey =
   | "setup" | "overview" | "batches" | "employees" | "components" | "variable"
-  | "overtime" | "payments" | "statements" | "disputes" | "adjustments" | "reports";
+  | "overtime" | "payments" | "statements" | "disputes" | "adjustments" | "reports" | "tax" | "filings";
 
 interface TabDef {
   key: TabKey;
@@ -67,6 +69,8 @@ export function PayoutWorkspace({
     { key: "disputes", label: "Disputes", visible: access.canDisputeRead, icon: MessageSquareWarning },
     { key: "adjustments", label: "Adjustments", visible: access.canAdjustmentReview, icon: Coins },
     { key: "reports", label: "Reports", visible: access.canReportRead, icon: BarChart3 },
+    { key: "tax", label: "Tax", visible: access.canTaxRead || access.canStatutoryRead, icon: Landmark },
+    { key: "filings", label: "Filings", visible: access.canFilingRead, icon: FileCheck2 },
   ];
 
   const visibleTabs = tabs.filter((t) => t.visible);
@@ -105,6 +109,8 @@ export function PayoutWorkspace({
       </div>
 
       {tab === "setup" ? <CalendarPanel can={access} /> : null}
+      {tab === "tax" ? <TaxConfigPanel can={access} /> : null}
+      {tab === "filings" ? <FilingsPanel can={access} /> : null}
       {tab === "overview" ? <OverviewPanel data={dashboard} currency={currency} onGoto={goto} /> : null}
       {tab === "batches" ? <BatchesPanel can={access} /> : null}
       {tab === "employees" ? <EmployeesPanel session={session} /> : null}

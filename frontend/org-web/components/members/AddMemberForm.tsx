@@ -25,6 +25,12 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
   const [scopeType, setScopeType] = useState<ScopeType>("SELF");
   const [teamId, setTeamId] = useState("");
   const [title, setTitle] = useState("");
+  // Compensation, decided at hire (required for staff; the Owner is exempt).
+  const [baseAmount, setBaseAmount] = useState("");
+  const [currencyCode, setCurrencyCode] = useState("INR");
+  const [payFrequency, setPayFrequency] = useState("MONTHLY");
+  const [paymentBasis, setPaymentBasis] = useState("FIXED");
+  const isStaff = roleName !== "Owner";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Per-field messages, keyed like the API's `path` so server errors map straight on. */
@@ -44,6 +50,11 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
     // Scoped roles are meaningless without the thing they're scoped to.
     if (scopeType === "DEPARTMENT" && !departmentId) f.scopeId = "Pick a department for this role scope.";
     if (scopeType === "TEAM" && !teamId) f.scopeId = "Pick a team for this role scope.";
+    // Salary is decided at hire — required for staff (any non-Owner role).
+    if (isStaff) {
+      if (!baseAmount.trim() || !(Number(baseAmount) > 0)) f.baseAmount = "A base salary is required when hiring staff.";
+      if (currencyCode.trim().length !== 3) f.currencyCode = "Use a 3-letter code (e.g. INR).";
+    }
     return f;
   }
 
@@ -81,6 +92,12 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
       };
       if (picked?.id) body.roleId = picked.id;
       else body.role = roleName; // legacy name fallback
+      if (isStaff) {
+        body.baseAmount = Number(baseAmount);
+        body.currencyCode = currencyCode.trim().toUpperCase();
+        body.payFrequency = payFrequency;
+        body.paymentBasis = paymentBasis;
+      }
       const res = await fetch("/api/members", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -95,7 +112,7 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
         return;
       }
       setResult({ email: data.employee.email, tempPassword: data.tempPassword });
-      setFirstName(""); setLastName(""); setEmail(""); setTitle("");
+      setFirstName(""); setLastName(""); setEmail(""); setTitle(""); setBaseAmount("");
       router.refresh();
     } finally {
       setBusy(false);
@@ -240,6 +257,25 @@ export function AddMemberForm({ departments, roles, teams }: { departments: OrgD
           {scopeType === "DEPARTMENT" && !departmentId ? (
             <p className="text-xs text-amber-600">Pick a department above to scope the role to it.</p>
           ) : null}
+
+          {/* Salary is decided at hire and seeds the person's payroll profile v1. */}
+          {isStaff ? (
+            <div className="space-y-3 rounded-xl border border-hairline bg-panel-2/40 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Compensation (decided at hire)</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Input label="Base pay" type="number" value={baseAmount} onChange={edit("baseAmount", setBaseAmount)} required error={fields.baseAmount} />
+                <Input label="Currency" value={currencyCode} onChange={edit("currencyCode", (v) => setCurrencyCode(v.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3)))} required error={fields.currencyCode} />
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Select label="Pay frequency" value={payFrequency} onChange={setPayFrequency} options={["MONTHLY", "SEMI_MONTHLY", "BIWEEKLY", "WEEKLY", "DAILY"]} />
+                <Select label="Payment basis" value={paymentBasis} onChange={setPaymentBasis} options={["FIXED", "HOURLY", "DAILY"]} />
+              </div>
+              <p className="text-xs text-slate-500">Allowances/deductions (HRA etc.) come from the org salary structure at payroll run — no need to set them per person.</p>
+            </div>
+          ) : (
+            <p className="rounded-xl border border-hairline bg-panel-2/40 px-3 py-2 text-xs text-slate-500">The Owner runs the org and is excluded from payroll — no salary needed.</p>
+          )}
+
           <button
             type="submit"
             disabled={busy || (scopeType === "DEPARTMENT" && !departmentId) || (scopeType === "TEAM" && !teamId)}

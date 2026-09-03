@@ -16,12 +16,20 @@ import { StatementService } from "./statement.service.js";
 export class PayrollStatementController {
   constructor(private readonly statements: StatementService) {}
 
-  /** Generate statements for every finalized record in a batch. */
+  /** Generate payslips for every PAID record in a batch (auto-runs on payment too). */
   @Post("payroll/batches/:id/statements")
   @HttpCode(200)
   @RequirePermissions(permissions.payrollStatementGenerate)
   generate(@Param("id", ParseUUIDPipe) id: string) {
     return this.statements.generateForBatch(id);
+  }
+
+  /** Publish (release) the batch's payslips to employees — notifies each employee. */
+  @Post("payroll/batches/:id/statements/publish")
+  @HttpCode(200)
+  @RequirePermissions(permissions.payrollStatementGenerate)
+  publish(@Param("id", ParseUUIDPipe) id: string) {
+    return this.statements.publishForBatch(id);
   }
 
   /** An employee's statements (admin view). */

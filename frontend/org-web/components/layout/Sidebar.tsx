@@ -22,6 +22,7 @@ const iconClass = (active: boolean) => cn("size-4.5", active ? "text-brand-soft"
 export function Sidebar({
   orgName,
   isAdmin,
+  isOwner = false,
   permissions = [],
   platformName = "RetainIQ",
   featureFlags = {},
@@ -29,6 +30,7 @@ export function Sidebar({
 }: {
   orgName: string;
   isAdmin: boolean;
+  isOwner?: boolean;
   permissions?: string[];
   platformName?: string;
   featureFlags?: Record<string, boolean>;
@@ -39,9 +41,10 @@ export function Sidebar({
   const [groupOverrides, setGroupOverrides] = useState<Record<string, boolean>>({});
   const canDo = (p?: string) => !p || permissions.includes(p);
 
-  const visible = (entry: { adminOnly?: boolean; employeeOnly?: boolean; flag?: string; permission?: string }) =>
+  const visible = (entry: { adminOnly?: boolean; employeeOnly?: boolean; hideForOwner?: boolean; flag?: string; permission?: string }) =>
     (!entry.adminOnly || isAdmin) &&
     (!entry.employeeOnly || !isAdmin) &&
+    (!entry.hideForOwner || !isOwner) &&
     (!entry.flag || featureFlags[entry.flag] !== false) &&
     canDo(entry.permission);
 
