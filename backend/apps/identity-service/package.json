@@ -1,0 +1,43 @@
+{
+  "name": "@retainiq/identity-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.717.0",
+    "@aws-sdk/s3-request-presigner": "^3.717.0",
+    "@nestjs/common": "^11.1.3",
+    "@nestjs/core": "^11.1.3",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/platform-fastify": "^11.1.3",
+    "@nestjs/schedule": "^6.1.3",
+    "@nestjs/throttler": "^6.5.0",
+    "@retainiq/authz": "file:../../packages/authz",
+    "@retainiq/config": "file:../../packages/config",
+    "@retainiq/contracts": "file:../../packages/contracts",
+    "@retainiq/database": "file:../../packages/database",
+    "@retainiq/messaging": "file:../../packages/messaging",
+    "@retainiq/observability": "file:../../packages/observability",
+    "@retainiq/platform": "file:../../packages/platform",
+    "ioredis": "^5.11.1",
+    "pdfkit": "^0.15.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.7",
+    "@nestjs/schematics": "^11.0.5",
+    "@types/pdfkit": "^0.13.9",
+    "typescript": "^5.8.3"
+  }
+}

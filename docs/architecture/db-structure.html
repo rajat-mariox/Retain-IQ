@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RetainIQ — Database Structure</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --panel-2: #eef0f4;
+    --ink: #171a21;
+    --ink-soft: #545b68;
+    --ink-faint: #8b93a1;
+    --line: #dfe3ea;
+    --line-strong: #c8cdd8;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+    /* per-service territory hues */
+    --identity: #6366f1;
+    --identity-bg: #eef0fe;
+    --billing: #0d9f6e;
+    --billing-bg: #e7f6ef;
+    --analytics: #d97706;
+    --analytics-bg: #fbf1e3;
+    --notif: #9333ea;
+    --notif-bg: #f4ebfd;
+    --inbox: #5b6472;
+    --inbox-bg: #eceef2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0e13;
+      --panel: #14171d;
+      --panel-2: #1b1f27;
+      --ink: #e7e9ee;
+      --ink-soft: #a2abba;
+      --ink-faint: #6b7482;
+      --line: #262b34;
+      --line-strong: #333a45;
+      --identity-bg: #191b2e;
+      --billing-bg: #10241d;
+      --analytics-bg: #241a10;
+      --notif-bg: #1f1430;
+      --inbox-bg: #191c22;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c0e13; --panel: #14171d; --panel-2: #1b1f27; --ink: #e7e9ee;
+    --ink-soft: #a2abba; --ink-faint: #6b7482; --line: #262b34; --line-strong: #333a45;
+    --identity-bg: #191b2e; --billing-bg: #10241d; --analytics-bg: #241a10; --notif-bg: #1f1430; --inbox-bg: #191c22;
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f6f8; --panel: #ffffff; --panel-2: #eef0f4; --ink: #171a21;
+    --ink-soft: #545b68; --ink-faint: #8b93a1; --line: #dfe3ea; --line-strong: #c8cdd8;
+    --identity-bg: #eef0fe; --billing-bg: #e7f6ef; --analytics-bg: #fbf1e3; --notif-bg: #f4ebfd; --inbox-bg: #eceef2;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 44px 24px 80px; }
+
+  /* ---- header ---- */
+  header { border-bottom: 1px solid var(--line); padding-bottom: 26px; margin-bottom: 30px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 0 0 12px;
+  }
+  h1 {
+    font-size: clamp(26px, 4vw, 38px); line-height: 1.08; margin: 0 0 12px; font-weight: 650;
+    letter-spacing: -0.02em; text-wrap: balance;
+  }
+  .lede { max-width: 62ch; color: var(--ink-soft); font-size: 15.5px; margin: 0; }
+  .lede code { font-family: var(--mono); font-size: 0.88em; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+  /* ---- stat strip ---- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px;
+    background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin: 28px 0 40px; }
+  .stat { background: var(--panel); padding: 16px 18px; }
+  .stat .n { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .stat .l { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); margin-top: 3px; }
+
+  /* ---- section heads ---- */
+  .sec-head { display: flex; align-items: baseline; gap: 12px; margin: 46px 0 18px; }
+  .sec-head h2 { font-size: 13px; font-family: var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-soft); font-weight: 600; margin: 0; }
+  .sec-head .rule { flex: 1; height: 1px; background: var(--line); }
+
+  /* ---- database territory cards ---- */
+  .db { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); overflow: hidden; margin-bottom: 20px; }
+  .db-top { display: flex; align-items: center; gap: 13px; padding: 15px 20px; border-bottom: 1px solid var(--line);
+    border-left: 4px solid var(--accent); }
+  .db-dot { width: 11px; height: 11px; border-radius: 3px; background: var(--accent); flex-shrink: 0; }
+  .db-name { font-family: var(--mono); font-size: 15px; font-weight: 600; }
+  .db-port { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
+  .db-desc { font-size: 13px; color: var(--ink-soft); margin-left: auto; text-align: right; }
+  .db-count { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent);
+    background: var(--accent-bg); padding: 3px 9px; border-radius: 20px; flex-shrink: 0; }
+
+  .clusters { padding: 6px 20px 18px; }
+  .cluster { padding: 13px 0; border-bottom: 1px dashed var(--line); }
+  .cluster:last-child { border-bottom: 0; }
+  .cluster-name { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin: 0 0 9px;
+    display: flex; align-items: center; gap: 7px; }
+  .cluster-name::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+  .tables { display: flex; flex-wrap: wrap; gap: 6px; }
+  .t { font-family: var(--mono); font-size: 12px; padding: 3px 9px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); white-space: nowrap; }
+  .t.hub { border-color: var(--accent); color: var(--accent); font-weight: 600; background: var(--accent-bg); }
+
+  .db.identity { --accent: var(--identity); --accent-bg: var(--identity-bg); }
+  .db.billing  { --accent: var(--billing);  --accent-bg: var(--billing-bg); }
+  .db.analytics{ --accent: var(--analytics);--accent-bg: var(--analytics-bg); }
+  .db.notif    { --accent: var(--notif);    --accent-bg: var(--notif-bg); }
+  .db.inbox    { --accent: var(--inbox);    --accent-bg: var(--inbox-bg); }
+
+  /* ---- ER diagram card ---- */
+  .diagram-card { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 8px; overflow-x: auto; }
+  .mermaid { min-width: 640px; }
+
+  /* ---- event flow ---- */
+  .flow-note { display: flex; gap: 14px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 18px; margin-top: 14px; }
+  .flow-note .k { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--identity); font-weight: 600; flex-shrink: 0; width: 116px; padding-top: 2px; }
+  .flow-note p { margin: 0; font-size: 13.5px; color: var(--ink-soft); }
+  .flow-note code { font-family: var(--mono); font-size: 0.86em; color: var(--ink); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+  footer { margin-top: 54px; padding-top: 22px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); letter-spacing: 0.04em; }
+
+  @media (max-width: 620px) {
+    .db-desc { display: none; }
+    .db-top { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">RetainIQ · Data Architecture</p>
+    <h1>Database structure</h1>
+    <p class="lede">A <strong>database-per-service</strong> design: five isolated PostgreSQL databases, one per bounded context. There are <strong>no foreign keys across databases</strong> — a service owns its data outright, and cross-service references (an <code>orgId</code>, an <code>employeeId</code>) are plain UUIDs kept in step through domain events, not joins.</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="n">5</div><div class="l">Databases</div></div>
+    <div class="stat"><div class="n">79</div><div class="l">Tables</div></div>
+    <div class="stat"><div class="n">63</div><div class="l">Identity tables</div></div>
+    <div class="stat"><div class="n">0</div><div class="l">Cross-DB FKs</div></div>
+    <div class="stat"><div class="n">Prisma</div><div class="l">ORM · Postgres</div></div>
+  </div>
+
+  <div class="sec-head"><h2>The five databases</h2><span class="rule"></span></div>
+
+  <!-- IDENTITY -->
+  <section class="db identity">
+    <div class="db-top">
+      <span class="db-dot"></span>
+      <span class="db-name">identity-db</span>
+      <span class="db-port">:5432</span>
+      <span class="db-desc">Tenancy, people &amp; everything the org operates</span>
+      <span class="db-count">63 tables</span>
+    </div>
+    <div class="clusters">
+      <div class="cluster">
+        <p class="cluster-name">Tenancy &amp; Auth</p>
+        <div class="tables">
+          <span class="t hub">Organization</span><span class="t hub">User</span><span class="t">Session</span>
+          <span class="t">OrganizationMembership</span><span class="t">PlatformAdmin</span><span class="t">PlatformAdminSession</span>
+          <span class="t">IdempotencyRecord</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">RBAC / ABAC</p>
+        <div class="tables">
+          <span class="t">Role</span><span class="t">RoleAssignment</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">Workforce &amp; Structure</p>
+        <div class="tables">
+          <span class="t hub">Employee</span><span class="t">EmployeeDocument</span><span class="t">EmploymentEvent</span>
+          <span class="t">Department</span><span class="t">Team</span><span class="t">Designation</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">Attendance &amp; Time</p>
+        <div class="tables">
+          <span class="t">AttendanceRecord</span><span class="t">AttendanceSession</span><span class="t">AttendanceBreak</span>
+          <span class="t">AttendanceEvent</span><span class="t">AttendanceCorrection</span><span class="t">AttendancePolicy</span>
+          <span class="t">Shift</span><span class="t">ShiftRotation</span><span class="t">Holiday</span>
+          <span class="t">LeaveType</span><span class="t">LeaveRequest</span><span class="t">TimeEntry</span><span class="t">Timesheet</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">HR Suite — Hiring · Onboarding · Performance</p>
+        <div class="tables">
+          <span class="t">Requisition</span><span class="t">Candidate</span><span class="t">Application</span>
+          <span class="t">Interview</span><span class="t">Offer</span>
+          <span class="t">OnboardingTemplate</span><span class="t">OnboardingTemplateItem</span><span class="t">OnboardingJourney</span><span class="t">OnboardingTask</span>
+          <span class="t">ReviewCycle</span><span class="t">PerformanceReview</span><span class="t">ReviewRating</span><span class="t">Achievement</span><span class="t">Goal</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">Payroll &amp; Client Billing</p>
+        <div class="tables">
+          <span class="t">PayrollCycle</span><span class="t">PayrollLine</span><span class="t">PayrollSetting</span>
+          <span class="t">EmployeeRate</span><span class="t">BillRate</span>
+          <span class="t">Client</span><span class="t">ClientInvoice</span><span class="t">ClientInvoiceLine</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">Projects &amp; Tasks</p>
+        <div class="tables">
+          <span class="t">Project</span><span class="t">Task</span><span class="t">TaskComment</span>
+          <span class="t">Milestone</span><span class="t">ProjectSetting</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">Monitoring &amp; Platform Config</p>
+        <div class="tables">
+          <span class="t">ScreenshotObject</span><span class="t">MonitoringPolicy</span><span class="t">ProductivitySetting</span>
+          <span class="t">OrgFeatureFlag</span><span class="t">PlatformSetting</span><span class="t">PlatformEvent</span>
+        </div>
+      </div>
+      <div class="cluster">
+        <p class="cluster-name">Reliability — Audit &amp; Outbox</p>
+        <div class="tables">
+          <span class="t">AuditEvent</span><span class="t">OutboxEvent</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BILLING -->
+  <section class="db billing">
+    <div class="db-top">
+      <span class="db-dot"></span>
+      <span class="db-name">billing-db</span>
+      <span class="db-port">:5436</span>
+      <span class="db-desc">Subscriptions, plans &amp; invoices — owned by billing-service</span>
+      <span class="db-count">4 tables</span>
+    </div>
+    <div class="clusters">
+      <div class="cluster">
+        <p class="cluster-name">Subscription &amp; revenue</p>
+        <div class="tables">
+          <span class="t hub">Plan</span><span class="t hub">Subscription</span><span class="t">Invoice</span><span class="t">BillingEvent</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ANALYTICS -->
+  <section class="db analytics">
+    <div class="db-top">
+      <span class="db-dot"></span>
+      <span class="db-name">analytics-db</span>
+      <span class="db-port">:5434</span>
+      <span class="db-desc">Activity facts &amp; productivity scoring — read models</span>
+      <span class="db-count">6 tables</span>
+    </div>
+    <div class="clusters">
+      <div class="cluster">
+        <p class="cluster-name">Activity read models</p>
+        <div class="tables">
+          <span class="t hub">EmployeeDayFact</span><span class="t">WorkSession</span><span class="t">AppUsageDaily</span>
+          <span class="t">WebsiteUsageDaily</span><span class="t">ActivityEvent</span><span class="t">ConsumedEvent</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- NOTIFICATIONS -->
+  <section class="db notif">
+    <div class="db-top">
+      <span class="db-dot"></span>
+      <span class="db-name">notifications-db</span>
+      <span class="db-port">:5435</span>
+      <span class="db-desc">In-app · email · push delivery &amp; preferences</span>
+      <span class="db-count">5 tables</span>
+    </div>
+    <div class="clusters">
+      <div class="cluster">
+        <p class="cluster-name">Delivery &amp; preferences</p>
+        <div class="tables">
+          <span class="t hub">Notification</span><span class="t">NotificationPreference</span><span class="t">NotificationSetting</span>
+          <span class="t">PushSubscription</span><span class="t">OrgRecipient</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INBOX -->
+  <section class="db inbox">
+    <div class="db-top">
+      <span class="db-dot"></span>
+      <span class="db-name">inbox-db</span>
+      <span class="db-port">:5433</span>
+      <span class="db-desc">event-processor's idempotent inbox</span>
+      <span class="db-count">1 table</span>
+    </div>
+    <div class="clusters">
+      <div class="cluster">
+        <p class="cluster-name">Exactly-once consumption</p>
+        <div class="tables"><span class="t hub">ConsumedEvent</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ER backbone -->
+  <div class="sec-head"><h2>identity-db · relational backbone</h2><span class="rule"></span></div>
+  <div class="diagram-card">
+    <pre class="mermaid">
+erDiagram
+  Organization ||--o{ OrganizationMembership : has
+  Organization ||--o{ Employee : employs
+  Organization ||--o{ Role : defines
+  Organization ||--o{ Department : has
+  Organization ||--o{ Project : owns
+  User ||--o{ OrganizationMembership : "member of"
+  User ||--o{ Session : "signs in"
+  OrganizationMembership }o--|| Role : "base role"
+  User ||--o{ RoleAssignment : "granted"
+  Role ||--o{ RoleAssignment : "granted as"
+  Employee ||--o{ AttendanceRecord : logs
+  AttendanceRecord ||--o{ AttendanceSession : contains
+  AttendanceSession ||--o{ AttendanceBreak : contains
+  Employee }o--o| Shift : "assigned"
+  Employee }o--o| ShiftRotation : "rotates on"
+  Employee }o--o| Department : "in"
+  Employee ||--o{ LeaveRequest : requests
+  Employee ||--o{ PayrollLine : "paid via"
+  PayrollCycle ||--o{ PayrollLine : contains
+  Project ||--o{ Task : contains
+  Task ||--o{ TaskComment : has
+  Application }o--|| Candidate : from
+  Application }o--|| Requisition : "for"
+    </pre>
+  </div>
+
+  <!-- Event flow -->
+  <div class="sec-head"><h2>How isolated databases stay in sync</h2><span class="rule"></span></div>
+  <div class="flow-note">
+    <span class="k">Transactional&nbsp;outbox</span>
+    <p>A service writes its own data and an <code>OutboxEvent</code> in one transaction, so a domain event can never be lost or double-sent relative to the write that caused it.</p>
+  </div>
+  <div class="flow-note">
+    <span class="k">Broker</span>
+    <p>A relay publishes those events to the broker (Kafka or Redis Streams). Example: <code>organization.created</code> from identity → billing provisions a <code>Subscription</code>; <code>organization.deleted</code> → billing cancels it.</p>
+  </div>
+  <div class="flow-note">
+    <span class="k">Idempotent&nbsp;inbox</span>
+    <p>Each consumer records every handled event in a <code>ConsumedEvent</code> row (unique on <code>eventId + consumer</code>), so at-least-once delivery becomes exactly-once processing — a redelivered event is a no-op.</p>
+  </div>
+
+  <footer>PostgreSQL · Prisma · 5 databases · 79 tables · event-driven consistency</footer>
+</div>
+
+<script type="module">
+  // Render the ER diagram. Standalone doc (not the sandboxed artifact), so the
+  // CDN is reachable; theme follows the OS preference.
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", er: { useMaxWidth: true } });
+</script>
+</body>
+</html>

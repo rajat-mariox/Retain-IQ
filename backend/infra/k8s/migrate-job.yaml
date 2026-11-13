@@ -1,0 +1,92 @@
+# Database-per-service migrations. Each service owns its own database, so each gets
+# its own migrate Job with its own DATABASE_URL (from a per-service secret key).
+# Run BEFORE rolling out a new image (expand/contract, backward-compatible migrations):
+#   kubectl apply -f infra/k8s/migrate-job.yaml
+#   kubectl -n retainiq wait --for=condition=complete job/db-migrate-identity job/db-migrate-inbox job/db-migrate-analytics job/db-migrate-notifications
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-identity
+  namespace: retainiq
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: retainiq/identity-service:latest
+          command: ["npx", "prisma", "migrate", "deploy", "--schema", "packages/database/prisma/identity/schema.prisma"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: retainiq-db, key: IDENTITY_DATABASE_URL } }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-inbox
+  namespace: retainiq
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: retainiq/identity-service:latest
+          command: ["npx", "prisma", "migrate", "deploy", "--schema", "packages/database/prisma/inbox/schema.prisma"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: retainiq-db, key: INBOX_DATABASE_URL } }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-analytics
+  namespace: retainiq
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: retainiq/identity-service:latest
+          command: ["npx", "prisma", "migrate", "deploy", "--schema", "packages/database/prisma/analytics/schema.prisma"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: retainiq-db, key: ANALYTICS_DATABASE_URL } }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-notifications
+  namespace: retainiq
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: retainiq/identity-service:latest
+          command: ["npx", "prisma", "migrate", "deploy", "--schema", "packages/database/prisma/notifications/schema.prisma"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: retainiq-db, key: NOTIFICATIONS_DATABASE_URL } }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }

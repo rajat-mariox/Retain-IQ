@@ -1,0 +1,279 @@
+# LOCAL-DEV stack: ONE consolidated Postgres instance hosting a database per
+# service (database-per-service isolation preserved, fewer containers). Use this
+# for local development:
+#
+#     docker compose -f docker-compose.local.yml up -d --build     (npm run up:local)
+#
+# PRODUCTION keeps one Postgres instance PER service — use docker-compose.yml
+# (npm run up) for that. The ONLY difference between the two is the DB layer:
+# every service's DATABASE_URL here points at host `postgres` (single instance)
+# instead of `postgres-<svc>`; db names, users and passwords are identical, so the
+# app services are otherwise unchanged. Broker driver stays redis (no Kafka) for a
+# lighter local footprint.
+#
+# Its own compose project name FULLY isolates this stack from the prod one
+# (docker-compose.yml, project "retain"): local volumes are prefixed
+# "retainiq-local_*", so `down:local:clean` NEVER touches prod's data (postgres,
+# redis, minio) and vice-versa. The two are never run at the same time (shared
+# host ports), so switching between them is safe.
+name: retainiq-local
+services:
+  # ---- ONE Postgres instance, database-per-service inside it ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: retainiq-db
+    # Superuser bootstraps; init-local-databases.sql creates the per-service
+    # roles + databases on first init. max_connections raised to 500 so the six
+    # services' pools comfortably share one server.
+    command: ["postgres", "-c", "max_connections=500"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_local_data:/var/lib/postgresql/data
+      - ./db-init/init-local-databases.sql:/docker-entrypoint-initdb.d/init-local-databases.sql:ro
+    healthcheck:
+      # Ready only once the last-created service DB exists.
+      test: ["CMD-SHELL", "pg_isready -U postgres && psql -U postgres -lqt | cut -d '|' -f1 | grep -qw retainiq-billing"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: retainiq-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: pgsty/minio:latest
+    container_name: retainiq-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: retainiq-mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+  # ---- Migrator: applies every service's migrations against the ONE instance ----
+  migrator:
+    build:
+      context: .
+      dockerfile: backend/apps/identity-service/Dockerfile
+    image: retainiq/identity-service
+    container_name: retainiq-migrator
+    environment:
+      IDENTITY_DATABASE_URL: postgresql://identity:identity@postgres:5432/retainiq-identity?schema=public
+      INBOX_DATABASE_URL: postgresql://inbox:inbox@postgres:5432/retainiq-inbox?schema=public
+      ANALYTICS_DATABASE_URL: postgresql://analytics:analytics@postgres:5432/retainiq-analytics?schema=public
+      NOTIFICATIONS_DATABASE_URL: postgresql://notifications:notifications@postgres:5432/retainiq-notifications?schema=public
+      BILLING_DATABASE_URL: postgresql://billing:billing@postgres:5432/retainiq-billing?schema=public
+    command:
+      - sh
+      - -c
+      - >
+        DATABASE_URL=$$IDENTITY_DATABASE_URL npx prisma migrate deploy --schema backend/packages/database/prisma/identity/schema.prisma &&
+        DATABASE_URL=$$INBOX_DATABASE_URL npx prisma migrate deploy --schema backend/packages/database/prisma/inbox/schema.prisma &&
+        DATABASE_URL=$$ANALYTICS_DATABASE_URL npx prisma migrate deploy --schema backend/packages/database/prisma/analytics/schema.prisma &&
+        DATABASE_URL=$$NOTIFICATIONS_DATABASE_URL npx prisma migrate deploy --schema backend/packages/database/prisma/notifications/schema.prisma &&
+        DATABASE_URL=$$BILLING_DATABASE_URL npx prisma migrate deploy --schema backend/packages/database/prisma/billing/schema.prisma
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---- Application services (same images as prod; only the DB host differs) ----
+  identity-service:
+    build:
+      context: .
+      dockerfile: backend/apps/identity-service/Dockerfile
+    image: retainiq/identity-service
+    container_name: retainiq-identity-service
+    environment:
+      DATABASE_URL: postgresql://identity:identity@postgres:5432/retainiq-identity?schema=public
+      NOTIFICATIONS_DATABASE_URL: postgresql://notifications:notifications@postgres:5432/retainiq-notifications?schema=public
+      ANALYTICS_DATABASE_URL: postgresql://analytics:analytics@postgres:5432/retainiq-analytics?schema=public
+      BILLING_DATABASE_URL: postgresql://billing:billing@postgres:5432/retainiq-billing?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      VAPID_PUBLIC_KEY: BGI3RAHzbKg9tHyoiMXDTY-HR9m9xj3plnb9aWwsaG8WkyKKBUVZ98t1gyoV0sO-O8bI-vCdRK_7CMOIugEg0TI
+      PLATFORM_JWT_SECRET: ${PLATFORM_JWT_SECRET:-dev-platform-secret-change-me}
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-admin@retainiq.com}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-SuperAdmin123!}
+      RESET_TOKEN_IN_RESPONSE: ${RESET_TOKEN_IN_RESPONSE:-true}
+      UV_THREADPOOL_SIZE: "16"
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_REGION: us-east-1
+      S3_BUCKET: ${S3_BUCKET:-retainiq-screenshots}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_FORCE_PATH_STYLE: "true"
+      PORT: "3001"
+      # PII masking micro-service — screenshots are masked here before storage.
+      MASKING_SERVICE_URL: ${MASKING_SERVICE_URL:-http://masking-service:8099}
+      # CPU OCR on a dense screenshot takes tens of seconds; give it headroom.
+      MASKING_TIMEOUT_MS: ${MASKING_TIMEOUT_MS:-120000}
+    ports:
+      - "3001:3001"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      masking-service:
+        condition: service_healthy
+
+  activity-ingestion:
+    build:
+      context: .
+      dockerfile: backend/apps/activity-ingestion/Dockerfile
+    image: retainiq/activity-ingestion
+    container_name: retainiq-activity-ingestion
+    environment:
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
+      PORT: "3002"
+    ports:
+      - "3002:3002"
+    depends_on:
+      identity-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  event-processor:
+    build:
+      context: .
+      dockerfile: backend/apps/event-processor/Dockerfile
+    image: retainiq/event-processor
+    container_name: retainiq-event-processor
+    environment:
+      DATABASE_URL: postgresql://inbox:inbox@postgres:5432/retainiq-inbox?schema=public
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: "3003"
+    ports:
+      - "3003:3003"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: backend/apps/analytics-service/Dockerfile
+    image: retainiq/analytics-service
+    container_name: retainiq-analytics-service
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/retainiq-analytics?schema=public
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: "3004"
+    ports:
+      - "3004:3004"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  notifications-service:
+    build:
+      context: .
+      dockerfile: backend/apps/notifications-service/Dockerfile
+    image: retainiq/notifications-service
+    container_name: retainiq-notifications-service
+    environment:
+      DATABASE_URL: postgresql://notifications:notifications@postgres:5432/retainiq-notifications?schema=public
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: "3005"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      MAIL_FROM: RetainIQ <no-reply@retainiq.local>
+      APP_URL: http://localhost:3200
+      VAPID_PUBLIC_KEY: BGI3RAHzbKg9tHyoiMXDTY-HR9m9xj3plnb9aWwsaG8WkyKKBUVZ98t1gyoV0sO-O8bI-vCdRK_7CMOIugEg0TI
+      VAPID_PRIVATE_KEY: XRckwx5a82MRtWJkqqpg-t4qaypUV2v0KlsjClQ0mtg
+      VAPID_SUBJECT: mailto:no-reply@retainiq.local
+    ports:
+      - "3005:3005"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  billing-service:
+    build:
+      context: .
+      dockerfile: backend/apps/billing-service/Dockerfile
+    image: retainiq/billing-service
+    container_name: retainiq-billing-service
+    environment:
+      DATABASE_URL: postgresql://billing:billing@postgres:5432/retainiq-billing?schema=public
+      REDIS_URL: redis://redis:6379
+      HEALTH_PORT: "3006"
+      API_PORT: "3007"
+      PLATFORM_JWT_SECRET: ${PLATFORM_JWT_SECRET:-change-me}
+    ports:
+      - "3006:3006"
+      - "3007:3007"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # PII screenshot masking (docTR OCR). identity-service sends every screenshot
+  # here to be masked before it is stored, so a raw capture never reaches MinIO.
+  masking-service:
+    build:
+      context: ./ai/masking
+      dockerfile: Dockerfile
+    image: retainiq/masking-service
+    container_name: retainiq-masking-service
+    environment:
+      MASKING_PORT: "8099"
+      PYTHONUNBUFFERED: "1" # flush the service's log lines to `docker logs`
+    ports:
+      - "8099:8099"
+    restart: unless-stopped
+
+volumes:
+  postgres_local_data:
+  redis_data:
+  minio_data:

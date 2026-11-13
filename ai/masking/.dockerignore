@@ -1,0 +1,8 @@
+# Keep the (multi-GB) local virtualenv, caches and sample outputs out of the build context.
+.venv/
+__pycache__/
+*.pyc
+masked_output/
+.env
+README.md
+requirements.txt

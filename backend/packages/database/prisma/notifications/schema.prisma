@@ -1,0 +1,140 @@
+// notifications database — owned by apps/notifications-service.
+// Holds delivered notifications plus a LOCAL read model of org members/roles
+// (OrgRecipient), projected from `org.member.upserted` events published by the
+// identity service. The worker resolves recipients from this local copy instead
+// of querying the identity database directly (database-per-service: no cross-DB reads).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/notifications"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  PUSH
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  READ
+  DEFERRED
+  SUPPRESSED
+  FAILED
+}
+
+// Buckets the UI filters by and users subscribe to per-channel.
+enum NotificationCategory {
+  ATTENDANCE
+  PRODUCTIVITY
+  PROJECT
+  AI
+  SYSTEM
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+model Notification {
+  id              String               @id @default(uuid()) @db.Uuid
+  orgId           String               @db.Uuid
+  recipientUserId String               @db.Uuid
+  channel         NotificationChannel
+  category        NotificationCategory @default(SYSTEM)
+  priority        NotificationPriority @default(NORMAL)
+  type            String
+  title           String
+  body            String
+  // Optional deep link into the app (e.g. /leave, /projects/<id>).
+  link            String?
+  status          NotificationStatus   @default(PENDING)
+  dedupeKey       String               @unique
+  sourceEventId   String?              @db.Uuid
+  sentAt          DateTime?
+  readAt          DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime             @default(now())
+
+  @@index([orgId, recipientUserId, status, createdAt])
+  @@index([orgId, recipientUserId, category, createdAt])
+  @@index([orgId, createdAt])
+}
+
+/// Per-user delivery preferences. One row per (orgId, userId, category):
+/// which channels are enabled for that category. Absent row = defaults apply.
+model NotificationPreference {
+  id       String               @id @default(uuid()) @db.Uuid
+  orgId    String               @db.Uuid
+  userId   String               @db.Uuid
+  category NotificationCategory
+  inApp    Boolean              @default(true)
+  email    Boolean              @default(false)
+  push     Boolean              @default(false)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, userId, category])
+  @@index([orgId, userId])
+}
+
+/// Per-user global delivery settings: quiet hours and email digest cadence.
+/// Quiet hours defer EMAIL/PUSH (IN_APP is always delivered).
+model NotificationSetting {
+  id               String   @id @default(uuid()) @db.Uuid
+  orgId            String   @db.Uuid
+  userId           String   @db.Uuid
+  quietHoursEnabled Boolean @default(false)
+  quietStart       Int      @default(22) // local hour 0-23
+  quietEnd         Int      @default(8)
+  timezone         String   @default("UTC")
+  digest           String   @default("OFF") // OFF | DAILY | WEEKLY
+  digestHour       Int      @default(9)
+  lastDigestAt     DateTime?
+  updatedAt        DateTime @updatedAt
+
+  @@unique([orgId, userId])
+}
+
+/// A browser Web Push subscription (VAPID). One row per device/endpoint.
+model PushSubscription {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @db.Uuid
+  userId    String   @db.Uuid
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  lastUsedAt DateTime?
+
+  @@index([orgId, userId])
+}
+
+// Local projection of org memberships, kept in sync from identity domain events.
+// Used to resolve notification recipients (e.g. org admins) without reaching into
+// the identity database. One row per (orgId, userId).
+model OrgRecipient {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @db.Uuid
+  userId    String   @db.Uuid
+  roleName  String
+  status    String   @default("ACTIVE")
+  // Projected alongside the membership so the EMAIL channel can address the
+  // recipient without ever reading the identity database.
+  email     String?
+  name      String?
+  updatedAt DateTime @default(now())
+
+  @@unique([orgId, userId])
+  @@index([orgId, status, roleName])
+}

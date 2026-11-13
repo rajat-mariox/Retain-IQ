@@ -1,0 +1,50 @@
+{
+  "name": "@retainiq/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./identity": {
+      "types": "./prisma/generated/identity/index.d.ts",
+      "default": "./prisma/generated/identity/index.js"
+    },
+    "./inbox": {
+      "types": "./prisma/generated/inbox/index.d.ts",
+      "default": "./prisma/generated/inbox/index.js"
+    },
+    "./analytics": {
+      "types": "./prisma/generated/analytics/index.d.ts",
+      "default": "./prisma/generated/analytics/index.js"
+    },
+    "./notifications": {
+      "types": "./prisma/generated/notifications/index.d.ts",
+      "default": "./prisma/generated/notifications/index.js"
+    },
+    "./billing": {
+      "types": "./prisma/generated/billing/index.d.ts",
+      "default": "./prisma/generated/billing/index.js"
+    }
+  },
+  "scripts": {
+    "build": "npm run db:generate",
+    "typecheck": "node -e \"process.exit(0)\"",
+    "lint": "node -e \"process.exit(0)\"",
+    "db:generate": "prisma generate --schema prisma/identity/schema.prisma && prisma generate --schema prisma/inbox/schema.prisma && prisma generate --schema prisma/analytics/schema.prisma && prisma generate --schema prisma/notifications/schema.prisma && prisma generate --schema prisma/billing/schema.prisma",
+    "db:migrate:identity": "prisma migrate deploy --schema prisma/identity/schema.prisma",
+    "db:migrate:inbox": "prisma migrate deploy --schema prisma/inbox/schema.prisma",
+    "db:migrate:analytics": "prisma migrate deploy --schema prisma/analytics/schema.prisma",
+    "db:migrate:notifications": "prisma migrate deploy --schema prisma/notifications/schema.prisma",
+    "db:migrate:billing": "prisma migrate deploy --schema prisma/billing/schema.prisma",
+    "db:diff:identity": "prisma migrate diff --from-empty --to-schema-datamodel prisma/identity/schema.prisma --script",
+    "db:diff:inbox": "prisma migrate diff --from-empty --to-schema-datamodel prisma/inbox/schema.prisma --script",
+    "db:diff:analytics": "prisma migrate diff --from-empty --to-schema-datamodel prisma/analytics/schema.prisma --script",
+    "db:diff:notifications": "prisma migrate diff --from-empty --to-schema-datamodel prisma/notifications/schema.prisma --script"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.10.1"
+  },
+  "devDependencies": {
+    "prisma": "^6.10.1",
+    "typescript": "^5.8.3"
+  }
+}

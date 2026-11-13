@@ -1,0 +1,3383 @@
+// identity database — owned by apps/api (core-api).
+// Tenancy, auth, RBAC, employees, audit, idempotency, and the transactional outbox.
+// No other service may connect to this database; cross-service reads go via events.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/identity"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DELETED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  REMOVED
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  NOTICE_PERIOD
+  EXITED
+  SUSPENDED
+}
+
+// Where an employee sits in their employment journey. Distinct from EmployeeStatus
+// (day-to-day state): a CONFIRMED employee can still be ON_LEAVE. New hires begin
+// at ONBOARDING; EXITED is terminal.
+enum LifecycleStage {
+  ONBOARDING
+  PROBATION
+  CONFIRMED
+  EXITED
+}
+
+// Breadth a role grant applies to. ORG = whole org; DEPARTMENT/TEAM = scopeId
+// points at that unit; SELF = only the grantee's own data.
+enum ScopeType {
+  ORG
+  DEPARTMENT
+  TEAM
+  SELF
+}
+
+enum RequisitionStatus {
+  OPEN
+  ON_HOLD
+  FILLED
+  CLOSED
+}
+
+enum ApplicationStage {
+  APPLIED
+  SCREENING
+  INTERVIEW
+  OFFER
+  HIRED
+  REJECTED
+}
+
+enum InterviewOutcome {
+  PENDING
+  PASS
+  FAIL
+  HOLD
+}
+
+enum OfferStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+}
+
+enum OnboardingItemCategory {
+  TASK
+  DOCUMENT
+  POLICY
+  ACCESS
+  TRAINING
+}
+
+enum OnboardingAssignee {
+  EMPLOYEE
+  HR
+  MANAGER
+  IT
+}
+
+enum OnboardingTaskStatus {
+  PENDING
+  DONE
+  SKIPPED
+}
+
+enum OnboardingJourneyStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum IdempotencyStatus {
+  STARTED
+  COMPLETED
+  FAILED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+enum SessionStatus {
+  ACTIVE
+  ROTATED
+  REVOKED
+  EXPIRED
+}
+
+model Organization {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String    @unique
+  status    OrgStatus @default(ACTIVE)
+  region    String    @default("ap-south-1")
+  timezone  String    @default("Asia/Kolkata")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  memberships         OrganizationMembership[]
+  employees           Employee[]
+  roles               Role[]
+  roleAssignments     RoleAssignment[]
+  auditEvents         AuditEvent[]
+  departments         Department[]
+  teams               Team[]
+  projects            Project[]
+  requisitions        Requisition[]
+  designations        Designation[]
+  shifts              Shift[]
+  shiftRotations      ShiftRotation[]
+  leaveTypes          LeaveType[]
+  leaveRequests       LeaveRequest[]
+  holidays            Holiday[]
+  monitoringPolicy    MonitoringPolicy?
+  timeEntries         TimeEntry[]
+  timesheets          Timesheet[]
+  projectSetting      ProjectSetting?
+  productivitySetting ProductivitySetting?
+  candidates          Candidate[]
+  applications        Application[]
+  interviews          Interview[]
+  offers              Offer[]
+  onboardingTemplates OnboardingTemplate[]
+  onboardingJourneys  OnboardingJourney[]
+  attendancePolicy    AttendancePolicy?
+  clients             Client[]
+  featureFlags        OrgFeatureFlag[]
+  employeeRates       EmployeeRate[]
+  billRates           BillRate[]
+  payrollSetting      PayrollSetting?
+  payrollCycles       PayrollCycle[]
+  payrollLines        PayrollLine[]
+  clientInvoices      ClientInvoice[]
+  reportSchedules     ReportSchedule[]
+  reportJobs          ReportJob[]
+  observations        Observation[]
+  compOffLedger       CompOffLedger[]
+  skillCatalog        SkillCatalog[]
+  changeRequests      EmployeeChangeRequest[]
+  workforceSetting    WorkforceSetting?
+  exits               EmployeeExit[]
+  alumni              EmployeeAlumni[]
+  probations          ProbationRecord[]
+  // Billing (Plan/Subscription/Invoice) lives in billing-service / billing-db.
+  // Those invoice RetainIQ's tenants; ClientInvoice (payroll) is the tenant
+  // invoicing THEIR clients — different domain, deliberately not shared.
+
+  @@index([status])
+  @@index([region, status])
+}
+
+model User {
+  id                          String     @id @default(uuid()) @db.Uuid
+  email                       String     @unique
+  passwordHash                String?
+  status                      UserStatus @default(ACTIVE)
+  mfaEnabled                  Boolean    @default(false)
+  // Set when a temp password is issued (invite/create); forces a password
+  // change on first login before the rest of the app is accessible.
+  mustChangePassword          Boolean    @default(false)
+  passwordResetTokenHash      String?
+  passwordResetTokenExpiresAt DateTime?
+  createdAt                   DateTime   @default(now())
+  updatedAt                   DateTime   @updatedAt
+
+  memberships     OrganizationMembership[]
+  sessions        Session[]
+  roleAssignments RoleAssignment[]
+}
+
+model Session {
+  id               String        @id @default(uuid()) @db.Uuid
+  userId           String        @db.Uuid
+  membershipId     String?       @db.Uuid
+  orgId            String?       @db.Uuid
+  refreshTokenHash String        @unique
+  // jti of the access token minted with this session. On logout we denylist it
+  // so the still-valid access JWT is rejected immediately, not just at expiry.
+  accessTokenId    String?       @db.Uuid
+  status           SessionStatus @default(ACTIVE)
+  ipAddress        String?
+  userAgent        String?
+  expiresAt        DateTime
+  lastUsedAt       DateTime      @default(now())
+  rotatedAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@index([orgId, status])
+}
+
+model OrganizationMembership {
+  id         String           @id @default(uuid()) @db.Uuid
+  orgId      String           @db.Uuid
+  userId     String           @db.Uuid
+  employeeId String?          @db.Uuid
+  roleId     String           @db.Uuid
+  status     MembershipStatus @default(ACTIVE)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  user     User         @relation(fields: [userId], references: [id])
+  employee Employee?    @relation(fields: [employeeId], references: [id])
+  role     Role         @relation(fields: [roleId], references: [id])
+
+  @@unique([orgId, userId])
+  @@index([userId, status])
+  @@index([orgId, status])
+  @@index([orgId, roleId])
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  name        String
+  description String?
+  permissions String[]
+  isSystem    Boolean  @default(false)
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org         Organization             @relation(fields: [orgId], references: [id])
+  memberships OrganizationMembership[]
+  assignments RoleAssignment[]
+
+  @@unique([orgId, name])
+  @@index([orgId, isSystem])
+}
+
+// Multi-grant RBAC: a user can hold several (role @ scope) grants — e.g.
+// Manager@department:Sales AND Lead@team:Launch. Effective permissions = union
+// across active grants; the scope drives ABAC query filtering (Phase 3).
+model RoleAssignment {
+  id         String    @id @default(uuid()) @db.Uuid
+  orgId      String    @db.Uuid
+  userId     String    @db.Uuid
+  employeeId String?   @db.Uuid
+  roleId     String    @db.Uuid
+  scopeType  ScopeType @default(ORG)
+  scopeId    String?   @db.Uuid // departmentId | teamId; null for ORG/SELF
+  status     String    @default("ACTIVE") // ACTIVE | REVOKED
+  createdAt  DateTime  @default(now())
+  createdBy  String?   @db.Uuid
+
+  org  Organization @relation(fields: [orgId], references: [id])
+  user User         @relation(fields: [userId], references: [id])
+  role Role         @relation(fields: [roleId], references: [id])
+
+  @@unique([orgId, userId, roleId, scopeType, scopeId])
+  @@index([orgId, userId, status])
+  @@index([orgId, roleId])
+  @@index([scopeType, scopeId])
+}
+
+model Employee {
+  id                    String         @id @default(uuid()) @db.Uuid
+  orgId                 String         @db.Uuid
+  employeeCode          String?
+  // Work email = the person's sign-in address; kept in lockstep with the linked
+  // User.email. Changing it re-issues login credentials. personalEmail is an HR
+  // profile field only (personal contact) and has no bearing on authentication.
+  email                 String?
+  personalEmail         String?
+  firstName             String
+  lastName              String
+  department            String?
+  title                 String?
+  departmentId          String?        @db.Uuid
+  teamId                String?        @db.Uuid
+  designationId         String?        @db.Uuid
+  shiftId               String?        @db.Uuid
+  // When set, the employee's shift rotates on a schedule; the rotation resolves
+  // the shift that applies on a given day, overriding the fixed shiftId.
+  rotationId            String?        @db.Uuid
+  managerId             String?        @db.Uuid
+  status                EmployeeStatus @default(ACTIVE)
+  lifecycleStage        LifecycleStage @default(ONBOARDING)
+  joinedAt              DateTime?
+  probationEndsAt       DateTime?
+  confirmedAt           DateTime?
+  exitedAt              DateTime?
+  // Personal / HR profile details
+  phone                 String?
+  dateOfBirth           DateTime?      @db.Date
+  gender                String?
+  location              String?
+  employmentType        String? // FULL_TIME | PART_TIME | CONTRACT | INTERN
+  // Where this person works. null = fall back to the org's default AttendancePolicy
+  // work model. HYBRID uses officeDays (weekday numbers, 0=Sun) for on-site days.
+  workModel             String? // WFO | WFH | HYBRID
+  officeDays            Int[]          @default([])
+  address               String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  createdBy             String?        @db.Uuid
+  updatedBy             String?        @db.Uuid
+
+  org            Organization             @relation(fields: [orgId], references: [id])
+  departmentRef  Department?              @relation(fields: [departmentId], references: [id])
+  rotationRef    ShiftRotation?           @relation(fields: [rotationId], references: [id])
+  designationRef Designation?             @relation(fields: [designationId], references: [id])
+  shiftRef       Shift?                   @relation(fields: [shiftId], references: [id])
+  memberships    OrganizationMembership[]
+  attendance     AttendanceRecord[]
+  leaveRequests  LeaveRequest[]
+  timeEntries    TimeEntry[]
+  timesheets     Timesheet[]
+  documents      EmployeeDocument[]
+  events         EmploymentEvent[]
+  onboarding     OnboardingJourney?
+  reviews        PerformanceReview[]
+  achievements   Achievement[]
+  skills         EmployeeSkill[]
+  certifications EmployeeCertification[]
+  changeRequests EmployeeChangeRequest[]
+  careerHistory  EmployeeCareerHistory[]
+  exits          EmployeeExit[]
+  alumni         EmployeeAlumni?
+  probations     ProbationRecord[]
+  remarks        EmployeeRemark[]
+  rates          EmployeeRate[]
+  billRates      BillRate[]
+  payrollLines   PayrollLine[]
+  compOffLedger  CompOffLedger[]
+
+  @@unique([orgId, employeeCode])
+  @@index([orgId, email])
+  @@index([orgId, status])
+  @@index([orgId, departmentId, status])
+  @@index([orgId, teamId, status])
+  @@index([orgId, managerId, status])
+  @@index([orgId, designationId])
+  @@index([orgId, lifecycleStage])
+  @@index([orgId, createdAt])
+}
+
+// Employee files (offer letters, contracts, ID proofs, compliance). Binary lives
+// in S3/MinIO; only metadata + size here.
+model EmployeeDocument {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  employeeId  String   @db.Uuid
+  category    String   @default("OTHER") // OFFER_LETTER | CONTRACT | ID_PROOF | COMPLIANCE | OTHER
+  fileName    String
+  key         String   @unique // S3 object key
+  sizeBytes   BigInt
+  contentType String   @default("application/octet-stream")
+  uploadedBy  String?  @db.Uuid
+  createdAt   DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId])
+}
+
+// Employment history timeline — promotions, transfers, title/status changes,
+// lifecycle transitions. Append-only.
+model EmploymentEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @db.Uuid
+  employeeId    String   @db.Uuid
+  type          String // JOINED | PROMOTION | TRANSFER | TITLE_CHANGE | STATUS_CHANGE | LIFECYCLE | EXIT | NOTE
+  title         String
+  detail        String?
+  effectiveDate DateTime @default(now())
+  createdBy     String?  @db.Uuid
+  createdAt     DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId, effectiveDate])
+}
+
+enum ChangeRequestKind {
+  PROMOTION
+  TRANSFER
+}
+
+enum ChangeRequestStatus {
+  PENDING_APPROVAL // moving through the approval chain
+  APPROVED // fully approved, immediate change applied
+  SCHEDULED // fully approved, waiting for a future effective date
+  APPLIED // the change has been written to the employee
+  REJECTED // a step rejected it
+  CANCELLED // withdrawn by the requester before completion
+}
+
+enum ChangeStepStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SKIPPED
+}
+
+/**
+ * A promotion or transfer moving through a configurable approval chain. Holds the
+ * proposed changes plus a snapshot of the values they replace, so a fully immutable
+ * career-history row can be written when it applies. Future-dated requests wait in
+ * SCHEDULED until a cron applies them on the effective date. Never mutates the
+ * employee directly — the apply step is the only writer, and it also records the
+ * career history, timeline event, audit entry and domain event.
+ */
+model EmployeeChangeRequest {
+  id            String              @id @default(uuid()) @db.Uuid
+  orgId         String              @db.Uuid
+  employeeId    String              @db.Uuid
+  kind          ChangeRequestKind
+  status        ChangeRequestStatus @default(PENDING_APPROVAL)
+  /// Proposed new values (only the keys that change): { designationId?, title?,
+  /// departmentId?, teamId?, managerId?, location? }.
+  proposed      Json
+  /// Snapshot of the current values being replaced, captured at request time.
+  previous      Json
+  reason        String?
+  effectiveDate DateTime            @db.Date
+  requestedBy   String?             @db.Uuid
+  decidedAt     DateTime? // when the chain finished (approved/rejected)
+  appliedAt     DateTime?
+  cancelledAt   DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  org      Organization         @relation(fields: [orgId], references: [id])
+  employee Employee             @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  steps    ChangeApprovalStep[]
+
+  @@index([orgId, employeeId])
+  @@index([orgId, status])
+  @@index([status, effectiveDate]) // scheduled-apply sweep
+}
+
+/// One ordered step in a change request's approval chain. The role names the
+/// authority (MANAGER, NEW_MANAGER, HR, DEPARTMENT_HEAD, FINANCE); assignedTo is
+/// the resolved approver's login userId when known.
+model ChangeApprovalStep {
+  id         String           @id @default(uuid()) @db.Uuid
+  orgId      String           @db.Uuid
+  requestId  String           @db.Uuid
+  order      Int
+  role       String // MANAGER | NEW_MANAGER | HR | DEPARTMENT_HEAD | FINANCE
+  assignedTo String?          @db.Uuid
+  status     ChangeStepStatus @default(PENDING)
+  decidedBy  String?          @db.Uuid
+  decidedAt  DateTime?
+  note       String?
+  createdAt  DateTime         @default(now())
+
+  request EmployeeChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, requestId, order])
+}
+
+/**
+ * Immutable career-history record. Written when a promotion/transfer applies (never
+ * updated or deleted), so an employee's progression stays a true audit trail even
+ * as their current row changes. previous/new fields are denormalised labels so the
+ * history reads correctly even after a department or designation is later renamed.
+ */
+model EmployeeCareerHistory {
+  id                  String   @id @default(uuid()) @db.Uuid
+  orgId               String   @db.Uuid
+  employeeId          String   @db.Uuid
+  changeType          String // PROMOTION | TRANSFER | ROLE_CHANGE | DEPARTMENT_CHANGE | MANAGER_CHANGE | LOCATION_CHANGE
+  previousDesignation String?
+  newDesignation      String?
+  previousDepartment  String?
+  newDepartment       String?
+  previousManager     String?
+  newManager          String?
+  previousLocation    String?
+  newLocation         String?
+  reason              String?
+  effectiveFrom       DateTime @db.Date
+  approvedBy          String?  @db.Uuid
+  requestId           String?  @db.Uuid // the change request that produced this
+  createdAt           DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId, effectiveFrom])
+}
+
+enum ExitReason {
+  RESIGNATION
+  TERMINATION
+  RETIREMENT
+  CONTRACT_END
+  LAYOFF
+  OTHER
+}
+
+enum ExitStatus {
+  INITIATED // exit raised, offboarding checklist created
+  NOTICE_PERIOD // serving notice
+  CLEARANCE // notice done, clearances in progress
+  COMPLETED // last working day reached, employee EXITED + alumni created
+  CANCELLED // exit called off (employee stays)
+}
+
+enum OffboardingTaskStatus {
+  PENDING
+  DONE
+  SKIPPED
+}
+
+/**
+ * A structured employee exit. Coordinates the offboarding checklist and, on
+ * completion, flips the employee to EXITED and creates the alumni record. Unlike
+ * the quick lifecycle "exit" flip, this carries a reason, notice period, exit
+ * interview and rehire eligibility. Cancelling keeps the record for history.
+ */
+model EmployeeExit {
+  id                String     @id @default(uuid()) @db.Uuid
+  orgId             String     @db.Uuid
+  employeeId        String     @db.Uuid
+  reason            ExitReason
+  status            ExitStatus @default(INITIATED)
+  reasonNote        String?
+  noticeStartDate   DateTime?  @db.Date
+  lastWorkingDay    DateTime?  @db.Date
+  exitInterviewNote String?
+  rehireEligible    Boolean    @default(true)
+  rehireRating      Int? // 1–5, HR's rehire recommendation
+  initiatedBy       String?    @db.Uuid
+  initiatedAt       DateTime   @default(now())
+  completedAt       DateTime?
+  cancelledAt       DateTime?
+  updatedAt         DateTime   @updatedAt
+
+  org      Organization      @relation(fields: [orgId], references: [id])
+  employee Employee          @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  tasks    OffboardingTask[]
+
+  @@index([orgId, status])
+  @@index([orgId, employeeId])
+}
+
+/// One offboarding checklist item (knowledge transfer, asset recovery, access
+/// revocation, exit interview, final payroll, documents), assigned to a function.
+model OffboardingTask {
+  id          String                @id @default(uuid()) @db.Uuid
+  orgId       String                @db.Uuid
+  exitId      String                @db.Uuid
+  title       String
+  category    String // KNOWLEDGE_TRANSFER | ASSET_RECOVERY | ACCESS_REVOCATION | EXIT_INTERVIEW | FINAL_PAYROLL | DOCUMENTS | OTHER
+  assignee    String // HR | IT | MANAGER | FINANCE | EMPLOYEE
+  order       Int                   @default(0)
+  status      OffboardingTaskStatus @default(PENDING)
+  completedAt DateTime?
+  completedBy String?               @db.Uuid
+  note        String?
+  createdAt   DateTime              @default(now())
+
+  exit EmployeeExit @relation(fields: [exitId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, exitId])
+}
+
+/**
+ * Alumni projection of a former employee — a denormalised, searchable record kept
+ * after exit so recruiters can find and rehire past staff without resurrecting a
+ * live employee row. The Employee row itself is never deleted (lifecycle EXITED);
+ * this is the snapshot that survives even if the department/designation is renamed.
+ */
+model EmployeeAlumni {
+  id              String      @id @default(uuid()) @db.Uuid
+  orgId           String      @db.Uuid
+  employeeId      String      @unique @db.Uuid
+  fullName        String
+  workEmail       String?
+  personalEmail   String?
+  joiningDate     DateTime?   @db.Date
+  exitDate        DateTime?   @db.Date
+  lastDesignation String?
+  lastDepartment  String?
+  exitReason      ExitReason?
+  rehireEligible  Boolean     @default(true)
+  rehireRating    Int?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  employee Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, rehireEligible])
+  @@index([orgId, lastDepartment])
+}
+
+/**
+ * Org-level workforce/HR settings. Holds the configurable approval chains for
+ * promotions and transfers (ordered role lists); an empty chain means the change
+ * applies immediately with no approval. One row per org, lazily created.
+ */
+model WorkforceSetting {
+  id                    String   @id @default(uuid()) @db.Uuid
+  orgId                 String   @unique @db.Uuid
+  /// Ordered approver roles for a promotion, e.g. ["MANAGER","HR","FINANCE"].
+  promotionChain        String[] @default(["MANAGER", "HR", "FINANCE"])
+  /// Ordered approver roles for a transfer, e.g. ["MANAGER","NEW_MANAGER","HR"].
+  transferChain         String[] @default(["MANAGER", "NEW_MANAGER", "HR"])
+  /// Default probation length in months when HR doesn't pick one.
+  probationMonths       Int      @default(6)
+  /// Days-before-probation-end at which to remind the manager (descending).
+  probationReminderDays Int[]    @default([30, 15, 7])
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
+enum ProbationStatus {
+  ACTIVE // serving probation
+  EXTENDED // probation was extended at least once
+  CONFIRMED // passed → confirmed
+  TERMINATED // failed → exit triggered
+}
+
+enum ProbationRecommendation {
+  CONFIRM
+  EXTEND
+  TERMINATE
+}
+
+/**
+ * A structured probation period. The current end date can move (an EXTEND keeps
+ * the original in originalEndDate and records a ProbationExtension row), so the
+ * history is never overwritten. The review captures per-dimension notes and a
+ * recommendation; the outcome drives the lifecycle (confirm / extend / terminate).
+ */
+model ProbationRecord {
+  id               String                   @id @default(uuid()) @db.Uuid
+  orgId            String                   @db.Uuid
+  employeeId       String                   @db.Uuid
+  startDate        DateTime                 @db.Date
+  endDate          DateTime                 @db.Date
+  originalEndDate  DateTime                 @db.Date
+  durationMonths   Int
+  status           ProbationStatus          @default(ACTIVE)
+  // Review fields, filled at decision time.
+  performanceNote  String?
+  attendanceNote   String?
+  reviewNote       String?
+  recommendation   ProbationRecommendation?
+  reviewedBy       String?                  @db.Uuid
+  reviewedAt       DateTime?
+  /// Last reminder threshold (days) already sent, so the cron doesn't repeat.
+  lastRemindedDays Int?
+  createdBy        String?                  @db.Uuid
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  org        Organization         @relation(fields: [orgId], references: [id])
+  employee   Employee             @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  extensions ProbationExtension[]
+
+  @@index([orgId, employeeId])
+  @@index([orgId, status])
+  @@index([status, endDate]) // reminder sweep
+}
+
+/// An immutable record of a single probation extension — never overwrites the
+/// original dates, so "Jan→Jun then extended Jun→Sep" stays fully auditable.
+model ProbationExtension {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  probationId String   @db.Uuid
+  fromEndDate DateTime @db.Date
+  toEndDate   DateTime @db.Date
+  reason      String?
+  extendedBy  String?  @db.Uuid
+  createdAt   DateTime @default(now())
+
+  probation ProbationRecord @relation(fields: [probationId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, probationId])
+}
+
+model AuditEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  actorUserId  String?  @db.Uuid
+  action       String
+  resourceType String
+  resourceId   String?
+  ipAddress    String?
+  userAgent    String?
+  before       Json?
+  after        Json?
+  metadata     Json?
+  occurredAt   DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, occurredAt])
+  @@index([orgId, action, occurredAt])
+  @@index([orgId, resourceType, resourceId])
+}
+
+model IdempotencyRecord {
+  id           String            @id @default(uuid()) @db.Uuid
+  orgId        String            @db.Uuid
+  key          String
+  requestHash  String
+  status       IdempotencyStatus
+  responseCode Int?
+  responseBody Json?
+  lockedUntil  DateTime?
+  createdAt    DateTime          @default(now())
+  expiresAt    DateTime
+
+  @@unique([orgId, key])
+  @@index([orgId, expiresAt])
+  @@index([status, lockedUntil])
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  orgId         String?      @db.Uuid
+  topic         String
+  eventType     String
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  nextRunAt     DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, nextRunAt])
+  @@index([orgId, createdAt])
+  @@index([topic, status])
+}
+
+// ---------------------------------------------------------------------------
+// Platform (super-admin) identity — a cross-tenant principal that is NOT a
+// member of any organization. Kept in its own table with its own token type so
+// platform access can never be confused with org-scoped access.
+// ---------------------------------------------------------------------------
+
+enum PlatformRole {
+  SUPER_ADMIN
+  ADMIN
+}
+
+model PlatformAdmin {
+  id                          String       @id @default(uuid()) @db.Uuid
+  email                       String       @unique
+  passwordHash                String
+  name                        String
+  role                        PlatformRole @default(SUPER_ADMIN)
+  status                      UserStatus   @default(ACTIVE)
+  lastLoginAt                 DateTime?
+  passwordResetTokenHash      String?
+  passwordResetTokenExpiresAt DateTime?
+  createdAt                   DateTime     @default(now())
+  updatedAt                   DateTime     @updatedAt
+
+  sessions PlatformAdminSession[]
+}
+
+model PlatformAdminSession {
+  id               String        @id @default(uuid()) @db.Uuid
+  adminId          String        @db.Uuid
+  refreshTokenHash String        @unique
+  // jti of the access token minted with this session, denylisted on logout.
+  accessTokenId    String?       @db.Uuid
+  status           SessionStatus @default(ACTIVE)
+  ipAddress        String?
+  userAgent        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  rotatedAt        DateTime?
+  createdAt        DateTime      @default(now())
+
+  admin PlatformAdmin @relation(fields: [adminId], references: [id])
+
+  @@index([adminId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Attendance — daily check-in/out per employee. One row per (org, employee, day);
+// the org-admin and platform-admin views roll these up (present/late/absent,
+// attendance rate, worked hours).
+// ---------------------------------------------------------------------------
+
+/// Lifecycle state of an employee's day. Derived from sessions/breaks, and the
+/// single thing the UI reads to decide which actions to offer.
+enum AttendanceState {
+  NOT_CHECKED_IN
+  WORKING
+  ON_BREAK
+  CHECKED_OUT // out, but policy allows checking in again
+  COMPLETED // day finished; no further sessions allowed
+  ABSENT
+  ON_LEAVE
+  HOLIDAY
+  WEEKEND
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  ABSENT
+  ON_LEAVE
+}
+
+/// The employee's day. A pure ROLL-UP of its sessions and breaks — every value
+/// below is derived, never authored directly. Sessions are the source of truth,
+/// so a day can hold many work sessions (split shifts, client visits, re-entry).
+model AttendanceRecord {
+  id                      String           @id @default(uuid()) @db.Uuid
+  orgId                   String           @db.Uuid
+  employeeId              String           @db.Uuid
+  day                     DateTime         @db.Date
+  /// First check-in and last check-out across all sessions of the day.
+  checkInAt               DateTime?
+  checkOutAt              DateTime?
+  status                  AttendanceStatus @default(PRESENT)
+  /// Net worked minutes = gross session time − unpaid break time.
+  workMinutes             Int              @default(0)
+  /// Total break minutes (paid + unpaid) taken across the day.
+  breakMinutes            Int              @default(0)
+  /// Unpaid portion of breakMinutes — the part deducted from workMinutes.
+  unpaidBreakMinutes      Int              @default(0)
+  /// Minutes worked beyond the shift — computed, and NOT payable on its own.
+  overtimeMinutes         Int              @default(0)
+  /// The portion a manager has signed off. Payroll and OT reports read this,
+  /// so unclaimed or unapproved overtime never turns into money by itself.
+  approvedOvertimeMinutes Int              @default(0)
+  overtimeApprovedBy      String?          @db.Uuid
+  overtimeApprovedAt      DateTime?
+  lateMinutes             Int              @default(0)
+  earlyExitMinutes        Int              @default(0)
+  /// Where the first check-in / last check-out came from: web | agent.
+  source                  String           @default("web")
+  checkOutSource          String?
+  /// Derived lifecycle state (see AttendanceState).
+  state                   AttendanceState  @default(NOT_CHECKED_IN)
+  workLocation            String? // OFFICE | HOME | CLIENT_SITE | REMOTE
+  ipAddress               String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  employee    Employee               @relation(fields: [employeeId], references: [id])
+  sessions    AttendanceSession[]
+  breaks      AttendanceBreak[]
+  events      AttendanceEvent[]
+  corrections AttendanceCorrection[]
+
+  @@unique([orgId, employeeId, day])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+  @@index([orgId, day, state])
+}
+
+/// A single continuous work session. An open session (endedAt = null) means the
+/// employee is currently working. Multiple sessions per day support split
+/// shifts, client visits and re-entry after check-out.
+model AttendanceSession {
+  id           String    @id @default(uuid()) @db.Uuid
+  orgId        String    @db.Uuid
+  employeeId   String    @db.Uuid
+  attendanceId String    @db.Uuid
+  /// 1-based position within the day, so "session 2" is stable in the UI.
+  sequence     Int       @default(1)
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  /// Gross wall-clock minutes of this session (breaks NOT deducted).
+  minutes      Int       @default(0)
+  startSource  String    @default("web")
+  endSource    String?
+  workLocation String?
+  startIp      String?
+  endIp        String?
+  /// Set when the system closed the session rather than the employee
+  /// (shift-end auto checkout, or the overnight missed-checkout sweep).
+  autoClosed   Boolean   @default(false)
+  note         String?
+  createdAt    DateTime  @default(now())
+
+  attendance AttendanceRecord  @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  breaks     AttendanceBreak[]
+
+  @@index([orgId, employeeId, startedAt])
+  @@index([attendanceId, sequence])
+}
+
+/// One break, always inside a work session. An open break (endedAt = null)
+/// means the employee is on break right now.
+model AttendanceBreak {
+  id           String    @id @default(uuid()) @db.Uuid
+  orgId        String    @db.Uuid
+  employeeId   String    @db.Uuid
+  attendanceId String    @db.Uuid
+  sessionId    String?   @db.Uuid
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  minutes      Int       @default(0)
+  /// LUNCH | TEA | PERSONAL | MEETING | OTHER — or any org-defined label.
+  kind         String    @default("BREAK")
+  /// Paid breaks count as worked time; unpaid ones are deducted.
+  paid         Boolean   @default(false)
+  source       String    @default("web")
+  note         String?
+  createdAt    DateTime  @default(now())
+
+  attendance AttendanceRecord   @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  session    AttendanceSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId, startedAt])
+  @@index([attendanceId])
+  @@index([sessionId])
+}
+
+/// Append-only audit of every attendance action and state transition. Gives the
+/// "who did what, from where, and why" trail an HRMS needs, and lets totals be
+/// recomputed from first principles if a roll-up is ever suspect.
+model AttendanceEvent {
+  id           String           @id @default(uuid()) @db.Uuid
+  orgId        String           @db.Uuid
+  employeeId   String           @db.Uuid
+  attendanceId String           @db.Uuid
+  /// CHECK_IN | CHECK_OUT | BREAK_START | BREAK_END | AUTO_CHECK_OUT | CORRECTION
+  type         String
+  fromState    AttendanceState?
+  toState      AttendanceState?
+  occurredAt   DateTime         @default(now())
+  source       String           @default("web")
+  actorUserId  String?          @db.Uuid
+  workLocation String?
+  ipAddress    String?
+  note         String?
+
+  attendance AttendanceRecord @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId, occurredAt])
+  @@index([attendanceId, occurredAt])
+}
+
+/// An employee's request to fix their own attendance — a missed punch, a wrong
+/// time, or overtime they actually worked. Routed to their reporting manager,
+/// or to the Owner when they have none. Nothing is applied until approved.
+model AttendanceCorrection {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  employeeId   String   @db.Uuid
+  attendanceId String?  @db.Uuid
+  day          DateTime @db.Date
+
+  /// MISSED_CHECK_IN | MISSED_CHECK_OUT | WRONG_TIME | OVERTIME | OTHER
+  type   String
+  reason String
+
+  /// What the employee is asking for. Times are optional so an overtime-only
+  /// request doesn't have to restate the punches.
+  requestedCheckInAt       DateTime?
+  requestedCheckOutAt      DateTime?
+  requestedOvertimeMinutes Int?
+
+  status        AttendanceCorrectionStatus @default(PENDING)
+  decidedBy     String?                    @db.Uuid
+  decidedAt     DateTime?
+  decisionNote  String?
+  /// Snapshot of what the record held before an approval rewrote it, so an
+  /// approved correction can be explained (and undone) later.
+  previousState Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attendance AttendanceRecord? @relation(fields: [attendanceId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, createdAt])
+  @@index([orgId, employeeId, day])
+}
+
+enum AttendanceCorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// Per-org attendance rules. Owned by the platform (super) admin: set when an
+/// organization is created and editable afterwards. Absent row = defaults below.
+model AttendancePolicy {
+  id    String @id @default(uuid()) @db.Uuid
+  orgId String @unique @db.Uuid
+
+  /// Re-entry after a check-out, and how many sessions a day may hold.
+  allowMultipleSessions Boolean @default(false)
+  allowReEntry          Boolean @default(false)
+  maxSessionsPerDay     Int     @default(1)
+
+  /// Break rules.
+  maxBreaksPerDay          Int     @default(0) // 0 = unlimited
+  maxBreakMinutesPerDay    Int     @default(0) // 0 = unlimited
+  maxSingleBreakMinutes    Int     @default(0) // 0 = unlimited
+  paidBreakMinutesPerDay   Int     @default(0) // first N break minutes counted as worked
+  allowCheckOutOnBreak     Boolean @default(false)
+  /// Minimum minutes after check-in before a break / check-out is allowed
+  /// (0 = no minimum). Stops someone checking in and immediately leaving.
+  minMinutesBeforeBreak    Int     @default(0)
+  minMinutesBeforeCheckOut Int     @default(0)
+
+  /// Shift & timing rules.
+  graceMinutes             Int     @default(10)
+  autoCheckOutAtShiftEnd   Boolean @default(false)
+  /// Minutes after shift end before the system force-closes an open session.
+  autoCheckOutAfterMinutes Int     @default(120)
+  /// Desktop-agent idle auto-checkout: after this many minutes of no input the
+  /// agent checks the person out (0 = off). idleCheckoutWarnMinutes is shown as a
+  /// countdown before that point (e.g. 30 total = 25 idle + a 5-minute warning).
+  idleCheckoutMinutes      Int     @default(0)
+  idleCheckoutWarnMinutes  Int     @default(5)
+  overtimeAfterMinutes     Int     @default(0) // 0 = shift duration
+  minHoursForPresent       Int     @default(240) // < this ⇒ HALF_DAY (minutes)
+
+  /// Work model & location.
+  workModel        String   @default("WFO") // WFO | WFH | HYBRID
+  allowedLocations String[] @default(["OFFICE", "HOME", "CLIENT_SITE", "REMOTE"])
+  requireLocation  Boolean  @default(false)
+
+  /// Employee-raised corrections for missed punches.
+  allowManualCorrection Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Projects & Teams — org-facing work management. Managers create projects and
+// assign tasks; the org dashboard aggregates status/progress.
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+// First-class org unit (HR, Sales, Engineering, DevOps, Operations, …). Flat:
+// departments hold teams hold employees. leadEmployeeId is a plain ref (no FK,
+// like Team.leadEmployeeId) to avoid a relation cycle through Employee.
+model Department {
+  id             String   @id @default(uuid()) @db.Uuid
+  orgId          String   @db.Uuid
+  name           String
+  slug           String
+  description    String?
+  leadEmployeeId String?  @db.Uuid
+  status         String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id])
+  employees    Employee[]
+  teams        Team[]
+  designations Designation[]
+  holidays     Holiday[]
+
+  @@unique([orgId, slug])
+  @@index([orgId, status])
+}
+
+// Job opening / hiring requisition — drives the executive "Open positions" metric
+// and the recruitment (ATS) pipeline.
+model Requisition {
+  id             String            @id @default(uuid()) @db.Uuid
+  orgId          String            @db.Uuid
+  title          String
+  departmentId   String?           @db.Uuid
+  designationId  String?           @db.Uuid
+  location       String?
+  employmentType String? // FULL_TIME | PART_TIME | CONTRACT | INTERN
+  description    String?
+  openings       Int               @default(1)
+  status         RequisitionStatus @default(OPEN)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id])
+  applications Application[]
+
+  @@index([orgId, status])
+}
+
+// A person in the hiring pipeline.
+model Candidate {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @db.Uuid
+  firstName String
+  lastName  String
+  email     String?
+  phone     String?
+  source    String? // Referral | LinkedIn | Careers | Agency | Other
+  resumeKey String? // optional S3 key
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id])
+  applications Application[]
+
+  @@index([orgId, createdAt])
+}
+
+// A candidate's application to a requisition, moving through the pipeline.
+model Application {
+  id              String           @id @default(uuid()) @db.Uuid
+  orgId           String           @db.Uuid
+  candidateId     String           @db.Uuid
+  requisitionId   String           @db.Uuid
+  stage           ApplicationStage @default(APPLIED)
+  rating          Int? // overall 1-5
+  notes           String?
+  rejectedReason  String?
+  hiredEmployeeId String?          @db.Uuid // set when converted to an employee
+  appliedAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id])
+  candidate   Candidate    @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  requisition Requisition  @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  interviews  Interview[]
+  offers      Offer[]
+
+  @@index([orgId, stage])
+  @@index([orgId, requisitionId])
+}
+
+model Interview {
+  id            String           @id @default(uuid()) @db.Uuid
+  orgId         String           @db.Uuid
+  applicationId String           @db.Uuid
+  round         String // Screening | Technical | HR | ...
+  scheduledAt   DateTime?
+  interviewer   String?
+  mode          String? // Onsite | Video | Phone
+  outcome       InterviewOutcome @default(PENDING)
+  rating        Int?
+  feedback      String?
+  createdAt     DateTime         @default(now())
+
+  org         Organization @relation(fields: [orgId], references: [id])
+  application Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, applicationId])
+}
+
+model Offer {
+  id            String      @id @default(uuid()) @db.Uuid
+  orgId         String      @db.Uuid
+  applicationId String      @db.Uuid
+  title         String?
+  salary        String? // free text (currency + amount) for MVP
+  joiningDate   DateTime?
+  status        OfferStatus @default(DRAFT)
+  sentAt        DateTime?
+  decidedAt     DateTime?
+  note          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id])
+  application Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, applicationId])
+}
+
+// ---- Onboarding (checklist templates → per-employee journeys) ----
+model OnboardingTemplate {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @db.Uuid
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org      Organization             @relation(fields: [orgId], references: [id])
+  items    OnboardingTemplateItem[]
+  journeys OnboardingJourney[]
+
+  @@index([orgId])
+}
+
+model OnboardingTemplateItem {
+  id          String                 @id @default(uuid()) @db.Uuid
+  orgId       String                 @db.Uuid
+  templateId  String                 @db.Uuid
+  title       String
+  description String?
+  category    OnboardingItemCategory @default(TASK)
+  assignee    OnboardingAssignee     @default(HR)
+  order       Int                    @default(0)
+  required    Boolean                @default(true)
+
+  template OnboardingTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, templateId])
+}
+
+model OnboardingJourney {
+  id          String                  @id @default(uuid()) @db.Uuid
+  orgId       String                  @db.Uuid
+  employeeId  String                  @unique @db.Uuid
+  templateId  String?                 @db.Uuid
+  status      OnboardingJourneyStatus @default(IN_PROGRESS)
+  startedAt   DateTime                @default(now())
+  completedAt DateTime?
+
+  org      Organization        @relation(fields: [orgId], references: [id])
+  employee Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  template OnboardingTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  tasks    OnboardingTask[]
+
+  @@index([orgId, status])
+}
+
+model OnboardingTask {
+  id          String                 @id @default(uuid()) @db.Uuid
+  orgId       String                 @db.Uuid
+  journeyId   String                 @db.Uuid
+  title       String
+  description String?
+  category    OnboardingItemCategory @default(TASK)
+  assignee    OnboardingAssignee     @default(HR)
+  order       Int                    @default(0)
+  required    Boolean                @default(true)
+  status      OnboardingTaskStatus   @default(PENDING)
+  completedAt DateTime?
+  completedBy String?                @db.Uuid
+  note        String?
+
+  journey OnboardingJourney @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, journeyId])
+}
+
+model Team {
+  id             String   @id @default(uuid()) @db.Uuid
+  orgId          String   @db.Uuid
+  departmentId   String?  @db.Uuid
+  name           String
+  description    String?
+  leadEmployeeId String?  @db.Uuid
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id])
+  department Department?  @relation(fields: [departmentId], references: [id])
+  projects   Project[]
+
+  @@index([orgId])
+  @@index([orgId, departmentId])
+}
+
+// A logged block of work time (manual entry, or auto-derived) against a project/task.
+model TimeEntry {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  employeeId  String   @db.Uuid
+  date        DateTime @db.Date
+  projectId   String?  @db.Uuid
+  taskId      String?  @db.Uuid
+  minutes     Int
+  billable    Boolean  @default(true)
+  description String?
+  source      String   @default("MANUAL") // MANUAL | AUTO
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  employee Employee     @relation(fields: [employeeId], references: [id])
+  project  Project?     @relation(fields: [projectId], references: [id])
+
+  @@index([orgId, employeeId, date])
+  @@index([orgId, date])
+  @@index([orgId, billable, date])
+}
+
+// A weekly timesheet submission (wraps the week's time entries for approval).
+model Timesheet {
+  id           String          @id @default(uuid()) @db.Uuid
+  orgId        String          @db.Uuid
+  employeeId   String          @db.Uuid
+  weekStart    DateTime        @db.Date // Monday of the week
+  status       TimesheetStatus @default(DRAFT)
+  totalMinutes Int             @default(0)
+  submittedAt  DateTime?
+  decidedBy    String?         @db.Uuid
+  decidedAt    DateTime?
+  note         String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  employee Employee     @relation(fields: [employeeId], references: [id])
+
+  @@unique([orgId, employeeId, weekStart])
+  @@index([orgId, status])
+  @@index([orgId, employeeId, weekStart])
+}
+
+// Per-org employee-monitoring policy (agent reads it live; admins change it anytime).
+model MonitoringPolicy {
+  id                        String   @id @default(uuid()) @db.Uuid
+  orgId                     String   @unique @db.Uuid
+  screenshotsEnabled        Boolean  @default(true)
+  screenshotIntervalSeconds Int      @default(600)
+  screenshotQuality         Int      @default(55)
+  screenshotMaxWidth        Int      @default(1280)
+  // Auto-delete screenshots older than N days (0 = keep forever). Purged daily.
+  screenshotRetentionDays   Int      @default(0)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
+// Leave policy: a type of leave (Annual, Sick, Casual…) with an annual quota.
+model LeaveType {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  name        String
+  code        String
+  annualQuota Int      @default(0) // days/year; 0 = uncapped
+  paid        Boolean  @default(true)
+  color       String? // hex for the calendar
+  status      String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org      Organization   @relation(fields: [orgId], references: [id])
+  requests LeaveRequest[]
+
+  @@unique([orgId, code])
+  @@index([orgId, status])
+}
+
+// A leave request moving through PENDING → APPROVED/REJECTED (or CANCELLED).
+model LeaveRequest {
+  id           String      @id @default(uuid()) @db.Uuid
+  orgId        String      @db.Uuid
+  employeeId   String      @db.Uuid
+  leaveTypeId  String      @db.Uuid
+  startDate    DateTime    @db.Date
+  endDate      DateTime    @db.Date
+  days         Float       @default(0) // working days deducted (excludes weekly-offs & holidays); 0.5 for a half-day
+  // FULL | FIRST_HALF | SECOND_HALF. A half-day applies only to a single-date
+  // request (startDate == endDate) and deducts 0.5 day.
+  dayPart      String      @default("FULL")
+  reason       String?
+  status       LeaveStatus @default(PENDING)
+  decidedBy    String?     @db.Uuid
+  decidedAt    DateTime?
+  decisionNote String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  org         Organization      @relation(fields: [orgId], references: [id])
+  employee    Employee          @relation(fields: [employeeId], references: [id])
+  leaveType   LeaveType         @relation(fields: [leaveTypeId], references: [id])
+  attachments LeaveAttachment[]
+
+  @@index([orgId, status])
+  @@index([orgId, employeeId, status])
+  @@index([orgId, startDate, endDate])
+}
+
+/// Supporting documents on a leave request (e.g. a medical certificate). Binaries
+/// live in S3/MinIO; this row holds the metadata + object key. Modeled on
+/// EmployeeDocument. Not metered against the screenshot storage quota.
+model LeaveAttachment {
+  id             String   @id @default(uuid()) @db.Uuid
+  orgId          String   @db.Uuid
+  leaveRequestId String   @db.Uuid
+  fileName       String
+  key            String   @unique // S3 object key
+  sizeBytes      BigInt
+  contentType    String   @default("application/octet-stream")
+  uploadedBy     String?  @db.Uuid
+  createdAt      DateTime @default(now())
+
+  leaveRequest LeaveRequest @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, leaveRequestId])
+}
+
+// Comp-off (compensatory off) balance ledger. An employee's balance is the SUM of
+// deltaDays: positive entries are earned (approved overtime in a COMP_OFF org, or a
+// manual grant), negative entries are spent (a COMP_OFF leave request). Reversible —
+// cancelling a comp-off leave writes the opposite entry rather than deleting.
+model CompOffLedger {
+  id         String    @id @default(uuid()) @db.Uuid
+  orgId      String    @db.Uuid
+  employeeId String    @db.Uuid
+  deltaDays  Float // +earned / −spent (0.5 granularity)
+  source     String // OVERTIME | HOLIDAY_WORK | MANUAL_GRANT | LEAVE_SPENT | LEAVE_REVERSED
+  sourceRef  String?   @db.Uuid // payroll cycle / leave request that produced this entry
+  note       String?
+  grantedBy  String?   @db.Uuid
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  employee Employee     @relation(fields: [employeeId], references: [id])
+
+  @@index([orgId, employeeId])
+  @@index([orgId, source, sourceRef])
+}
+
+// Company / regional / department holiday.
+model Holiday {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  name         String
+  date         DateTime @db.Date
+  type         String   @default("COMPANY") // COMPANY | REGIONAL | DEPARTMENT
+  departmentId String?  @db.Uuid
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id])
+  department Department?  @relation(fields: [departmentId], references: [id])
+
+  @@index([orgId, date])
+}
+
+// Work shift / schedule. Times are minutes from midnight in the org's timezone
+// (e.g. 540 = 09:00, 1050 = 17:30). Drives shift-relative late & early-exit.
+model Shift {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  name         String
+  startMinute  Int
+  endMinute    Int
+  graceMinutes Int      @default(10)
+  workingDays  Int[]    @default([1, 2, 3, 4, 5]) // 0=Sun … 6=Sat (Mon–Fri default)
+  // Optional per-weekday windows. When set, each entry overrides start/end/grace
+  // for that weekday: [{ day: 0-6, startMinute, endMinute, graceMinutes? }]. A
+  // weekday absent from the array falls back to the flat startMinute/endMinute.
+  // null (the default) = uniform hours every working day — unchanged behavior.
+  daySchedule  Json?
+  breaks       Json     @default("[]") // [{ name, startMinute, endMinute }] — deducted from worked hours
+  isDefault    Boolean  @default(false)
+  status       String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id])
+  employees Employee[]
+
+  @@index([orgId, status])
+}
+
+// A rotating shift schedule: an ordered list of shifts, each held for a number
+// of days, repeating on a fixed cycle from an anchor date. The step in effect on
+// a given day is derived deterministically (no per-day rows), so the schedule is
+// reproducible for past and future dates.
+//
+//   steps: [{ shiftId, days }]  — e.g. [{Morning,7},{Evening,7}] = weekly flip.
+//   cycleDays = sum(step.days); dayOffset = floor((day - anchorDate)/1d) mod cycleDays;
+//   the active step is the one whose cumulative range contains dayOffset.
+model ShiftRotation {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  name       String
+  anchorDate DateTime @db.Date // day 0 of the cycle (org-local calendar date)
+  steps      Json     @default("[]") // [{ shiftId, days }] in rotation order
+  status     String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id])
+  employees Employee[]
+
+  @@index([orgId, status])
+}
+
+// Job title / designation catalog (e.g. "Software Engineer", "Senior Manager").
+// Optionally scoped to a department; employees reference one designation.
+model Designation {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  title        String
+  level        String? // e.g. "L3", "Senior", "Band 4"
+  departmentId String?  @db.Uuid
+  status       String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id])
+  department Department?  @relation(fields: [departmentId], references: [id])
+  employees  Employee[]
+
+  @@index([orgId, status])
+  @@index([orgId, departmentId])
+}
+
+// ---------------------------------------------------------------------------
+// Payroll & billing rates.
+//
+// Two distinct numbers, deliberately kept apart:
+//   cost rate — what the org PAYS the employee   → payroll
+//   bill rate — what the org CHARGES the client  → client invoices
+//
+// Both are effective-dated: a row is never updated in place when a rate
+// changes; a new row supersedes it. Point-in-time resolution is what keeps a
+// re-run of last quarter's payroll producing last quarter's numbers. Money is
+// integer minor units (cents), matching billing-service's `pricePerSeat`.
+// ---------------------------------------------------------------------------
+
+// An employee's cost rate (and default charge-out rate) over a period.
+// The current row is the one with effectiveTo = null.
+model EmployeeRate {
+  id            String    @id @default(uuid()) @db.Uuid
+  orgId         String    @db.Uuid
+  employeeId    String    @db.Uuid
+  costRateCents Int // per hour — what the org pays this employee
+  billRateCents Int? // per hour — default charge-out; null = not billable by default
+  effectiveFrom DateTime  @db.Date
+  effectiveTo   DateTime? @db.Date // null = currently in effect
+  note          String?
+  createdBy     String?   @db.Uuid
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  employee Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId, effectiveFrom])
+  @@index([orgId, effectiveTo])
+}
+
+// A charge-out rate override. Resolution runs most-specific first:
+//   project+employee → project → client+employee → client → employee default
+// Exactly one of clientId/projectId anchors the row; employeeId narrows it.
+model BillRate {
+  id            String    @id @default(uuid()) @db.Uuid
+  orgId         String    @db.Uuid
+  clientId      String?   @db.Uuid
+  projectId     String?   @db.Uuid
+  employeeId    String?   @db.Uuid // null = applies to everyone on that client/project
+  billRateCents Int
+  effectiveFrom DateTime  @db.Date
+  effectiveTo   DateTime? @db.Date
+  note          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  client   Client?      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  project  Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee Employee?    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, projectId, effectiveFrom])
+  @@index([orgId, clientId, effectiveFrom])
+  @@index([orgId, effectiveTo])
+}
+
+enum PayrollCycleFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+// Per-org payroll rules. Singleton per org (see ProjectSetting for the pattern).
+model PayrollSetting {
+  id                 String                @id @default(uuid()) @db.Uuid
+  orgId              String                @unique @db.Uuid
+  currency           String                @default("USD")
+  overtimeAfterMins  Int                   @default(2400) // per week; 2400 = 40h
+  overtimeMultiplier Int                   @default(150) // percent; 150 = 1.5x
+  // How approved overtime is compensated org-wide:
+  //   PAY      → overtime is paid at overtimeMultiplier (default; unchanged behavior)
+  //   COMP_OFF → overtime is NOT paid; it earns comp-off leave instead (at payroll finalize)
+  overtimeHandling   String                @default("PAY")
+  cycleFrequency     PayrollCycleFrequency @default(MONTHLY)
+  invoicePrefix      String                @default("INV")
+  requireApproval    Boolean               @default(true) // only approved timesheets feed payroll
+  // Org opt-in for the Phase-2 tax + statutory engine. OFF by default: an org
+  // runs income tax / PF / ESI / PT only when its owner turns this on. When off,
+  // payroll computes earnings + components with NO TDS/statutory deductions.
+  taxEnabled         Boolean               @default(false)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
+enum ClientInvoiceStatus {
+  DRAFT // editable; regenerating replaces the lines
+  SENT // issued to the client
+  PAID
+  VOID
+}
+
+// An invoice the ORG sends to ITS client for billable hours.
+//
+// Deliberately NOT billing-service's Invoice: that one is RetainIQ billing its
+// tenants (keyed to a subscription). This is the tenant billing their own
+// customers. Same word, different domain — sharing the model would conflate
+// two unrelated ledgers.
+model ClientInvoice {
+  id            String              @id @default(uuid()) @db.Uuid
+  orgId         String              @db.Uuid
+  clientId      String              @db.Uuid
+  invoiceNumber String // per-org sequence, e.g. INV-0001
+  status        ClientInvoiceStatus @default(DRAFT)
+  periodStart   DateTime            @db.Date
+  periodEnd     DateTime            @db.Date // inclusive
+  currency      String              @default("USD")
+  subtotalCents Int                 @default(0)
+  totalCents    Int                 @default(0)
+  issuedAt      DateTime?
+  dueAt         DateTime?           @db.Date
+  paidAt        DateTime?
+  note          String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  org    Organization        @relation(fields: [orgId], references: [id])
+  client Client              @relation(fields: [clientId], references: [id])
+  lines  ClientInvoiceLine[]
+
+  @@unique([orgId, invoiceNumber])
+  @@index([orgId, status])
+  @@index([orgId, clientId, periodStart])
+}
+
+// One project·person row on an invoice. billRateCents is SNAPSHOTTED at
+// generation: a rate change must never silently restate an issued invoice.
+model ClientInvoiceLine {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @db.Uuid
+  invoiceId     String   @db.Uuid
+  projectId     String?  @db.Uuid
+  employeeId    String?  @db.Uuid
+  description   String
+  minutes       Int
+  billRateCents Int // snapshot of the resolved rate
+  amountCents   Int
+  createdAt     DateTime @default(now())
+
+  invoice ClientInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, invoiceId])
+}
+
+enum PayrollCycleStatus {
+  DRAFT // computed, still re-runnable
+  LOCKED // signed off; lines are frozen
+  PAID
+}
+
+// A payroll period. Running it computes one PayrollLine per employee with
+// hours; locking it freezes those lines as the financial record.
+model PayrollCycle {
+  id          String             @id @default(uuid()) @db.Uuid
+  orgId       String             @db.Uuid
+  periodStart DateTime           @db.Date
+  periodEnd   DateTime           @db.Date // inclusive
+  status      PayrollCycleStatus @default(DRAFT)
+  currency    String             @default("USD")
+  runAt       DateTime?
+  lockedAt    DateTime?
+  lockedBy    String?            @db.Uuid
+  paidAt      DateTime?
+  note        String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  org   Organization  @relation(fields: [orgId], references: [id])
+  lines PayrollLine[]
+
+  @@unique([orgId, periodStart, periodEnd])
+  @@index([orgId, status])
+}
+
+// One employee's pay for one cycle. costRateCents is SNAPSHOTTED at run time,
+// never re-joined: a later rate change must not silently rewrite a past run.
+model PayrollLine {
+  id               String   @id @default(uuid()) @db.Uuid
+  orgId            String   @db.Uuid
+  cycleId          String   @db.Uuid
+  employeeId       String   @db.Uuid
+  regularMinutes   Int      @default(0)
+  overtimeMinutes  Int      @default(0)
+  billableMinutes  Int      @default(0) // of the total; for utilization on the payslip
+  costRateCents    Int // snapshot of the rate used
+  regularPayCents  Int      @default(0)
+  overtimePayCents Int      @default(0)
+  grossPayCents    Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  cycle    PayrollCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  employee Employee     @relation(fields: [employeeId], references: [id])
+
+  @@unique([cycleId, employeeId])
+  @@index([orgId, cycleId])
+}
+
+enum ClientStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// A billing customer the org delivers project work for. Time entries inherit
+// their client through the project, so a project is the single place the
+// client relationship is set.
+model Client {
+  id           String       @id @default(uuid()) @db.Uuid
+  orgId        String       @db.Uuid
+  name         String
+  code         String?
+  contactEmail String?
+  status       ClientStatus @default(ACTIVE)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  org       Organization    @relation(fields: [orgId], references: [id])
+  projects  Project[]
+  billRates BillRate[]
+  invoices  ClientInvoice[]
+
+  @@unique([orgId, name])
+  @@index([orgId, status])
+}
+
+model Project {
+  id              String        @id @default(uuid()) @db.Uuid
+  orgId           String        @db.Uuid
+  name            String
+  description     String?
+  status          ProjectStatus @default(ACTIVE)
+  ownerEmployeeId String?       @db.Uuid
+  teamId          String?       @db.Uuid
+  clientId        String?       @db.Uuid
+  startDate       DateTime?
+  dueDate         DateTime?
+  progress        Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id])
+  team        Team?        @relation(fields: [teamId], references: [id])
+  client      Client?      @relation(fields: [clientId], references: [id])
+  tasks       Task[]
+  milestones  Milestone[]
+  goals       Goal[]
+  timeEntries TimeEntry[]
+  billRates   BillRate[]
+
+  @@index([orgId, status])
+  @@index([orgId, clientId])
+}
+
+model Task {
+  id                 String       @id @default(uuid()) @db.Uuid
+  orgId              String       @db.Uuid
+  projectId          String       @db.Uuid
+  title              String
+  description        String?
+  status             TaskStatus   @default(TODO)
+  priority           TaskPriority @default(MEDIUM)
+  assigneeEmployeeId String?      @db.Uuid
+  dueDate            DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  project  Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  comments TaskComment[]
+
+  @@index([orgId, status])
+  @@index([projectId, status])
+  @@index([assigneeEmployeeId, status])
+}
+
+/// Discussion thread on a task. Authored by a member (userId), shown newest-last.
+model TaskComment {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  taskId       String   @db.Uuid
+  authorUserId String   @db.Uuid
+  body         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, taskId, createdAt])
+}
+
+enum MilestoneStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+// A dated checkpoint within a project. Progress can be set manually or left to
+// track the project; completedAt is stamped when it moves to COMPLETED.
+model Milestone {
+  id              String          @id @default(uuid()) @db.Uuid
+  orgId           String          @db.Uuid
+  projectId       String          @db.Uuid
+  title           String
+  description     String?
+  status          MilestoneStatus @default(PENDING)
+  ownerEmployeeId String?         @db.Uuid
+  dueDate         DateTime?
+  completedAt     DateTime?
+  progress        Int             @default(0)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([projectId, status])
+}
+
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  MISSED
+  ARCHIVED
+}
+
+// A simple, measurable goal. Optionally tied to a project (org-level when null).
+// Achievement % derives from current/target when a numeric target is set.
+model Goal {
+  id              String     @id @default(uuid()) @db.Uuid
+  orgId           String     @db.Uuid
+  projectId       String?    @db.Uuid
+  title           String
+  description     String?
+  status          GoalStatus @default(ACTIVE)
+  metric          String?
+  target          Float?
+  current         Float      @default(0)
+  ownerEmployeeId String?    @db.Uuid
+  dueDate         DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([projectId])
+}
+
+// ---- Performance management (review cycles → reviews → competency ratings; achievements) ----
+enum ReviewCycleStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+enum PerformanceReviewStatus {
+  PENDING
+  SELF_REVIEW
+  IN_REVIEW
+  SUBMITTED
+  ACKNOWLEDGED
+}
+
+model ReviewCycle {
+  id          String            @id @default(uuid()) @db.Uuid
+  orgId       String            @db.Uuid
+  name        String
+  periodStart DateTime?         @db.Date
+  periodEnd   DateTime?         @db.Date
+  status      ReviewCycleStatus @default(DRAFT)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  reviews PerformanceReview[]
+
+  @@index([orgId, status])
+}
+
+model PerformanceReview {
+  id                 String                  @id @default(uuid()) @db.Uuid
+  orgId              String                  @db.Uuid
+  cycleId            String                  @db.Uuid
+  employeeId         String                  @db.Uuid
+  reviewerEmployeeId String?                 @db.Uuid
+  status             PerformanceReviewStatus @default(PENDING)
+  overallRating      Int? // 1..5
+  selfAssessment     String?
+  strengths          String?
+  improvements       String?
+  managerComment     String?
+  submittedAt        DateTime?
+  acknowledgedAt     DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  cycle    ReviewCycle    @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  employee Employee       @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  ratings  ReviewRating[]
+
+  @@unique([cycleId, employeeId])
+  @@index([orgId, employeeId])
+  @@index([orgId, cycleId])
+}
+
+model ReviewRating {
+  id         String  @id @default(uuid()) @db.Uuid
+  orgId      String  @db.Uuid
+  reviewId   String  @db.Uuid
+  competency String
+  score      Int // 1..5
+  comment    String?
+
+  review PerformanceReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, reviewId])
+}
+
+enum RemarkVisibility {
+  MANAGER_ONLY // the employee's manager (and the author)
+  HR_ONLY // HR / people-ops only
+  HR_AND_MANAGER // HR and the manager
+  EMPLOYEE_VISIBLE // the employee can see it too
+  ADMIN_ONLY // owner / org admins only
+}
+
+/**
+ * A structured manager/HR remark about an employee. Visibility is first-class and
+ * enforced on read: a private remark is never returned to someone the visibility
+ * level doesn't include (spec: never expose private remarks through generic
+ * employee APIs). The author and org owner always see their org's remarks; other
+ * viewers are filtered by relationship (manager of the employee, HR, the employee).
+ */
+model EmployeeRemark {
+  id            String           @id @default(uuid()) @db.Uuid
+  orgId         String           @db.Uuid
+  employeeId    String           @db.Uuid
+  visibility    RemarkVisibility @default(MANAGER_ONLY)
+  reason        String? // e.g. "1:1 note", "performance", "conduct"
+  content       String
+  createdBy     String?          @db.Uuid
+  createdByName String? // denormalised so history reads even if the author leaves
+  createdAt     DateTime         @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId, createdAt])
+}
+
+model Achievement {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  employeeId  String   @db.Uuid
+  title       String
+  description String?
+  category    String? // KUDOS | AWARD | MILESTONE | CERTIFICATION | OTHER
+  awardedOn   DateTime @default(now()) @db.Date
+  createdBy   String?  @db.Uuid
+  createdAt   DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId])
+}
+
+enum SkillProficiency {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  EXPERT
+}
+
+enum SkillVerificationStatus {
+  SELF_DECLARED // employee/manager added it, not yet verified
+  VERIFIED // a manager/HR confirmed it
+  REJECTED // reviewed and declined
+}
+
+/// Org-owned skill taxonomy. HR/managers curate this catalog; employee skills
+/// reference it so proficiency and gaps are comparable org-wide (free-text skill
+/// names would make matching and reporting impossible).
+model SkillCatalog {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  name        String
+  category    String? // e.g. "Cloud", "Frontend", "Leadership"
+  description String?
+  status      String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdBy   String?  @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org            Organization    @relation(fields: [orgId], references: [id])
+  employeeSkills EmployeeSkill[]
+
+  @@unique([orgId, name])
+  @@index([orgId, status])
+}
+
+/// A skill held by an employee, at a proficiency, optionally verified. Employees
+/// may self-declare; a manager/HR verifies. Endorsement count is a lightweight
+/// peer-signal. Never overwrites the catalog — this is the employee↔skill edge.
+model EmployeeSkill {
+  id             String                  @id @default(uuid()) @db.Uuid
+  orgId          String                  @db.Uuid
+  employeeId     String                  @db.Uuid
+  skillId        String                  @db.Uuid
+  proficiency    SkillProficiency        @default(INTERMEDIATE)
+  yearsOfExp     Float?
+  verification   SkillVerificationStatus @default(SELF_DECLARED)
+  verifiedBy     String?                 @db.Uuid
+  verifiedAt     DateTime?
+  endorsements   Int                     @default(0)
+  lastAssessedAt DateTime?
+  note           String?
+  createdBy      String?                 @db.Uuid
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  employee Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  skill    SkillCatalog @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, skillId]) // one row per (employee, skill)
+  @@index([orgId, employeeId])
+  @@index([orgId, skillId])
+}
+
+/// A structured certification held by an employee. Expiry is first-class so the
+/// system can warn ahead of lapse (via the reminder cron). Optional S3 document
+/// key holds the uploaded certificate file (same presign pattern as documents).
+model EmployeeCertification {
+  id               String                  @id @default(uuid()) @db.Uuid
+  orgId            String                  @db.Uuid
+  employeeId       String                  @db.Uuid
+  name             String
+  issuer           String?
+  credentialId     String?
+  issueDate        DateTime?               @db.Date
+  expiresAt        DateTime?               @db.Date
+  verification     SkillVerificationStatus @default(SELF_DECLARED)
+  verifiedBy       String?                 @db.Uuid
+  verifiedAt       DateTime?
+  documentKey      String? // S3 key of the uploaded certificate, if any
+  documentName     String?
+  /// The last expiry-reminder threshold (days) already notified, so the cron
+  /// never re-sends the same warning. null = none sent yet.
+  lastRemindedDays Int?
+  createdBy        String?                 @db.Uuid
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, employeeId])
+  @@index([orgId, expiresAt])
+}
+
+// Per-org configuration for the Projects & Teams module: display labels/colours
+// for the fixed status/priority enums, creation defaults, and workflow rules
+// that are enforced server-side (auto-complete, require assignee, etc.).
+model ProjectSetting {
+  id                   String   @id @default(uuid()) @db.Uuid
+  orgId                String   @unique @db.Uuid
+  statuses             Json     @default("[]")
+  priorities           Json     @default("[]")
+  defaultProjectStatus String   @default("ACTIVE")
+  defaultTaskPriority  String   @default("MEDIUM")
+  workflow             Json     @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
+// Per-org productivity classification rules. Apps/domains matching a "productive"
+// list count toward productive time; "distracting" ones are flagged; everything
+// else is neutral. Applied at read time to the analytics usage tables, so rule
+// changes take effect immediately and everywhere (insights + monitoring).
+model ProductivitySetting {
+  id                 String   @id @default(uuid()) @db.Uuid
+  orgId              String   @unique @db.Uuid
+  productiveApps     String[]
+  productiveDomains  String[]
+  distractingApps    String[]
+  distractingDomains String[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot storage — metadata for employee monitoring screenshots. The binary
+// lives in S3 (MinIO locally); only lightweight metadata + size is stored here.
+// Per-org usage = SUM(sizeBytes); the quota comes from the org's Plan
+// (billing-db) storageLimitMb. orgId/employeeId are plain UUIDs (FKs in SQL).
+// ---------------------------------------------------------------------------
+model ScreenshotObject {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  employeeId  String?  @db.Uuid
+  key         String   @unique // S3 object key
+  sizeBytes   BigInt
+  contentType String   @default("image/jpeg")
+  capturedAt  DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([orgId, capturedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Platform activity feed — append-only log of notable org-level actions for the
+// super-admin (org created/suspended/activated/deleted/updated, member added).
+// Billing lifecycle events live in billing-db (BillingEvent) and are merged in
+// at read time. Written only by identity-service.
+// ---------------------------------------------------------------------------
+model PlatformEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String?  @db.Uuid
+  actorUserId String?  @db.Uuid
+  type        String // org.created | org.suspended | org.activated | org.deleted | org.updated | org.member_added
+  summary     String
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Platform-wide SaaS configuration (super-admin). Key-value so sections
+// (branding | notification | featureFlags | maintenance) evolve independently.
+// Per-org override for a platform feature. Only rows that DIVERGE from the
+// global default exist — no row means "inherit global", so adding a new feature
+// needs no backfill.
+//
+// Resolution (see PlatformSettingsService.resolveFeatureFlags):
+//   global OFF  → off for everyone; an org row cannot re-enable it (kill switch)
+//   global ON   → this row decides; absent row inherits the global default
+model OrgFeatureFlag {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @db.Uuid
+  feature   String // must be a key of PlatformSettings.featureFlags
+  enabled   Boolean
+  reason    String? // why a human changed it — shown in the admin UI
+  updatedBy String?  @db.Uuid // PlatformAdmin.id
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, feature]) // one decision per org per feature
+  @@index([orgId])
+  @@index([feature])
+}
+
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+enum ReportFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// A manager's saved recurring attendance report. A daily @Cron sweep finds due
+/// schedules (by frequency + lastSentAt), builds the report for its scope/period,
+/// and enqueues a `report.scheduled` notification to each recipient, then stamps
+/// lastSentAt. Recipients are login userIds (default: the creator).
+model ReportSchedule {
+  id         String          @id @default(uuid()) @db.Uuid
+  orgId      String          @db.Uuid
+  createdBy  String          @db.Uuid
+  /// org | department | team | employee — the report's breadth.
+  scope      String          @default("org")
+  scopeId    String?         @db.Uuid
+  /// today | week | month — the window each run covers.
+  period     String          @default("month")
+  frequency  ReportFrequency @default(WEEKLY)
+  recipients String[]        @default([])
+  active     Boolean         @default(true)
+  lastSentAt DateTime?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId])
+  @@index([active, frequency])
+}
+
+// ---------------------------------------------------------------------------
+// Observation → Escalation → Incident workflow (the "action spine").
+// An Observation is an AI-detected or manager-raised concern about a person.
+// It can be escalated (P2) and, if serious, promoted to an Incident (P3).
+// Severity is shared across all three. Every state change is recorded on the
+// per-entity *Event timeline for a full audit trail.
+// ---------------------------------------------------------------------------
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ObservationSource {
+  AI
+  MANUAL
+}
+
+enum ObservationType {
+  PRODUCTIVITY_DROP
+  BURNOUT_RISK
+  LOW_ENGAGEMENT
+  ATTENDANCE_ANOMALY
+  LATE_PATTERN
+  BEHAVIOUR
+  OTHER
+}
+
+enum ObservationStatus {
+  OPEN
+  ACKNOWLEDGED
+  ESCALATED
+  RESOLVED
+  DISMISSED
+}
+
+model Observation {
+  id             String            @id @default(uuid()) @db.Uuid
+  orgId          String            @db.Uuid
+  employeeId     String            @db.Uuid // who it's about
+  source         ObservationSource
+  type           ObservationType
+  severity       Severity          @default(MEDIUM)
+  status         ObservationStatus @default(OPEN)
+  title          String
+  detail         String?
+  /// The numbers behind an AI observation (current/previous/threshold, etc).
+  metricJson     Json?
+  /// The manager it routed to (login userId), via the approval reach engine.
+  assignedTo     String?           @db.Uuid
+  /// Manual: the raiser's userId. AI: null.
+  createdBy      String?           @db.Uuid
+  /// Stable key so an AI sweep can't create the same observation twice.
+  dedupeKey      String            @unique
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+  resolutionNote String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  org        Organization          @relation(fields: [orgId], references: [id])
+  events     ObservationEvent[]
+  comments   ObservationComment[]
+  evidence   ObservationEvidence[]
+  escalation Escalation?
+
+  @@index([orgId, status])
+  @@index([orgId, employeeId])
+  @@index([orgId, assignedTo, status])
+}
+
+/// Immutable timeline row for an observation (CREATED | ACKNOWLEDGED | COMMENTED
+/// | ESCALATED | RESOLVED | DISMISSED).
+model ObservationEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @db.Uuid
+  observationId String   @db.Uuid
+  kind          String
+  actorUserId   String?  @db.Uuid
+  note          String?
+  createdAt     DateTime @default(now())
+
+  observation Observation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+
+  @@index([observationId])
+}
+
+model ObservationComment {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @db.Uuid
+  observationId String   @db.Uuid
+  authorUserId  String   @db.Uuid
+  body          String
+  createdAt     DateTime @default(now())
+
+  observation Observation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+
+  @@index([observationId])
+}
+
+/// Supporting evidence for an observation — S3/MinIO presign, like EmployeeDocument.
+model ObservationEvidence {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @db.Uuid
+  observationId String   @db.Uuid
+  fileName      String
+  key           String   @unique
+  sizeBytes     BigInt
+  contentType   String   @default("application/octet-stream")
+  uploadedBy    String?  @db.Uuid
+  createdAt     DateTime @default(now())
+
+  observation Observation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, observationId])
+}
+
+// ---------------------------------------------------------------------------
+// Escalation (stage 2). An observation the assigned manager escalates — or one
+// the SLA sweep auto-escalates — moves up a severity-driven level path
+// (L1 manager → L2 dept head → L3 Owner/HR). Each level has a due-by SLA; a
+// lapse bumps it up a level and re-notifies. Every change is on the timeline.
+// ---------------------------------------------------------------------------
+
+enum EscalationStatus {
+  PENDING
+  ACKNOWLEDGED
+  RESOLVED
+  PROMOTED // became an Incident (P3)
+}
+
+model Escalation {
+  id             String           @id @default(uuid()) @db.Uuid
+  orgId          String           @db.Uuid
+  observationId  String           @unique @db.Uuid // one observation → one escalation
+  employeeId     String           @db.Uuid
+  severity       Severity
+  level          Int              @default(1) // 1 manager, 2 dept head, 3 HR/Owner
+  status         EscalationStatus @default(PENDING)
+  /// Who escalated it (null = auto/time-based SLA sweep).
+  escalatedBy    String?          @db.Uuid
+  /// The level-N authority it's assigned to (login userId).
+  assignedTo     String?          @db.Uuid
+  reason         String?
+  /// SLA deadline for the current level (severity-based); a lapse auto-bumps.
+  dueAt          DateTime?
+  resolvedAt     DateTime?
+  resolutionNote String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  observation Observation       @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  events      EscalationEvent[]
+  incident    Incident?
+
+  @@index([orgId, status])
+  @@index([orgId, assignedTo, status])
+  @@index([status, dueAt]) // SLA sweep
+}
+
+/// Immutable timeline row for an escalation (CREATED | ACKNOWLEDGED | BUMPED |
+/// REASSIGNED | RESOLVED | PROMOTED).
+model EscalationEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  escalationId String   @db.Uuid
+  kind         String
+  level        Int?
+  actorUserId  String?  @db.Uuid
+  note         String?
+  createdAt    DateTime @default(now())
+
+  escalation Escalation @relation(fields: [escalationId], references: [id], onDelete: Cascade)
+
+  @@index([escalationId])
+}
+
+// ---------------------------------------------------------------------------
+// Incident Management (stage 3) — a formal, investigable case. Opened by
+// promoting a serious Escalation, or manually by HR. Carries a human reference
+// (INC-YYYY-NNNN), a category, an investigator, evidence and a full timeline.
+// A separate module from Observation — deliberately its own lifecycle.
+// ---------------------------------------------------------------------------
+
+enum IncidentCategory {
+  ATTENDANCE
+  PRODUCTIVITY
+  BEHAVIOUR
+  SECURITY
+  COMPLIANCE
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  CLOSED
+}
+
+model Incident {
+  id                String           @id @default(uuid()) @db.Uuid
+  orgId             String           @db.Uuid
+  /// Human reference, unique per org (e.g. INC-2026-0001).
+  reference         String
+  /// May be person-specific, or org-level (e.g. a security incident).
+  employeeId        String?          @db.Uuid
+  /// Set when promoted from an escalation (links the chain back).
+  escalationId      String?          @unique @db.Uuid
+  category          IncidentCategory
+  severity          Severity
+  status            IncidentStatus   @default(OPEN)
+  title             String
+  summary           String?
+  /// The investigator (HR / senior), a login userId.
+  assignedTo        String?          @db.Uuid
+  openedBy          String?          @db.Uuid
+  investigationNote String?
+  resolutionNote    String?
+  resolvedAt        DateTime?
+  closedAt          DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  escalation Escalation?        @relation(fields: [escalationId], references: [id])
+  events     IncidentEvent[]
+  comments   IncidentComment[]
+  evidence   IncidentEvidence[]
+
+  @@unique([orgId, reference])
+  @@index([orgId, status])
+  @@index([orgId, category, status])
+}
+
+/// Immutable timeline row (OPENED | INVESTIGATING | COMMENTED | EVIDENCE_ADDED |
+/// RESOLVED | CLOSED).
+model IncidentEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  incidentId  String   @db.Uuid
+  kind        String
+  actorUserId String?  @db.Uuid
+  note        String?
+  createdAt   DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId])
+}
+
+model IncidentComment {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @db.Uuid
+  incidentId   String   @db.Uuid
+  authorUserId String   @db.Uuid
+  body         String
+  createdAt    DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId])
+}
+
+model IncidentEvidence {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  incidentId  String   @db.Uuid
+  fileName    String
+  key         String   @unique
+  sizeBytes   BigInt
+  contentType String   @default("application/octet-stream")
+  uploadedBy  String?  @db.Uuid
+  createdAt   DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, incidentId])
+}
+
+enum ReportJobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+}
+
+/// An asynchronously-generated report. Large reports are built off the request
+/// path by a worker: the row is created PENDING, a sweep renders it to CSV/xlsx,
+/// uploads the file to S3, stamps DONE + fileKey, and notifies the requester with
+/// a short-lived download link. Keeps big exports from timing out the request.
+model ReportJob {
+  id          String          @id @default(uuid()) @db.Uuid
+  orgId       String          @db.Uuid
+  requestedBy String          @db.Uuid
+  /// What to build, e.g. "attendance" | "leave" | "payroll".
+  kind        String
+  /// The report parameters (scope/period/from/to/columns/format-specific bits).
+  params      Json
+  format      String          @default("csv") // csv | xlsx
+  status      ReportJobStatus @default(PENDING)
+  /// S3 object key once DONE.
+  fileKey     String?
+  fileName    String?
+  rowCount    Int?
+  error       String?
+  createdAt   DateTime        @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, requestedBy])
+  @@index([status, createdAt])
+}
+
+// ===========================================================================
+// PAYROLL & PAYOUT WORKSPACE — Phase 1 (Core Payroll & Payout)
+//
+// In-portal module (identity-service). Replaces the legacy PayrollCycle/
+// PayrollLine "basic payout". Tenant-isolated (orgId on every row, enforced in
+// code — no cross-org access). Money is decimal-safe (Decimal + currency), never
+// float. Config-driven: components/policies are data, not hard-coded. Versioned +
+// effective-dated where financial history must be reproducible.
+//
+// Legacy PayrollCycle/PayrollLine/PayrollSetting/EmployeeRate/BillRate remain for
+// historical read + data migration; the new workspace supersedes them.
+// ===========================================================================
+
+// ---- Calendars & periods (§9, §32) ----
+enum PayFrequency {
+  MONTHLY
+  WEEKLY
+  BIWEEKLY
+  SEMI_MONTHLY
+  DAILY
+  CUSTOM
+}
+
+model PayrollCalendar {
+  id            String       @id @default(uuid()) @db.Uuid
+  orgId         String       @db.Uuid
+  legalEntityId String?      @db.Uuid
+  name          String
+  frequency     PayFrequency @default(MONTHLY)
+  countryCode   String? // ISO-3166 alpha-2; null = org default
+  currencyCode  String       @default("USD")
+  // Cutoff/approval/payment day-of-period offsets (config, not hard-coded).
+  cutoffDay     Int?
+  payDay        Int?
+  active        Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  createdBy     String?      @db.Uuid
+
+  periods PayrollPeriod[]
+
+  @@index([orgId, active])
+}
+
+enum PayrollPeriodStatus {
+  OPEN
+  INPUT_CUTOFF
+  PROCESSING
+  CLOSED
+}
+
+model PayrollPeriod {
+  id          String              @id @default(uuid()) @db.Uuid
+  orgId       String              @db.Uuid
+  calendarId  String              @db.Uuid
+  periodStart DateTime            @db.Date
+  periodEnd   DateTime            @db.Date // inclusive
+  payDate     DateTime?           @db.Date
+  cutoffAt    DateTime?
+  taxYear     Int?
+  status      PayrollPeriodStatus @default(OPEN)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  calendar PayrollCalendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  batches  PayrollBatch[]
+
+  @@unique([calendarId, periodStart, periodEnd])
+  @@index([orgId, status])
+}
+
+// ---- Employee payroll profile (versioned, effective-dated, §7) ----
+enum PaymentBasis {
+  FIXED
+  HOURLY
+  DAILY
+}
+
+model PayrollProfile {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  status     String   @default("ACTIVE") // ACTIVE | ON_HOLD | EXITED
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  versions PayrollProfileVersion[]
+
+  @@unique([orgId, employeeId])
+  @@index([orgId, status])
+}
+
+model PayrollProfileVersion {
+  id                  String       @id @default(uuid()) @db.Uuid
+  orgId               String       @db.Uuid
+  profileId           String       @db.Uuid
+  version             Int
+  legalEntityId       String?      @db.Uuid
+  payrollEntityId     String?      @db.Uuid
+  workCountry         String?
+  payrollCountry      String?
+  taxResidencyCountry String?
+  currencyCode        String       @default("USD")
+  payFrequency        PayFrequency @default(MONTHLY)
+  paymentBasis        PaymentBasis @default(FIXED)
+  // Base pay: monthly/annual for FIXED, per-hour for HOURLY, per-day for DAILY.
+  baseAmount          Decimal      @db.Decimal(18, 4)
+  calendarId          String?      @db.Uuid
+  taxRegime           String?
+  // Policy references (config-driven; resolved at calc time).
+  prorationPolicy     String       @default("CALENDAR_DAYS") // CALENDAR_DAYS | WORKING_DAYS | FIXED_30 | FIXED_26 | CUSTOM
+  overtimePolicyMode  String       @default("NOT_APPLICABLE") // PAID_OVERTIME | COMP_OFF | EMPLOYEE_CHOICE | MIXED_POLICY | NOT_APPLICABLE
+  compOffPolicy       Json?
+  bankRef             String? // reference to a masked/encrypted bank record
+  effectiveFrom       DateTime     @db.Date
+  effectiveTo         DateTime?    @db.Date
+  joinDate            DateTime?    @db.Date
+  exitDate            DateTime?    @db.Date
+  createdBy           String?      @db.Uuid
+  createdAt           DateTime     @default(now())
+
+  profile PayrollProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, version])
+  @@index([orgId, profileId])
+  @@index([orgId, effectiveFrom])
+}
+
+// ---- Earning/Deduction components (config-driven, §10) ----
+enum ComponentDirection {
+  EARNING
+  DEDUCTION
+}
+
+enum ComponentCalcType {
+  FIXED
+  PERCENTAGE
+  FORMULA
+  INPUT_BASED
+  PER_UNIT
+}
+
+model PayrollComponent {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @db.Uuid
+  code      String
+  name      String
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  versions PayrollComponentVersion[]
+
+  @@unique([orgId, code])
+}
+
+model PayrollComponentVersion {
+  id             String             @id @default(uuid()) @db.Uuid
+  orgId          String             @db.Uuid
+  componentId    String             @db.Uuid
+  version        Int
+  category       String // BASIC | ALLOWANCE | BONUS | STATUTORY | TAX | RECOVERY | REIMBURSEMENT | CUSTOM
+  direction      ComponentDirection
+  calcType       ComponentCalcType
+  // Config: fixed amount, percentage-of, formula (restricted DSL string), or input key.
+  config         Json               @default("{}")
+  countryCode    String?
+  legalEntityId  String?            @db.Uuid
+  currencyCode   String?
+  taxable        Boolean            @default(true)
+  statutory      Boolean            @default(false)
+  employerPaid   Boolean            @default(false)
+  proratable     Boolean            @default(true)
+  minAmount      Decimal?           @db.Decimal(18, 4)
+  maxAmount      Decimal?           @db.Decimal(18, 4)
+  rounding       String             @default("HALF_UP")
+  payslipVisible Boolean            @default(true)
+  effectiveFrom  DateTime           @db.Date
+  effectiveTo    DateTime?          @db.Date
+  status         String             @default("ACTIVE") // DRAFT | ACTIVE | ARCHIVED
+  createdAt      DateTime           @default(now())
+
+  component PayrollComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
+
+  @@unique([componentId, version])
+  @@index([orgId, direction, effectiveFrom])
+}
+
+// ---- Batches (§9) ----
+enum PayrollBatchStatus {
+  DRAFT
+  INPUT_COLLECTION
+  CALCULATION
+  VALIDATION
+  REVIEW
+  PENDING_APPROVAL
+  APPROVED
+  PAYMENT_PROCESSING
+  PAID
+  CLOSED
+  REJECTED
+  ON_HOLD
+  CANCELLED
+}
+
+model PayrollBatch {
+  id              String             @id @default(uuid()) @db.Uuid
+  orgId           String             @db.Uuid
+  legalEntityId   String?            @db.Uuid
+  payrollEntityId String?            @db.Uuid
+  periodId        String             @db.Uuid
+  countryCode     String?
+  currencyCode    String             @default("USD")
+  name            String
+  status          PayrollBatchStatus @default(DRAFT)
+  grossTotal      Decimal            @default(0) @db.Decimal(20, 4)
+  deductionTotal  Decimal            @default(0) @db.Decimal(20, 4)
+  netTotal        Decimal            @default(0) @db.Decimal(20, 4)
+  employerCost    Decimal            @default(0) @db.Decimal(20, 4)
+  employeeCount   Int                @default(0)
+  calculatedAt    DateTime?
+  approvedAt      DateTime?
+  paidAt          DateTime?
+  closedAt        DateTime?
+  createdBy       String?            @db.Uuid
+  note            String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  period  PayrollPeriod          @relation(fields: [periodId], references: [id])
+  members PayrollBatchEmployee[]
+  records PayrollRecord[]
+
+  @@index([orgId, status])
+  @@index([orgId, periodId])
+}
+
+model PayrollBatchEmployee {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @db.Uuid
+  batchId       String   @db.Uuid
+  employeeId    String   @db.Uuid
+  included      Boolean  @default(true)
+  excludeReason String?
+  createdAt     DateTime @default(now())
+
+  batch PayrollBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, employeeId])
+  @@index([orgId, employeeId])
+}
+
+// ---- Immutable input snapshot (§12) ----
+model PayrollInputSnapshot {
+  id              String   @id @default(uuid()) @db.Uuid
+  orgId           String   @db.Uuid
+  batchId         String   @db.Uuid
+  employeeId      String   @db.Uuid
+  // Approved facts pulled from Attendance/Leave/Timesheet at freeze time.
+  scheduledDays   Decimal? @db.Decimal(8, 2)
+  workingDays     Decimal? @db.Decimal(8, 2)
+  presentDays     Decimal? @db.Decimal(8, 2)
+  paidLeaveDays   Decimal? @db.Decimal(8, 2)
+  unpaidLeaveDays Decimal? @db.Decimal(8, 2)
+  holidays        Decimal? @db.Decimal(8, 2)
+  weeklyOffs      Decimal? @db.Decimal(8, 2)
+  payableDays     Decimal? @db.Decimal(8, 2)
+  regularHours    Decimal? @db.Decimal(10, 2)
+  overtimeHours   Decimal? @db.Decimal(10, 2)
+  nightHours      Decimal? @db.Decimal(10, 2)
+  // Provenance + override audit.
+  sources         Json     @default("{}") // {attendance:{recordId,version},...}
+  manualOverride  Boolean  @default(false)
+  overrideReason  String?
+  overrideBy      String?  @db.Uuid
+  frozenAt        DateTime @default(now())
+
+  @@unique([batchId, employeeId])
+  @@index([orgId, employeeId])
+}
+
+// ---- Employee payroll record (§8) ----
+enum PayrollRecordStatus {
+  DRAFT
+  CALCULATED
+  VALIDATION_FAILED
+  VALIDATED
+  PENDING_APPROVAL
+  APPROVED
+  PAYMENT_PROCESSING
+  PAID
+  CLOSED
+  ON_HOLD
+  REJECTED
+  PAYMENT_FAILED
+  CANCELLED
+  CORRECTION_REQUIRED
+}
+
+model PayrollRecord {
+  id                String              @id @default(uuid()) @db.Uuid
+  orgId             String              @db.Uuid
+  batchId           String              @db.Uuid
+  employeeId        String              @db.Uuid
+  periodId          String              @db.Uuid
+  currencyCode      String              @default("USD")
+  profileVersionId  String?             @db.Uuid
+  // Totals (decimal-safe).
+  regularEarnings   Decimal             @default(0) @db.Decimal(18, 4)
+  variableEarnings  Decimal             @default(0) @db.Decimal(18, 4)
+  overtimeAmount    Decimal             @default(0) @db.Decimal(18, 4)
+  reimbursements    Decimal             @default(0) @db.Decimal(18, 4)
+  grossEarnings     Decimal             @default(0) @db.Decimal(18, 4)
+  preTaxDeductions  Decimal             @default(0) @db.Decimal(18, 4)
+  taxableIncome     Decimal             @default(0) @db.Decimal(18, 4)
+  taxDeduction      Decimal             @default(0) @db.Decimal(18, 4)
+  employeeStatutory Decimal             @default(0) @db.Decimal(18, 4)
+  postTaxDeductions Decimal             @default(0) @db.Decimal(18, 4)
+  adjustments       Decimal             @default(0) @db.Decimal(18, 4)
+  netPayable        Decimal             @default(0) @db.Decimal(18, 4)
+  employerContrib   Decimal             @default(0) @db.Decimal(18, 4)
+  employerCost      Decimal             @default(0) @db.Decimal(18, 4)
+  prorationFactor   Decimal             @default(1) @db.Decimal(8, 4)
+  status            PayrollRecordStatus @default(DRAFT)
+  warnings          Json                @default("[]")
+  errors            Json                @default("[]")
+  // Reproducibility (§26): the rule/version stamps used.
+  calcVersion       Int                 @default(1)
+  calculatedAt      DateTime?
+  statementStatus   String              @default("NONE") // NONE | GENERATED
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  batch      PayrollBatch             @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  components PayrollRecordComponent[]
+
+  @@unique([batchId, employeeId])
+  @@index([orgId, employeeId])
+  @@index([orgId, status])
+}
+
+model PayrollRecordComponent {
+  id                 String             @id @default(uuid()) @db.Uuid
+  orgId              String             @db.Uuid
+  recordId           String             @db.Uuid
+  code               String
+  name               String
+  direction          ComponentDirection
+  category           String
+  amount             Decimal            @db.Decimal(18, 4)
+  taxable            Boolean            @default(true)
+  statutory          Boolean            @default(false)
+  employerPaid       Boolean            @default(false)
+  payslipVisible     Boolean            @default(true)
+  // Explainability (§26): how this line was computed.
+  calcType           String?
+  formula            String?
+  inputs             Json?
+  componentVersionId String?            @db.Uuid
+  sortOrder          Int                @default(0)
+  createdAt          DateTime           @default(now())
+
+  record PayrollRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, recordId])
+}
+
+// ---- Variable pay: bonus / incentive / reimbursement (§13) ----
+enum VariablePayStatus {
+  DRAFT
+  MANAGER_APPROVAL
+  REVIEW
+  APPROVED
+  INCLUDED_IN_PAYROLL
+  REJECTED
+  CANCELLED
+}
+
+model PayrollBonus {
+  id           String            @id @default(uuid()) @db.Uuid
+  orgId        String            @db.Uuid
+  employeeId   String            @db.Uuid
+  bonusType    String // ONE_TIME | PERFORMANCE | FESTIVAL | RETENTION | REFERRAL | SALES | CUSTOM
+  amount       Decimal           @db.Decimal(18, 4)
+  currencyCode String            @default("USD")
+  status       VariablePayStatus @default(DRAFT)
+  sourceType   String? // PERFORMANCE_CYCLE | SALES_TARGET | MANUAL | ...
+  sourceRef    String?
+  reason       String?
+  periodId     String?           @db.Uuid
+  batchId      String?           @db.Uuid // set when INCLUDED_IN_PAYROLL (no double-include)
+  requestedBy  String?           @db.Uuid
+  approvedBy   String?           @db.Uuid
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([orgId, employeeId, status])
+}
+
+model PayrollIncentive {
+  id            String            @id @default(uuid()) @db.Uuid
+  orgId         String            @db.Uuid
+  employeeId    String            @db.Uuid
+  incentiveType String
+  amount        Decimal           @db.Decimal(18, 4)
+  currencyCode  String            @default("USD")
+  status        VariablePayStatus @default(DRAFT)
+  sourceType    String?
+  sourceRef     String?
+  periodId      String?           @db.Uuid
+  batchId       String?           @db.Uuid
+  requestedBy   String?           @db.Uuid
+  approvedBy    String?           @db.Uuid
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([orgId, employeeId, status])
+}
+
+model PayrollReimbursement {
+  id                String            @id @default(uuid()) @db.Uuid
+  orgId             String            @db.Uuid
+  employeeId        String            @db.Uuid
+  category          String // TRAVEL | FOOD | EQUIPMENT | CUSTOM
+  claimedAmount     Decimal           @db.Decimal(18, 4)
+  approvedAmount    Decimal?          @db.Decimal(18, 4)
+  currencyCode      String            @default("USD")
+  taxable           Boolean           @default(false)
+  status            VariablePayStatus @default(DRAFT)
+  sourceType        String? // EXPENSE_CLAIM | MANUAL | ...
+  sourceRef         String?
+  receiptKey        String?
+  periodId          String?           @db.Uuid
+  batchId           String?           @db.Uuid
+  requestedBy       String?           @db.Uuid
+  managerApprovedBy String?           @db.Uuid
+  financeApprovedBy String?           @db.Uuid
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([orgId, employeeId, status])
+}
+
+// ---- Overtime & comp-off (§14) ----
+model PayrollOvertime {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  workDate   DateTime @db.Date
+  hours      Decimal  @db.Decimal(8, 2)
+  dayType    String // WEEKDAY | WEEKEND | HOLIDAY | NIGHT
+  mode       String // PAID | COMP_OFF (resolved from org policy at approval)
+  multiplier Decimal? @db.Decimal(6, 3)
+  amount     Decimal  @default(0) @db.Decimal(18, 4)
+  approvedBy String?  @db.Uuid
+  batchId    String?  @db.Uuid
+  createdAt  DateTime @default(now())
+
+  @@index([orgId, employeeId, workDate])
+}
+
+model PayrollCompOff {
+  id           String    @id @default(uuid()) @db.Uuid
+  orgId        String    @db.Uuid
+  employeeId   String    @db.Uuid
+  deltaMinutes Int // +earned / -used
+  entryType    String // EARNED | USED | EXPIRED | ADJUSTED
+  source       String // OVERTIME | HOLIDAY_WORK | MANUAL | LEAVE_SPENT
+  sourceRef    String?   @db.Uuid
+  expiresAt    DateTime?
+  note         String?
+  createdAt    DateTime  @default(now())
+
+  @@index([orgId, employeeId])
+}
+
+// ---- Approvals & holds (§15, §16) ----
+model PayrollApproval {
+  id        String    @id @default(uuid()) @db.Uuid
+  orgId     String    @db.Uuid
+  batchId   String    @db.Uuid
+  stepIndex Int
+  role      String
+  status    String    @default("PENDING") // PENDING | APPROVED | REJECTED | SKIPPED
+  decidedBy String?   @db.Uuid
+  decidedAt DateTime?
+  comment   String?
+  createdAt DateTime  @default(now())
+
+  @@unique([batchId, stepIndex])
+  @@index([orgId, batchId])
+}
+
+model PayrollHold {
+  id                 String    @id @default(uuid()) @db.Uuid
+  orgId              String    @db.Uuid
+  batchId            String?   @db.Uuid
+  recordId           String?   @db.Uuid
+  employeeId         String?   @db.Uuid
+  reason             String
+  expectedResolution String?
+  heldBy             String?   @db.Uuid
+  releasedBy         String?   @db.Uuid
+  releasedAt         DateTime?
+  active             Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+
+  @@index([orgId, active])
+}
+
+// ---- Payments & proof (§16, §17) ----
+model PayrollPayment {
+  id             String    @id @default(uuid()) @db.Uuid
+  orgId          String    @db.Uuid
+  recordId       String    @db.Uuid
+  employeeId     String    @db.Uuid
+  amount         Decimal   @db.Decimal(18, 4)
+  currencyCode   String    @default("USD")
+  method         String? // BANK_TRANSFER | UPI | CHEQUE | CASH | PROVIDER
+  reference      String?
+  status         String    @default("PENDING") // PENDING | PROCESSING | PAID | FAILED
+  paymentDate    DateTime?
+  processedBy    String?   @db.Uuid
+  idempotencyKey String    @unique
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  attempts PayrollPaymentAttempt[]
+  proofs   PayrollPaymentProof[]
+
+  @@index([orgId, status])
+  @@index([orgId, recordId])
+}
+
+model PayrollPaymentAttempt {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  paymentId   String   @db.Uuid
+  attemptNo   Int
+  status      String
+  providerRef String?
+  error       String?
+  createdAt   DateTime @default(now())
+
+  payment PayrollPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, paymentId])
+}
+
+model PayrollPaymentProof {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  paymentId  String   @db.Uuid
+  kind       String // RECEIPT | BANK_RESPONSE | ATTACHMENT
+  storageKey String
+  checksum   String?
+  uploadedBy String?  @db.Uuid
+  createdAt  DateTime @default(now())
+
+  payment PayrollPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, paymentId])
+}
+
+// ---- Statements / payslips (§18) ----
+model PayrollStatement {
+  id              String   @id @default(uuid()) @db.Uuid
+  orgId           String   @db.Uuid
+  recordId        String   @db.Uuid
+  employeeId      String   @db.Uuid
+  kind            String   @default("PAYOUT_STATEMENT") // PAYOUT_STATEMENT | PAYSLIP
+  documentVersion Int      @default(1)
+  storageKey      String
+  contentType     String   @default("application/pdf")
+  checksum        String
+  currencyCode    String   @default("USD")
+  grossAmount     Decimal  @default(0) @db.Decimal(18, 4)
+  netAmount       Decimal  @default(0) @db.Decimal(18, 4)
+  // Publish lifecycle: a payslip is generated on PAYMENT (DRAFT), then released to
+  // the employee (PUBLISHED) which is when they can see/download it and are notified.
+  status          String   @default("DRAFT") // DRAFT | PUBLISHED
+  publishedAt     DateTime?
+  generatedAt     DateTime @default(now())
+
+  @@unique([recordId, documentVersion])
+  @@index([orgId, employeeId])
+}
+
+// ---- Disputes (§19) linked to HR cases ----
+model PayrollDispute {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  employeeId  String   @db.Uuid
+  recordId    String?  @db.Uuid
+  category    String // INCORRECT_BASE | MISSING_INCENTIVE | WRONG_DEDUCTION | TAX | NOT_RECEIVED | OTHER
+  description String
+  status      String   @default("SUBMITTED") // SUBMITTED | ASSIGNED | UNDER_REVIEW | EMPLOYEE_INPUT_REQUIRED | RESOLVED | CLOSED
+  assignedTo  String?  @db.Uuid
+  hrCaseRef   String?  @db.Uuid // linked Observation/Case (no duplicated case logic)
+  resolution  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([orgId, status])
+  @@index([orgId, employeeId])
+}
+
+// ---- Adjustments / corrections (§20) ----
+model PayrollAdjustment {
+  id                String   @id @default(uuid()) @db.Uuid
+  orgId             String   @db.Uuid
+  employeeId        String   @db.Uuid
+  originalRecordId  String?  @db.Uuid
+  componentCode     String?
+  adjustmentType    String // POSITIVE | NEGATIVE | ARREAR | RECOVERY | TAX_CORRECTION | REVERSAL
+  previousValue     Decimal? @db.Decimal(18, 4)
+  correctedValue    Decimal? @db.Decimal(18, 4)
+  difference        Decimal  @db.Decimal(18, 4)
+  currencyCode      String   @default("USD")
+  reason            String
+  evidenceKey       String?
+  status            String   @default("CORRECTION_REQUESTED") // CORRECTION_REQUESTED | REVIEWED | APPROVED | SETTLED | REJECTED
+  settlementBatchId String?  @db.Uuid
+  createdBy         String?  @db.Uuid
+  approvedBy        String?  @db.Uuid
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([orgId, employeeId, status])
+}
+
+// ============================================================
+// PHASE 2 — TAX & STATUTORY (config-driven; rates are DATA, never code)
+// ============================================================
+// Income-tax rules are versioned + effective-dated per country + regime. The
+// engine reads these tables; it never hard-codes slabs/rates. `source` records
+// provenance (the statutory notification the rates came from) — nothing here is
+// engine-invented.
+model TaxRuleSet {
+  id                String    @id @default(uuid()) @db.Uuid
+  orgId             String?   @db.Uuid // null = platform-global pack; set = org override
+  countryCode       String // ISO-2, e.g. "IN"
+  regime            String    @default("DEFAULT") // NEW | OLD | DEFAULT
+  taxYear           String // e.g. "2025-26"
+  name              String
+  currencyCode      String    @default("INR")
+  standardDeduction Decimal   @default(0) @db.Decimal(18, 4)
+  // The month the country's tax year starts (1-12). 4 = April (India/UK), 1 =
+  // January (US, calendar-year). Drives which "tax year" a pay date falls in.
+  fiscalYearStartMonth Int    @default(4)
+  rebateLimit       Decimal?  @db.Decimal(18, 4) // taxable-income ceiling for a full rebate (87A-style)
+  rebateMaxAmount   Decimal?  @db.Decimal(18, 4) // max rebate granted under that ceiling
+  surchargePercent  Decimal   @default(0) @db.Decimal(6, 4)
+  cessPercent       Decimal   @default(0) @db.Decimal(6, 4) // health & education cess on tax
+  effectiveFrom     DateTime  @db.Date
+  effectiveTo       DateTime? @db.Date
+  version           Int       @default(1)
+  status            String    @default("ACTIVE") // ACTIVE | ARCHIVED
+  source            String? // provenance note (e.g. "Finance Act 2025")
+  createdBy         String?   @db.Uuid
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  slabs TaxSlab[]
+
+  @@index([countryCode, regime, effectiveFrom])
+  @@index([orgId])
+}
+
+model TaxSlab {
+  id          String   @id @default(uuid()) @db.Uuid
+  ruleSetId   String   @db.Uuid
+  seq         Int
+  lowerBound  Decimal  @db.Decimal(18, 4)
+  upperBound  Decimal? @db.Decimal(18, 4) // null = top slab (no ceiling)
+  ratePercent Decimal  @db.Decimal(6, 4)
+
+  ruleSet TaxRuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleSetId, seq])
+}
+
+// A statutory contribution (PF / ESI / PT / LWF): rate, wage ceiling, applicability,
+// employee vs employer split — effective-dated + versioned.
+model StatutoryRule {
+  id             String    @id @default(uuid()) @db.Uuid
+  orgId          String?   @db.Uuid
+  countryCode    String
+  kind           String // PF | ESI | PT | LWF
+  name           String
+  employeeRate   Decimal   @default(0) @db.Decimal(8, 4) // % of the contribution base
+  employerRate   Decimal   @default(0) @db.Decimal(8, 4)
+  wageCeiling    Decimal?  @db.Decimal(18, 4) // cap the base (PF 15000, ESI 21000)
+  applicableUpto Decimal?  @db.Decimal(18, 4) // only applies when base <= this (ESI)
+  flatAmount     Decimal?  @db.Decimal(18, 4) // fixed amount instead of a % (PT)
+  baseComponents String[]  @default([]) // earning codes forming the base; empty = gross
+  config         Json? // extra rules (per-state PT slabs, min contribution, etc.)
+  effectiveFrom  DateTime  @db.Date
+  effectiveTo    DateTime? @db.Date
+  version        Int       @default(1)
+  status         String    @default("ACTIVE")
+  source         String?
+  createdBy      String?   @db.Uuid
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([countryCode, kind, effectiveFrom])
+  @@index([orgId])
+}
+
+// Per-employee tax declaration for a year: chosen regime + declared exemptions
+// (80C/80D/HRA...). Drives taxable income; the raw declaration is sensitive.
+model EmployeeTaxProfile {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  taxYear    String
+  regime     String   @default("DEFAULT") // NEW | OLD | DEFAULT
+  exemptions Decimal  @default(0) @db.Decimal(18, 4) // total declared deductions/exemptions
+  metadata   Json? // breakdown (80C, 80D, HRA, ...) for reproducibility
+  createdBy  String?  @db.Uuid
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([orgId, employeeId, taxYear])
+  @@index([orgId, employeeId])
+}
+
+// ============================================================
+// PHASE 3 — STATUTORY FILING & RETURNS
+// ============================================================
+// A filing aggregates finalized PayrollRecords for a period into the return an
+// employer submits (Form-24Q/Form-16 for TDS, PF ECR, ESI, PT). Maker-checker
+// lifecycle mirrors the batch (generator can't approve). Export FORMATS are
+// statutory too, so the CSV/text is a best-effort layout flagged for verification
+// — the AMOUNTS come straight from the reproducible payroll records.
+model PayrollFiling {
+  id            String    @id @default(uuid()) @db.Uuid
+  orgId         String    @db.Uuid
+  kind          String // FORM24Q | FORM16 | PF_ECR | ESI | PT
+  countryCode   String    @default("IN")
+  periodStart   DateTime  @db.Date
+  periodEnd     DateTime  @db.Date
+  periodLabel   String // "2026-07" | "2026-Q2" | "FY2025-26"
+  status        String    @default("DRAFT") // DRAFT|PREPARED|REVIEWED|APPROVED|SUBMITTED|FILED|REJECTED
+  employeeCount Int       @default(0)
+  totalWages    Decimal   @default(0) @db.Decimal(18, 4)
+  totalEmployee Decimal   @default(0) @db.Decimal(18, 4) // employee-side contribution/TDS
+  totalEmployer Decimal   @default(0) @db.Decimal(18, 4) // employer-side contribution
+  totalTax      Decimal   @default(0) @db.Decimal(18, 4)
+  reference     String? // challan / acknowledgement number once submitted
+  notes         String?
+  generatedBy   String?   @db.Uuid
+  reviewedBy    String?   @db.Uuid
+  approvedBy    String?   @db.Uuid
+  submittedBy   String?   @db.Uuid
+  generatedAt   DateTime  @default(now())
+  submittedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines PayrollFilingLine[]
+
+  @@index([orgId, kind, periodStart])
+  @@index([orgId, status])
+}
+
+model PayrollFilingLine {
+  id          String  @id @default(uuid()) @db.Uuid
+  orgId       String  @db.Uuid
+  filingId    String  @db.Uuid
+  employeeId  String  @db.Uuid
+  wageBase    Decimal @default(0) @db.Decimal(18, 4)
+  employeeAmt Decimal @default(0) @db.Decimal(18, 4)
+  employerAmt Decimal @default(0) @db.Decimal(18, 4)
+  taxAmt      Decimal @default(0) @db.Decimal(18, 4)
+  meta        Json?
+
+  filing PayrollFiling @relation(fields: [filingId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, filingId])
+}

@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-processor
+  namespace: retainiq
+  labels: { app: event-processor }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: event-processor }
+  template:
+    metadata:
+      labels: { app: event-processor }
+    spec:
+      # Allow in-flight messages to finish; the worker drains on SIGTERM.
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: event-processor
+          image: retainiq/event-processor:latest
+          command: ["node", "apps/event-processor/dist/main.js"]
+          ports:
+            - { name: ops, containerPort: 3003 }
+          envFrom:
+            - configMapRef: { name: retainiq-config }
+            - secretRef: { name: retainiq-secrets }
+          env:
+            - { name: HEALTH_PORT, value: "3003" }
+            # Owns the inbox database (idempotent consumer dedup).
+            - { name: DATABASE_URL, valueFrom: { secretKeyRef: { name: retainiq-db, key: INBOX_DATABASE_URL } } }
+            # Unique consumer name per pod for the consumer group.
+            - { name: CONSUMER_NAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+          livenessProbe:
+            httpGet: { path: /health/live, port: ops }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: ops }
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: event-processor
+  namespace: retainiq
+  labels: { app: event-processor }
+spec:
+  clusterIP: None
+  selector: { app: event-processor }
+  ports:
+    - { name: ops, port: 3003, targetPort: ops }
+---
+# Scale the worker on Redis Stream backlog (consumer-group lag), not CPU.
+# Requires KEDA installed in the cluster.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: event-processor
+  namespace: retainiq
+spec:
+  scaleTargetRef:
+    name: event-processor
+  minReplicaCount: 1
+  maxReplicaCount: 20
+  cooldownPeriod: 120
+  triggers:
+    - type: redis-streams
+      metadata:
+        addressFromEnv: REDIS_URL
+        stream: "retainiq.activity"
+        consumerGroup: "event-processor"
+        pendingEntriesCount: "100"
+    - type: redis-streams
+      metadata:
+        addressFromEnv: REDIS_URL
+        stream: "retainiq.events"
+        consumerGroup: "event-processor"
+        pendingEntriesCount: "100"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: event-processor
+  namespace: retainiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: event-processor }

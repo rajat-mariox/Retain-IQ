@@ -1,0 +1,92 @@
+# Infrastructure only (no app builds) — one database per service + Redis.
+# Use this when running the apps locally via `npm run dev:*`; mirrors the database
+# topology of docker-compose.yml. Ports match .env.example.
+services:
+  postgres-identity:
+    image: postgres:16-alpine
+    container_name: retainiq-identity-db
+    environment:
+      POSTGRES_DB: retainiq-identity
+      POSTGRES_USER: identity
+      POSTGRES_PASSWORD: identity
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_identity_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U identity -d retainiq-identity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-inbox:
+    image: postgres:16-alpine
+    container_name: retainiq-inbox-db
+    environment:
+      POSTGRES_DB: retainiq-inbox
+      POSTGRES_USER: inbox
+      POSTGRES_PASSWORD: inbox
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_inbox_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inbox -d retainiq-inbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-analytics:
+    image: postgres:16-alpine
+    container_name: retainiq-analytics-db
+    environment:
+      POSTGRES_DB: retainiq-analytics
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics -d retainiq-analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-notifications:
+    image: postgres:16-alpine
+    container_name: retainiq-notifications-db
+    environment:
+      POSTGRES_DB: retainiq-notifications
+      POSTGRES_USER: notifications
+      POSTGRES_PASSWORD: notifications
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_notifications_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifications -d retainiq-notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: retainiq-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_identity_data:
+  postgres_inbox_data:
+  postgres_analytics_data:
+  postgres_notifications_data:
+  redis_data:

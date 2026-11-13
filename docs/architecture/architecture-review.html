@@ -1,0 +1,226 @@
+<title>RetainIQ — Architecture Review</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --ink: #16181d; --ink-soft: #3a3f4a;
+    --muted: #6b7280; --faint: #9aa1ad; --line: #e5e7eb; --line-soft: #eef0f3;
+    --keep: #0d9488; --keep-bg: #ecfdf9; --keep-line: #99f6e4;
+    --future: #b45309; --future-bg: #fffbeb; --future-line: #fde68a;
+    --stop: #be123c; --stop-bg: #fff1f3; --stop-line: #fecdd3;
+    --accent: #0d9488;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1013; --panel: #16191e; --ink: #eceef2; --ink-soft: #c3c8d2;
+      --muted: #8b93a1; --faint: #626b7a; --line: #262b33; --line-soft: #1e232a;
+      --keep: #2dd4bf; --keep-bg: #0c2925; --keep-line: #134e48;
+      --future: #fbbf24; --future-bg: #2a2110; --future-line: #5c4415;
+      --stop: #fb7185; --stop-bg: #2b1218; --stop-line: #5c1f2b;
+      --accent: #2dd4bf;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f8fa; --panel: #ffffff; --ink: #16181d; --ink-soft: #3a3f4a; --muted: #6b7280; --faint: #9aa1ad; --line: #e5e7eb; --line-soft: #eef0f3;
+    --keep: #0d9488; --keep-bg: #ecfdf9; --keep-line: #99f6e4; --future: #b45309; --future-bg: #fffbeb; --future-line: #fde68a; --stop: #be123c; --stop-bg: #fff1f3; --stop-line: #fecdd3; --accent: #0d9488;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1013; --panel: #16191e; --ink: #eceef2; --ink-soft: #c3c8d2; --muted: #8b93a1; --faint: #626b7a; --line: #262b33; --line-soft: #1e232a;
+    --keep: #2dd4bf; --keep-bg: #0c2925; --keep-line: #134e48; --future: #fbbf24; --future-bg: #2a2110; --future-line: #5c4415; --stop: #fb7185; --stop-bg: #2b1218; --stop-line: #5c1f2b; --accent: #2dd4bf;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.6; font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 44px 22px 80px; }
+
+  header { margin-bottom: 8px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  h1 { font-size: clamp(26px, 4.5vw, 36px); line-height: 1.15; margin: 10px 0 12px; letter-spacing: -.02em; text-wrap: balance; }
+  .lede { font-size: 17px; color: var(--ink-soft); max-width: 64ch; margin: 0 0 8px; }
+  .verdict-line { font-size: 15px; color: var(--muted); }
+  .verdict-line b { color: var(--ink); }
+
+  h2 { font-size: 21px; letter-spacing: -.01em; margin: 46px 0 6px; padding-top: 20px; border-top: 1px solid var(--line); }
+  h2 .n { font-family: var(--mono); font-size: 14px; color: var(--faint); margin-right: 10px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 14.5px; }
+
+  .mono { font-family: var(--mono); font-size: .92em; }
+
+  /* badges */
+  .badge { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px; font-weight: 600; letter-spacing: .02em; padding: 3px 9px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .b-keep { color: var(--keep); background: var(--keep-bg); border-color: var(--keep-line); }
+  .b-future { color: var(--future); background: var(--future-bg); border-color: var(--future-line); }
+  .b-stop { color: var(--stop); background: var(--stop-bg); border-color: var(--stop-line); }
+
+  /* cards */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin: 14px 0; }
+  .card.keep { border-left: 3px solid var(--keep); }
+  .card.future { border-left: 3px solid var(--future); }
+  .card.stop { border-left: 3px solid var(--stop); }
+  .card h3 { margin: 0 0 4px; font-size: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .card p { margin: 8px 0 0; color: var(--ink-soft); font-size: 14.5px; }
+  .card p.why { color: var(--muted); font-size: 13.5px; }
+
+  /* two-col */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+  .col h4 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .col.now h4 { color: var(--keep); }
+  .col.prop h4 { color: var(--future); }
+  .col ul { margin: 0; padding: 0; list-style: none; }
+  .col li { font-family: var(--mono); font-size: 12.5px; padding: 5px 0; border-bottom: 1px solid var(--line-soft); color: var(--ink-soft); }
+  .col li:last-child { border-bottom: 0; }
+  .col .tag { color: var(--faint); font-family: var(--sans); font-size: 11px; }
+
+  /* comparison table */
+  .tbl-scroll { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th { background: var(--bg); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td .mono { color: var(--ink-soft); }
+  td.v { white-space: nowrap; }
+
+  .callout { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin: 16px 0; }
+  .callout.accent { border-color: var(--keep-line); background: var(--keep-bg); }
+  .callout p { margin: 6px 0 0; }
+  .callout p:first-child { margin-top: 0; }
+  .callout strong { color: var(--ink); }
+
+  ul.plain { padding-left: 18px; margin: 10px 0; }
+  ul.plain li { margin: 6px 0; color: var(--ink-soft); }
+  ul.plain li b { color: var(--ink); }
+
+  .rule { height: 1px; background: var(--line); margin: 40px 0; border: 0; }
+  footer { margin-top: 20px; color: var(--faint); font-size: 12.5px; font-family: var(--mono); }
+  code { font-family: var(--mono); font-size: .88em; background: var(--line-soft); padding: 1px 6px; border-radius: 5px; color: var(--ink-soft); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">RetainIQ · Architecture Review</div>
+    <h1>The proposed split — a straight assessment</h1>
+    <p class="lede">You shared two tables: (1) tenant-isolation tiers, and (2) "one service per data type". Below, each is measured against your <b>actual codebase</b> — not against theory.</p>
+    <p class="verdict-line">Short answer: <b>The tenant-isolation table is directionally right</b> (you're already at Tier 1). <b>The "10 separate services" table is wrong for now</b> — it's premature over-engineering. Your current design is the better fit at this stage.</p>
+  </header>
+
+  <h2><span class="n">01</span>Where you are today</h2>
+  <p class="sub">Not an assumption — pulled straight from the repo.</p>
+  <div class="card">
+    <h3>5 services · database-per-service · feature-clustered</h3>
+    <p><span class="mono">identity-service</span> (63 tables, 29 feature modules), <span class="mono">billing-service</span>, <span class="mono">analytics-service</span>, <span class="mono">notifications-service</span>, <span class="mono">event-processor</span> — each with its own Postgres database, no cross-DB foreign keys, kept in sync by events (outbox → broker → idempotent inbox).</p>
+    <p class="why">Organization, User, Employee, Attendance, Leave, Payroll, Projects, RBAC all live as <b>separate modules inside identity-service</b>, not as separate services. Billing and analytics are genuinely different, so they were extracted. That's your core principle: <b>services = feature clusters, not one-per-entity.</b></p>
+  </div>
+
+  <h2><span class="n">02</span>Table 2 — "One service per data type"</h2>
+  <p class="sub">Proposes 10 services: Organization / Identity / Employee / Attendance / Leave / Payroll / Activity / Productivity / AI / Notification.</p>
+
+  <div class="card stop">
+    <h3>Verdict <span class="badge b-stop">✗ DON'T DO THIS YET</span></h3>
+    <p>"One service per data type" is a <b>textbook rule that backfires on real early-stage SaaS.</b> At your scale (testing phase, a handful of live orgs) it adds far more complexity than it removes.</p>
+  </div>
+
+  <div class="cols">
+    <div class="col now">
+      <h4>◆ Today (correct)</h4>
+      <ul>
+        <li>Employee <span class="tag">→ identity</span></li>
+        <li>Attendance <span class="tag">→ identity</span></li>
+        <li>Leave <span class="tag">→ identity</span></li>
+        <li>Payroll <span class="tag">→ identity</span></li>
+        <li>Join in one DB transaction</li>
+        <li>0 network hops between them</li>
+      </ul>
+    </div>
+    <div class="col prop">
+      <h4>◆ Proposed (expensive)</h4>
+      <ul>
+        <li>Employee Service + DB</li>
+        <li>Attendance Service + DB</li>
+        <li>Leave Service + DB</li>
+        <li>Payroll Service + DB</li>
+        <li>Distributed txn / saga</li>
+        <li>4–5 network hops / request</li>
+      </ul>
+    </div>
+  </div>
+
+  <p style="margin-top:18px; color:var(--ink-soft);">Why it's the wrong move — three concrete reasons:</p>
+  <ul class="plain">
+    <li><b>These modules are tightly coupled.</b> Payroll reads attendance + leave + rates. Leave affects attendance. Split them into services and every payroll run has to call 3–4 services over the network — what is a single SQL join today. <b>You'd add latency and failure points and gain nothing.</b></li>
+    <li><b>The pain of distributed transactions.</b> "Create an employee + create an attendance record" is one atomic DB transaction today. Across services it becomes a saga — eventual consistency, compensating actions, partial-failure handling. That complexity is only worth taking on when a module genuinely needs to <b>scale or be owned separately.</b></li>
+    <li><b>The industry doesn't work this way.</b> Stripe, Linear, Notion all started as modular monoliths, then extracted modules <b>one at a time</b> when a real pain forced it. You already extracted billing (correctly — it has a distinct lifecycle). Extracting the rest now is a solution ahead of any problem.</li>
+  </ul>
+
+  <div class="callout accent">
+    <p><strong>The right mental model:</strong> read the table's "Owner" column as <b>module ownership</b>, not <b>service ownership</b>. You <b>already</b> have an Attendance module that owns attendance, a Leave module that owns leave — they simply live inside one service. Ownership is already clean; the deployment boundary doesn't need to be separate.</p>
+  </div>
+
+  <h2><span class="n">03</span>Table 1 — Tenant isolation tiers</h2>
+  <p class="sub">Shared cluster (SMB) → dedicated schema/DB (Enterprise) → dedicated cluster (Large).</p>
+
+  <div class="tbl-scroll">
+    <table>
+      <thead>
+        <tr><th>Tier</th><th>Proposed model</th><th>Your reality</th><th class="v">Verdict</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>SMB</b></td>
+          <td>Shared cluster + row-level (<span class="mono">orgId</span>) isolation</td>
+          <td>Exactly this — all orgs in one DB, <code>orgId</code> on every table, per-request tenant guard</td>
+          <td class="v"><span class="badge b-keep">✓ DONE</span></td>
+        </tr>
+        <tr>
+          <td><b>Enterprise</b></td>
+          <td>Dedicated schema or DB (configurable)</td>
+          <td>Not yet. But valid — for when the first enterprise customer demands compliance / isolation</td>
+          <td class="v"><span class="badge b-future">⚠ FUTURE</span></td>
+        </tr>
+        <tr>
+          <td><b>Large Ent.</b></td>
+          <td>Optional dedicated Postgres cluster</td>
+          <td>Far off. Only when a real, paying, demanding customer needs it</td>
+          <td class="v"><span class="badge b-future">⚠ LATER</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card keep">
+    <h3>Verdict <span class="badge b-keep">✓ CONCEPT IS SOUND</span></h3>
+    <p>This tiered-isolation pattern is standard for large B2B SaaS (the Salesforce / Workday tier). You're <b>at Tier 1, and that's exactly what you need right now.</b> Tier 2/3 is a <b>feature to build when demand appears</b> — building it now means schema-routing complexity for zero enterprise customers.</p>
+    <p class="why">Your current design <b>allows for it</b> without a rewrite: because everything is <code>orgId</code>-scoped and DB connections are config-driven, routing a future enterprise org to its own schema/DB is an <b>additive change</b>, not a re-architecture.</p>
+  </div>
+
+  <hr class="rule" />
+
+  <h2 style="border:0; padding-top:0;">Bottom line</h2>
+  <ul class="plain">
+    <li><b>Table 1 (isolation):</b> Keep it as a <b>roadmap</b>. Tier 1 is done. Build Tier 2/3 only when an enterprise customer actually asks — not before.</li>
+    <li><b>Table 2 (10 services):</b> <b>Don't implement it.</b> Treat "Owner" as module ownership. Your feature-clustered services + database-per-service already give clean ownership without the distributed-systems tax.</li>
+    <li><b>When should you extract?</b> A module should become its own service only when one of these is true: (a) it needs to scale independently, (b) a separate team owns it, (c) it has a distinct lifecycle / deploy cadence, or (d) a separate compliance boundary. Billing met that bar — that's why it was extracted. Attendance / Leave / Payroll don't yet.</li>
+  </ul>
+
+  <div class="callout">
+    <p><strong>In one line:</strong> your architecture is already "right" for this stage. This proposal takes you <b>too far, too soon</b>. Simplicity is your ally right now — don't trade it away until a real customer or scale problem forces the change.</p>
+  </div>
+
+  <footer>Derived from the repo: 5 services · identity-db 63 tables / 29 modules · billing + analytics + notifications extracted · orgId row-level isolation · outbox+broker+inbox sync</footer>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    try {
+      var t = new URL(location.href).searchParams.get("theme");
+      if (t === "dark" || t === "light") root.setAttribute("data-theme", t);
+    } catch (e) {}
+  })();
+</script>

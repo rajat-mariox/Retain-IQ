@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.github
+*.log
+.env
+.env.*
+!.env.example
+docs
+
+# Frontend app is not part of any backend image
+frontend

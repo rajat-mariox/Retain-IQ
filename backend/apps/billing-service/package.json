@@ -1,0 +1,28 @@
+{
+  "name": "@retainiq/billing-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@retainiq/config": "file:../../packages/config",
+    "@retainiq/contracts": "file:../../packages/contracts",
+    "@retainiq/database": "file:../../packages/database",
+    "@retainiq/messaging": "file:../../packages/messaging",
+    "@retainiq/observability": "file:../../packages/observability",
+    "fastify": "^5.2.0",
+    "ioredis": "^5.11.1",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
+    "typescript": "^5.8.3"
+  }
+}

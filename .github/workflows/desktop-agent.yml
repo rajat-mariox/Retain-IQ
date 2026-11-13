@@ -1,0 +1,41 @@
+name: Desktop Agent
+
+# The desktop-agent is independent of the monorepo workspaces (its own
+# package.json, lockfile and deps), and the root CI never touches it — so it
+# gets its own build + test check, scoped to its own path.
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - "desktop-agent/**"
+      - ".github/workflows/desktop-agent.yml"
+  pull_request:
+    paths:
+      - "desktop-agent/**"
+      - ".github/workflows/desktop-agent.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop-agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop-agent/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc)
+        run: npm run build
+
+      - name: Test
+        run: npm test

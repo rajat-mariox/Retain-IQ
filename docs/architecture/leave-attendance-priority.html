@@ -1,0 +1,154 @@
+<title>RetainIQ — Leave & Attendance: What's Actually Mandatory</title>
+<style>
+  :root {
+    --bg:#f7f8fa; --panel:#fff; --ink:#16181d; --ink-soft:#3a3f4a; --muted:#6b7280; --faint:#9aa1ad; --line:#e5e7eb; --line-soft:#eef0f3;
+    --must:#be123c; --must-bg:#fff1f3; --must-line:#fecdd3;
+    --should:#b45309; --should-bg:#fffbeb; --should-line:#fde68a;
+    --nice:#0d9488; --nice-bg:#ecfdf9; --nice-line:#99f6e4;
+    --accent:#4f46e5;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
+    --radius:12px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0e1013; --panel:#16191e; --ink:#eceef2; --ink-soft:#c3c8d2; --muted:#8b93a1; --faint:#626b7a; --line:#262b33; --line-soft:#1e232a;
+      --must:#fb7185; --must-bg:#2b1218; --must-line:#5c1f2b; --should:#fbbf24; --should-bg:#2a2110; --should-line:#5c4415; --nice:#2dd4bf; --nice-bg:#0c2925; --nice-line:#134e48; --accent:#818cf8; }
+  }
+  :root[data-theme="light"]{ --bg:#f7f8fa;--panel:#fff;--ink:#16181d;--ink-soft:#3a3f4a;--muted:#6b7280;--faint:#9aa1ad;--line:#e5e7eb;--line-soft:#eef0f3;--must:#be123c;--must-bg:#fff1f3;--must-line:#fecdd3;--should:#b45309;--should-bg:#fffbeb;--should-line:#fde68a;--nice:#0d9488;--nice-bg:#ecfdf9;--nice-line:#99f6e4;--accent:#4f46e5; }
+  :root[data-theme="dark"]{ --bg:#0e1013;--panel:#16191e;--ink:#eceef2;--ink-soft:#c3c8d2;--muted:#8b93a1;--faint:#626b7a;--line:#262b33;--line-soft:#1e232a;--must:#fb7185;--must-bg:#2b1218;--must-line:#5c1f2b;--should:#fbbf24;--should-bg:#2a2110;--should-line:#5c4415;--nice:#2dd4bf;--nice-bg:#0c2925;--nice-line:#134e48;--accent:#818cf8; }
+  *{box-sizing:border-box;}
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); line-height:1.6; font-size:15px; -webkit-font-smoothing:antialiased; }
+  .wrap{ max-width:900px; margin:0 auto; padding:44px 22px 80px; }
+  .eyebrow{ font-family:var(--mono); font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); font-weight:600; }
+  h1{ font-size:clamp(25px,4.4vw,34px); line-height:1.15; margin:10px 0 12px; letter-spacing:-.02em; text-wrap:balance; }
+  .lede{ font-size:16.5px; color:var(--ink-soft); max-width:66ch; margin:0 0 8px; }
+
+  .legend{ display:flex; flex-wrap:wrap; gap:10px; margin:22px 0 8px; }
+  .lg{ display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--muted); }
+  .dot{ width:10px; height:10px; border-radius:3px; }
+  .d-must{ background:var(--must); } .d-should{ background:var(--should); } .d-nice{ background:var(--nice); }
+
+  h2{ font-size:15px; letter-spacing:.02em; text-transform:uppercase; margin:38px 0 4px; display:flex; align-items:center; gap:10px; }
+  h2 .dot{ width:11px; height:11px; }
+  h2.must{ color:var(--must); } h2.should{ color:var(--should); } h2.nice{ color:var(--nice); }
+  .h2sub{ color:var(--muted); font-size:13.5px; margin:0 0 14px; }
+
+  .item{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:15px 18px; margin:10px 0; }
+  .item.must{ border-left:3px solid var(--must); }
+  .item.should{ border-left:3px solid var(--should); }
+  .item.nice{ border-left:3px solid var(--nice); }
+  .item h3{ margin:0; font-size:15.5px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .item h3 .name{ font-weight:600; }
+  .item p{ margin:7px 0 0; color:var(--ink-soft); font-size:14px; }
+  .item p.saas{ color:var(--muted); font-size:13px; }
+  .item p.saas b{ color:var(--ink-soft); }
+
+  .badge{ font-family:var(--mono); font-size:10.5px; font-weight:600; letter-spacing:.03em; padding:2px 8px; border-radius:999px; border:1px solid; white-space:nowrap; }
+  .b-must{ color:var(--must); background:var(--must-bg); border-color:var(--must-line); }
+  .b-should{ color:var(--should); background:var(--should-bg); border-color:var(--should-line); }
+  .b-nice{ color:var(--nice); background:var(--nice-bg); border-color:var(--nice-line); }
+  .b-done{ color:var(--nice); background:transparent; border-color:var(--nice-line); }
+
+  .callout{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; margin:26px 0; }
+  .callout.accent{ border-color:var(--nice-line); background:var(--nice-bg); }
+  .callout p{ margin:6px 0 0; } .callout p:first-child{ margin-top:0; } .callout strong{ color:var(--ink); }
+
+  .rule{ height:1px; background:var(--line); margin:36px 0; border:0; }
+  footer{ margin-top:22px; color:var(--faint); font-size:12.5px; font-family:var(--mono); }
+  code{ font-family:var(--mono); font-size:.88em; background:var(--line-soft); padding:1px 6px; border-radius:5px; color:var(--ink-soft); }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">RetainIQ · Leave & Attendance Roadmap</div>
+  <h1>What's actually mandatory — a real-SaaS lens</h1>
+  <p class="lede">These are the remaining Leave/Attendance items. Not everything on a roadmap is required to ship a credible product. Below, each is graded by how essential it is for a real HR/workforce SaaS — so you spend effort where it counts.</p>
+
+  <div class="legend">
+    <span class="lg"><span class="dot d-must"></span><b style="color:var(--ink)">Must-have</b> — a serious HR product looks incomplete without it</span>
+    <span class="lg"><span class="dot d-should"></span><b style="color:var(--ink)">Should-have</b> — expected by mid-market, but you can launch without it</span>
+    <span class="lg"><span class="dot d-nice"></span><b style="color:var(--ink)">Nice-to-have</b> — differentiator / enterprise; build on demand</span>
+  </div>
+
+  <!-- MUST -->
+  <h2 class="must"><span class="dot d-must"></span>Must-have</h2>
+  <p class="h2sub">Customers will notice these missing. Prioritise.</p>
+
+  <div class="item must">
+    <h3><span class="name">Attendance regularization</span> <span class="badge b-must">MUST</span></h3>
+    <p>Employee forgot to check in/out → files a correction → manager approves → attendance fixed. Without it, one missed punch = a wrong record the person can't fix.</p>
+    <p class="saas"><b>Real SaaS:</b> Every attendance product (Keka, Zoho, greytHR) has this. <b>Note:</b> you already have "attendance corrections" — this may be 80% done; worth auditing before building.</p>
+  </div>
+
+  <div class="item must">
+    <h3><span class="name">Supporting-document upload on leave</span> <span class="badge b-must">MUST</span></h3>
+    <p>Attach a medical certificate to sick leave, a proof to bereavement, etc. Approvers need evidence for certain leave types; auditors need it retained.</p>
+    <p class="saas"><b>Real SaaS:</b> Standard. You already have S3/MinIO + presigned uploads (screenshots) — the plumbing exists, so this is <b>low effort, high expectation</b>.</p>
+  </div>
+
+  <!-- SHOULD -->
+  <h2 class="should"><span class="dot d-should"></span>Should-have</h2>
+  <p class="h2sub">Mid-market expects these, but a launch/MVP survives without them.</p>
+
+  <div class="item should">
+    <h3><span class="name">Attendance calendar + team availability</span> <span class="badge b-should">SHOULD</span></h3>
+    <p>A month grid of present/absent/leave/holiday per employee, and "who's available this week". You have the leave org-calendar; attendance isn't visualised the same way yet.</p>
+    <p class="saas"><b>Real SaaS:</b> Common and well-liked, but managers can live off the daily roster + leave calendar you already have.</p>
+  </div>
+
+  <div class="item should">
+    <h3><span class="name">Work schedule management</span> <span class="badge b-should">SHOULD</span></h3>
+    <p>Flexible / hybrid / remote / recurring shift patterns per employee or team. You have shifts + rotations; this is the richer scheduling layer on top.</p>
+    <p class="saas"><b>Real SaaS:</b> Matters a lot for shift-heavy orgs (retail, BPO), less for a standard 9–6 office. Depends on your target customer.</p>
+  </div>
+
+  <div class="item should">
+    <h3><span class="name">Overtime management</span> <span class="badge b-should">SHOULD</span></h3>
+    <p>Approve/reject accrued OT, mark billable, see trends. You already <b>track & display</b> OT (pending-approval) — the approval + reporting layer is what's missing.</p>
+    <p class="saas"><b>Real SaaS:</b> Important where OT is paid/billed. Since you track it already, closing the loop is moderate effort.</p>
+  </div>
+
+  <div class="item should">
+    <h3><span class="name">Scheduled reports</span> <span class="badge b-should">SHOULD</span></h3>
+    <p>Auto-email a weekly/monthly attendance or leave report to managers. You have report views + CSV export; this adds a scheduler + delivery.</p>
+    <p class="saas"><b>Real SaaS:</b> A convenience admins love, not a blocker. You have the report data already.</p>
+  </div>
+
+  <!-- NICE -->
+  <h2 class="nice"><span class="dot d-nice"></span>Nice-to-have / differentiator</h2>
+  <p class="h2sub">Build these when a customer asks, or to stand out — not before.</p>
+
+  <div class="item nice">
+    <h3><span class="name">Attendance intelligence scores</span> <span class="badge b-nice">NICE</span></h3>
+    <p>Punctuality / consistency / risk scores per employee from attendance patterns. A differentiator, not table stakes.</p>
+    <p class="saas"><b>Real SaaS:</b> Premium/AI-tier feature. Fits your "workforce intelligence" positioning later.</p>
+  </div>
+
+  <div class="item nice">
+    <h3><span class="name">Geofencing / location verification</span> <span class="badge b-nice">NICE</span></h3>
+    <p>Verify check-in happened at office/site coordinates. You already capture work-location; GPS enforcement is the add-on.</p>
+    <p class="saas"><b>Real SaaS:</b> Critical for field/hourly workforces, irrelevant for remote/office. Build only if your customers are field-based.</p>
+  </div>
+
+  <div class="item nice">
+    <h3><span class="name">Workforce planning / capacity forecast</span> <span class="badge b-nice">NICE</span></h3>
+    <p>Predict staffing gaps from leave + headcount + demand. Advanced analytics, enterprise-tier.</p>
+    <p class="saas"><b>Real SaaS:</b> A high-end differentiator (Workday territory). Far down the list.</p>
+  </div>
+
+  <hr class="rule" />
+
+  <div class="callout accent">
+    <p><strong>If I had to pick the next 2:</strong> <b>Supporting-document upload on leave</b> (must-have, and your S3 plumbing already exists — cheap win) and <b>Attendance regularization</b> (must-have, and likely already ~80% done via your corrections feature — audit first, then finish).</p>
+    <p>Everything in <span style="color:var(--should)">Should</span> is genuinely optional for now — pick based on your target customer (shift-heavy? → schedules + OT; office? → skip). Everything in <span style="color:var(--nice)">Nice</span> waits for a paying customer to ask.</p>
+  </div>
+
+  <div class="callout">
+    <p><strong>The honest answer to "is it mandatory?":</strong> Only <b>2 of these are truly mandatory</b> (document upload, regularization). The rest are "expected eventually" or "differentiators". You already shipped the hard parts — leave lifecycle, half-day, approval center, conflict detection, idle auto-checkout. You're past MVP on Leave/Attendance; what remains is polish + reach, not gaps that make the product look broken.</p>
+  </div>
+
+  <footer>Graded against the remaining "Not Started" Leave/Attendance items in the task tracker · already-shipped: leave lifecycle, half-day, approval center (conflict + analytics), corrections, idle auto-checkout</footer>
+</div>
+
+<script>
+  (function(){ var r=document.documentElement; try{ var t=new URL(location.href).searchParams.get("theme"); if(t==="dark"||t==="light") r.setAttribute("data-theme",t); }catch(e){} })();
+</script>

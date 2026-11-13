@@ -1,0 +1,195 @@
+// billing database — owned by apps/billing-service.
+// Plans (catalog), per-org Subscriptions, and Invoices. No Organization table
+// here: orgId is a plain UUID (no cross-database FK). The org is created in
+// identity-service, which emits `organization.created`; billing-service
+// consumes it and provisions the subscription.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/billing"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELED
+  EXPIRED // a trial that ended without converting to a paid plan
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+}
+
+enum ChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model Plan {
+  id            String   @id // free | basic | professional | enterprise
+  name          String
+  description   String?
+  // --- Pricing model ---
+  // Legacy flat per-seat price. Kept for back-compat; the seat-based model below
+  // supersedes it. When includedSeats=0 & basePrice=0, additionalSeatPrice acts
+  // exactly like the old pricePerSeat, so a plan can be migrated in place.
+  pricePerSeat  Int // USD cents (legacy flat per-seat)
+  // The bill = basePrice + max(0, seats - includedSeats) * additionalSeatPrice.
+  basePrice          Int     @default(0) // USD cents charged regardless of seat count
+  includedSeats      Int     @default(0) // seats covered by basePrice (no extra charge)
+  additionalSeatPrice Int    @default(0) // USD cents per seat beyond includedSeats
+  billingPeriod  String   @default("monthly")
+  // --- Seat capacity ---
+  seatLimit      Int?    // legacy max cap (null = unlimited); mirrored by maxSeats
+  minSeats       Int     @default(1)  // smallest purchasable seat quantity
+  maxSeats       Int?    // largest purchasable quantity (null = unlimited)
+  allowCustomSeats Boolean @default(true) // can the org pick a custom seat quantity?
+  // --- Trial policy (per plan) ---
+  trialEnabled Boolean @default(true) // may an org start on a trial of this plan?
+  trialDays    Int     @default(14)   // trial length when trialEnabled
+  storageLimitMb Int? // screenshot storage quota in MB; null = unlimited
+  features       String[]
+  color          String
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  subscriptions Subscription[]
+  planFeatures  PlanFeature[]
+
+  @@index([isActive])
+}
+
+model Subscription {
+  id                 String             @id @default(uuid()) @db.Uuid
+  orgId              String             @unique @db.Uuid
+  planId             String
+  status             SubscriptionStatus @default(TRIALING)
+  seats              Int                @default(1)
+  activeSeats        Int                @default(1)
+  // --- Rate lock (historical pricing) ---
+  // The commercial terms agreed when the subscription was created or last changed.
+  // Invoices & MRR read THESE, not the live Plan, so a later plan-price edit never
+  // retroactively rewrites an existing org's bill. Snapshotted from the Plan's
+  // pricing model at create/change time. lockedTotalPrice = base + extra-seat cost.
+  lockedBasePrice          Int? // USD cents; null = pre-migration sub, fall back to live plan
+  lockedAdditionalSeatPrice Int?
+  lockedIncludedSeats      Int?
+  lockedTotalPrice         Int? // computed total at the locked seat quantity
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  // --- Trial lifecycle ---
+  trialStartedAt     DateTime?
+  trialEndsAt        DateTime?
+  trialConvertedAt   DateTime? // when a trial became a paid ACTIVE subscription
+  trialExpiredAt     DateTime? // when a trial ended without converting (→ EXPIRED)
+  canceledAt         DateTime?
+  autoRenew          Boolean            @default(true)
+  billingEmail       String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  plan     Plan      @relation(fields: [planId], references: [id])
+  invoices Invoice[]
+
+  @@index([status])
+  @@index([planId, status])
+}
+
+// Per-plan feature LIMITS (a quota on a feature the plan already grants via
+// Plan.features[]). Presence here is not what grants a feature — Plan.features[]
+// still does that; this row sets a numeric ceiling on how much of it can be used.
+// e.g. { planId: "professional", featureCode: "api_calls", limitValue: 10000,
+// limitType: "monthly" }. Absence of a row = no limit (unlimited) for that plan.
+model PlanFeature {
+  id         String   @id @default(uuid()) @db.Uuid
+  planId     String
+  featureCode String  // matches a code used in Plan.features / the entitlement layer
+  limitValue Int?     // null = feature present but unmetered
+  limitType  String?  // "monthly" | "daily" | "total" | "concurrent" — free-form, app-interpreted
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureCode])
+  @@index([planId])
+}
+
+// Append-only billing lifecycle events (provisioning, renewals, dunning, payment
+// failures). Read by identity's platform activity feed via the read binding.
+model BillingEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  type       String // subscription.created | .renewed | .canceled | .suspended | payment.failed
+  summary    String
+  planId     String?
+  amountCents Int?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Invoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  orgId          String        @db.Uuid
+  subscriptionId String        @db.Uuid
+  invoiceNumber  String        @unique
+  status         InvoiceStatus @default(OPEN)
+  issuedAt       DateTime
+  dueAt          DateTime
+  paidAt         DateTime?
+  periodStart    DateTime
+  periodEnd      DateTime
+  subtotal       Int
+  totalAmount    Int
+  amountDue      Int           @default(0)
+  currency       String        @default("USD")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([orgId, issuedAt])
+  @@index([status, paidAt])
+  @@index([subscriptionId])
+}
+
+// A pending seat/plan change an org requested that a platform super-admin must
+// approve before it is applied. Only on APPROVED does billing-service apply the
+// change (re-lock the rate). orgId is a plain UUID (no cross-db FK), like the rest.
+model SubscriptionChangeRequest {
+  id                  String              @id @default(uuid()) @db.Uuid
+  orgId               String              @db.Uuid
+  fromPlanId          String
+  toPlanId            String
+  fromSeats           Int
+  toSeats             Int
+  estimatedTotalPrice Int // USD cents at the requested seats (base + extra seats), locked-rate model
+  estimatedDeltaPrice Int // to − from (can be negative for a downgrade)
+  status              ChangeRequestStatus @default(PENDING)
+  requestedByUserId   String?             @db.Uuid
+  requestedByEmail    String?
+  note                String?
+  decidedByName       String?
+  decisionNote        String?
+  decidedAt           DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@index([status, createdAt])
+  @@index([orgId])
+}

@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: identity-service
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ["identity-service:3001"]
+        labels: { service: identity-service }
+
+  - job_name: activity-ingestion
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ["activity-ingestion:3002"]
+        labels: { service: activity-ingestion }
+
+  - job_name: event-processor
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["event-processor:3003"]
+        labels: { service: event-processor }
+
+  - job_name: analytics-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["analytics-service:3004"]
+        labels: { service: analytics-service }
+
+  - job_name: notifications-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["notifications-service:3005"]
+        labels: { service: notifications-service }

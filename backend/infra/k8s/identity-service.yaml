@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-service
+  namespace: retainiq
+  labels: { app: identity-service }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: identity-service }
+  template:
+    metadata:
+      labels: { app: identity-service }
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: identity-service
+          image: retainiq/identity-service:latest
+          command: ["node", "apps/identity-service/dist/main.js"]
+          ports:
+            - { name: http, containerPort: 3001 }
+          envFrom:
+            - configMapRef: { name: retainiq-config }
+            - secretRef: { name: retainiq-secrets }
+          env:
+            - { name: PORT, value: "3001" }
+            # Owns the identity DB; reads notifications DB read-only (BFF inbox feed).
+            - { name: DATABASE_URL, valueFrom: { secretKeyRef: { name: retainiq-db, key: IDENTITY_DATABASE_URL } } }
+            - { name: NOTIFICATIONS_DATABASE_URL, valueFrom: { secretKeyRef: { name: retainiq-db, key: NOTIFICATIONS_DATABASE_URL } } }
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+          # Startup gives slow boots headroom before liveness kicks in.
+          startupProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /v1/health/ready, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-service
+  namespace: retainiq
+  labels: { app: identity-service }
+spec:
+  selector: { app: identity-service }
+  ports:
+    - { name: http, port: 3001, targetPort: http }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: identity-service
+  namespace: retainiq
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: identity-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+    - type: Resource
+      resource: { name: memory, target: { type: Utilization, averageUtilization: 80 } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: identity-service
+  namespace: retainiq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: identity-service }

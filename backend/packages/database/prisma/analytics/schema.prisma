@@ -1,0 +1,123 @@
+// analytics database — owned by apps/analytics-worker.
+// Holds its own idempotent inbox (so the inbox-write and fact-upsert commit in one
+// local transaction) plus the precomputed daily productivity read model.
+// Postgres for now; EmployeeDayFact mirrors a ClickHouse ReplacingMergeTree fact.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/analytics"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ConsumedEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  eventId    String   @db.Uuid
+  consumer   String
+  stream     String
+  eventType  String
+  orgId      String?  @db.Uuid
+  payload    Json
+  consumedAt DateTime @default(now())
+
+  @@unique([eventId, consumer])
+  @@index([orgId, consumedAt])
+  @@index([eventType, consumedAt])
+}
+
+model EmployeeDayFact {
+  id                String   @id @default(uuid()) @db.Uuid
+  orgId             String   @db.Uuid
+  employeeId        String   @db.Uuid
+  day               DateTime @db.Date
+  activeSeconds     Int      @default(0)
+  idleSeconds       Int      @default(0)
+  productiveSeconds Int      @default(0)
+  eventCount        Int      @default(0)
+  productivityScore Float    @default(0)
+  focusScore        Float    @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([orgId, employeeId, day])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+}
+
+// ---------------------------------------------------------------------------
+// Employee-monitoring read models (built from the activity stream by the
+// analytics-worker, alongside EmployeeDayFact). These keep the DETAIL that the
+// day-fact rollup discards: sessions, per-app/site usage, and the timeline.
+// ---------------------------------------------------------------------------
+
+model WorkSession {
+  id            String    @id @default(uuid()) @db.Uuid
+  orgId         String    @db.Uuid
+  employeeId    String    @db.Uuid
+  sessionKey    String // agent-provided session id
+  day           DateTime  @db.Date
+  startedAt     DateTime
+  endedAt       DateTime?
+  activeSeconds Int       @default(0)
+  idleSeconds   Int       @default(0)
+  breakSeconds  Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([orgId, employeeId, sessionKey])
+  @@index([orgId, employeeId, day])
+  @@index([orgId, day])
+}
+
+model AppUsageDaily {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  day        DateTime @db.Date
+  appName    String
+  category   String   @default("NEUTRAL") // PRODUCTIVE | NEUTRAL | DISTRACTING
+  seconds    Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([orgId, employeeId, day, appName])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+}
+
+model WebsiteUsageDaily {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  day        DateTime @db.Date
+  domain     String
+  category   String   @default("NEUTRAL")
+  seconds    Int      @default(0)
+  visits     Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([orgId, employeeId, day, domain])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, day])
+}
+
+model ActivityEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  orgId      String   @db.Uuid
+  employeeId String   @db.Uuid
+  day        DateTime @db.Date
+  occurredAt DateTime
+  type       String // app | website | idle | break | session | screenshot | focus | context_switch
+  title      String?
+  detail     String?
+  category   String?
+  seconds    Int      @default(0)
+
+  @@index([orgId, employeeId, day, occurredAt])
+  @@index([orgId, day])
+  @@index([orgId, employeeId, occurredAt])
+}

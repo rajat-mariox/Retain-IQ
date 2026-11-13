@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #f6f7f8;
+  --color-panel: #ffffff;
+  --color-panel-2: #f1f3f5;
+  --color-hairline: #e6e8ec;
+  --color-brand: #1f883d;
+  --color-brand-soft: #2da44e;
+
+  /* Attendance health-score ramp (good → poor). Always paired with a number or
+     label, so it reads as ordinal severity rather than category. */
+  --score-excellent: #059669;
+  --score-good: #65a30d;
+  --score-fair: #f59e0b;
+  --score-poor: #f43f5e;
+
+  --font-sans:
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(31, 136, 61, 0.1), transparent 55%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(13, 148, 136, 0.05), transparent 50%),
+    var(--color-canvas);
+  color: #0f172a;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Toast entrance for in-app notifications. */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Lightbox: backdrop fade + preview card pop-in, and a soft swap when stepping
+   between screenshots. */
+@keyframes lbFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes lbPop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes lbSwap {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Thin, light scrollbars to match the panels. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* Recharts: keep tooltips/axes legible on the light panels. */
+.recharts-default-tooltip {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12) !important;
+}
+.recharts-cartesian-axis-tick text {
+  fill: #64748b;
+}

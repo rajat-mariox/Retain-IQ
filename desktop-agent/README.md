@@ -1,0 +1,207 @@
+# RetainIQ Desktop Agent
+
+An **independent** Electron app that captures work activity (active application,
+website, idle time, work sessions) and streams it to the RetainIQ backend. It is
+intentionally self-contained — its own `package.json`, build, and dependencies —
+so it can be developed, versioned, and shipped separately from the backend/web
+monorepo.
+
+## How it fits the platform
+
+```
+desktop-agent (Electron)
+    │  POST /v1/ingest/activity   (Bearer = employee access token)
+    ▼
+activity-ingestion service ──publish──▶ broker "activity" stream
+                                             │
+                                             ▼
+                              analytics-service (worker)
+                                 ├─ EmployeeDayFact (rollup + scores)
+                                 └─ WorkSession / AppUsageDaily /
+                                    WebsiteUsageDaily / ActivityEvent (detail)
+                                             │
+                                             ▼
+                              identity-service  GET /v1/monitoring/*
+                                             │
+                                             ▼
+                                   org-web  → Monitoring UI
+```
+
+The agent only needs two backend URLs and an employee's credentials. It performs
+no direct database access.
+
+## Run (development)
+
+```bash
+cd desktop-agent
+npm install
+npm start          # builds TS then launches Electron
+```
+
+Point it at your stack (defaults shown):
+
+```bash
+RETAINIQ_IDENTITY_URL=http://localhost:3001 \
+RETAINIQ_INGESTION_URL=http://localhost:3002 \
+npm start
+```
+
+Sign in with an org employee (e.g. a member of your org). The agent resolves the
+`employeeId` via `/v1/auth/me`, starts a work session, and begins sampling.
+
+## Platform setup
+
+The agent runs on Windows, macOS and Linux, but each OS needs a little setup
+before window/website tracking and screenshots work. Windows needs nothing
+extra. macOS and Linux are below.
+
+### macOS
+
+`active-win` ships prebuilt binaries for both Apple Silicon (`arm64`) and Intel
+(`x64`), so no native toolchain is needed. Two OS permissions must be granted on
+first use — the agent keeps running without them, it just can't capture what
+they gate:
+
+1. **Accessibility** — required to read the active window / app name.
+   *System Settings → Privacy & Security → Accessibility* → enable the agent (or
+   your terminal / Electron, when running from source).
+2. **Screen Recording** — required for screenshots. Without it, capture returns
+   nothing and the agent simply skips screenshots; everything else still works.
+   *System Settings → Privacy & Security → Screen Recording* → enable the agent.
+
+After toggling either permission, quit and reopen the app so macOS re-reads it.
+
+Website URLs are read natively from the browser on macOS (no extension needed),
+though the [browser extension](./browser-extension/) still works as a fallback.
+
+> **Unsigned build:** releases aren't code-signed or notarized yet, so Gatekeeper
+> blocks the first launch ("can't be opened because it is from an unidentified
+> developer"). Right-click the app → **Open** → **Open**, once, to allow it —
+> or `xattr -dr com.apple.quarantine "/Applications/RetainIQ Agent.app"`.
+
+### Linux
+
+`active-win` on Linux is **not** a native binary — it shells out to the X11
+tools `xprop` and `xwininfo`, which must be installed, and it works on **X11
+only** (under Wayland you need an XWayland session):
+
+```bash
+# Debian / Ubuntu
+sudo apt install x11-utils          # provides xprop and xwininfo
+# Fedora
+sudo dnf install xorg-x11-utils
+# Arch
+sudo pacman -S xorg-xprop xorg-xwininfo
+```
+
+Without these, active-window and app tracking silently return nothing (idle,
+screenshots and attendance still work). Linux does not expose the browser URL
+to the OS, so **website tracking needs the [browser extension](./browser-extension/)**,
+which reports the active tab to the agent's loopback receiver.
+
+Screenshots use Electron's `desktopCapturer`, which works on X11; on Wayland,
+capture may be restricted by the compositor's portal permissions.
+
+## What it captures
+
+| Event | Source | Interval |
+|-------|--------|----------|
+| `activity.session.started/ended` | app launch / quit | once per run |
+| `activity.app.used` | foreground app (`active-win`) | every `pollSeconds` (15s) |
+| `activity.website.visited` | active browser URL | every `pollSeconds` |
+| `activity.idle.started` | idle threshold crossed | on going idle |
+| `activity.idle.ended` | `powerMonitor.getSystemIdleTime()` | on return from idle |
+| `activity.context_switch.recorded` | active app/site changed | on each switch |
+| `activity.focus.block.completed` | ≥`focusBlockMinSeconds` on one app/site | when the stretch ends |
+
+For each poll the agent emits **one** event: a `website.visited` when the active
+window is a browser and the current URL is known, otherwise an `app.used`. This
+avoids double-counting app-time and site-time for the same interval.
+
+### Website tracking (all platforms)
+
+`active-win` only exposes a browser's URL on macOS. To capture websites on
+**Windows/Linux** too, install the companion **[browser extension](./browser-extension/)**:
+it reports the active tab's URL to a loopback receiver the agent runs on
+`127.0.0.1:<tabServerPort>` (default 7317). The agent prefers the OS-reported URL
+(macOS) and falls back to the extension's report (any OS). Websites are then
+classified **productive / neutral / distracting** by the analytics worker.
+
+Events are queued and uploaded in batches every `flushSeconds` (30s); a failed
+upload is retried on the next tick, and a 401 triggers a token refresh.
+
+### Live attendance sync
+
+Attendance changes (from the web app, another device, or the auto-checkout
+sweep) are pushed to the agent over Server-Sent Events, so its attendance panel
+updates the moment something changes rather than on a poll. The main process
+opens the identity service's notification stream (which already carries
+attendance frames), and on each one nudges the renderer to re-read. The stream
+reconnects with capped backoff on any drop, and a slow renderer poll (15s) stays
+on as a fallback, so a dead stream degrades gracefully instead of going stale.
+
+## Configuration
+
+Environment variables (or a saved `agent-state.json` under Electron's userData):
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `RETAINIQ_IDENTITY_URL` | `http://localhost:3001` | identity-service base |
+| `RETAINIQ_INGESTION_URL` | `http://localhost:3002` | activity-ingestion base |
+| `RETAINIQ_POLL_SECONDS` | `15` | active-window / idle sample rate |
+| `RETAINIQ_FLUSH_SECONDS` | `30` | upload batch interval |
+| `RETAINIQ_IDLE_SECONDS` | `300` | no-input duration that counts as idle |
+| `RETAINIQ_FOCUS_BLOCK_SECONDS` | `300` | uninterrupted time on one app/site to count as a focus block |
+| `RETAINIQ_MAX_QUEUE` | `10000` | cap on locally-buffered events (oldest dropped beyond this) |
+| `RETAINIQ_TAB_PORT` | `7317` | loopback port the browser extension reports tabs to |
+| `RETAINIQ_POLICY_SECONDS` | `300` | how often to re-fetch the org monitoring policy |
+
+## Packaging
+
+```bash
+npm run package    # electron-builder → release/
+```
+
+Per-OS targets are configured: Windows (`nsis` installer + `portable`), macOS
+(`dmg` + `zip`), Linux (`AppImage` + `deb`). The app icon is `build/icon.png`
+(512×512), from which electron-builder derives the `.ico` / `.icns`. Native
+modules are not rebuilt (`npmRebuild: false`) since `active-win` ships prebuilt
+binaries.
+
+Builds are **unsigned** for now — no code-signing or notarization is configured,
+so macOS Gatekeeper and Windows SmartScreen will warn on first launch. Signing
+and auto-update are the remaining release work and need certificates (Apple
+Developer ID, a Windows code-signing cert) plus an update feed; see
+[ROADMAP.md](./ROADMAP.md).
+
+> On Windows, building the installer locally needs Developer Mode enabled (or an
+> elevated shell): electron-builder unpacks a signing-tool cache that contains
+> symlinks. CI (Linux) is unaffected. The app itself packs fine either way
+> (`release/win-unpacked/`).
+
+## Screenshots
+
+When `screenshotEnabled` is on (default), the agent captures **every connected
+display** every `screenshotIntervalSeconds` (10 min) while tracking (including
+idle time, so away-from-desk activity is still captured):
+`desktopCapturer` → downscaled JPEG per screen → `POST /v1/storage/screenshots`
+reserves quota + returns a presigned URL → the bytes are PUT directly to object
+storage → one `activity.screenshot.captured` event per display is logged on the
+timeline, tagged with a `display` index. If the org has screenshots disabled or
+is over quota, the request is refused and the agent simply skips (no retries
+spam). macOS needs Screen-Recording permission.
+
+> Multi-monitor note: N displays produce N images per interval, each reserving
+> its own quota. Whatever uploads is kept even if a later screen is refused.
+
+Config: `RETAINIQ_SCREENSHOTS` (true/false), `RETAINIQ_SCREENSHOT_SECONDS`,
+`RETAINIQ_SCREENSHOT_WIDTH`, `RETAINIQ_SCREENSHOT_QUALITY`.
+
+## Not yet included (roadmap)
+
+- Auto-update, code-signing/notarization, and per-OS release builds.
+
+See [ROADMAP.md](./ROADMAP.md) for the full plan. Break start/stop, break-kind
+selection, multi-monitor capture, overtime display, attendance corrections
+(request / view / withdraw), idle-onset / focus-block / context-switch signals,
+and live SSE attendance sync are now implemented.

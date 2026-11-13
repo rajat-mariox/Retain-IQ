@@ -1,0 +1,70 @@
+{
+  "name": "retainiq-desktop-agent",
+  "productName": "RetainIQ Agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RetainIQ workforce-monitoring desktop agent (Electron). Fully independent of the backend/web monorepo.",
+  "main": "dist/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "package": "npm run build && electron-builder",
+    "package:dir": "npm run build && electron-builder --dir",
+    "test": "npm run build && node test/renderer-flow.test.mjs && node test/idle-warning.test.mjs && node --test test/focus-tracking.test.mjs test/sse-parse.test.mjs test/queue-logic.test.mjs test/store.test.mjs",
+    "test:renderer": "node test/renderer-flow.test.mjs"
+  },
+  "dependencies": {
+    "active-win": "^8.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.retainiq.agent",
+    "productName": "RetainIQ Agent",
+    "copyright": "RetainIQ",
+    "protocols": [{ "name": "RetainIQ Agent", "schemes": ["retainiq"] }],
+    "npmRebuild": false,
+    "files": [
+      "dist/**/*",
+      "src/renderer/**/*"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office",
+      "icon": "build/icon.png"
+    }
+  }
+}

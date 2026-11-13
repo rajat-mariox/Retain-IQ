@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RetainIQ Agent</title>
+    <style>
+      :root { --brand: #1f883d; --ink: #0f172a; --muted: #64748b; --line: #e2e8f0; --panel: #ffffff; --bg: #f8fafc; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+      .wrap { padding: 24px; }
+      h1 { font-size: 18px; margin: 0 0 2px; }
+      .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+      label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
+      input { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; }
+      button { width: 100%; padding: 11px; border: 0; border-radius: 10px; background: var(--brand); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 16px; }
+      button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+      .err { color: #dc2626; font-size: 13px; margin-top: 12px; min-height: 16px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+      .row { display: flex; justify-content: space-between; font-size: 13px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+      .row:last-child { border-bottom: 0; }
+      .row span:last-child { font-weight: 600; }
+      .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+      .on { background: var(--brand); } .off { background: #94a3b8; } .idle { background: #d97706; }
+      .hide { display: none; }
+      /* The overlay uses an ID selector for display:flex, which would out-specify
+         the .hide class — so hide it with an equally-specific rule. */
+      #idleOverlay.hide { display: none; }
+      select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; background: #fff; margin-top: 8px; }
+      /* Idle auto-checkout warning — full-window overlay with a live countdown. */
+      #idleOverlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.72); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 100; }
+      #idleOverlay .idle-card { background: var(--panel); border-radius: 16px; padding: 26px 24px; text-align: center; box-shadow: 0 20px 45px rgba(0,0,0,0.35); max-width: 320px; }
+      #idleOverlay h2 { margin: 0 0 6px; font-size: 17px; }
+      #idleOverlay p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+      #idleCount { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; color: #d97706; letter-spacing: 1px; }
+      #idleOverlay .idle-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+      #idleStayBtn { margin-top: 18px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>RetainIQ Agent</h1>
+      <div class="sub" id="sub">Sign in to start activity tracking.</div>
+
+      <div id="loginView" class="card">
+        <label>Work email</label>
+        <input id="email" type="email" placeholder="you@company.com" />
+        <label>Password</label>
+        <input id="password" type="password" placeholder="••••••••" />
+        <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-top:14px; cursor:pointer;">
+          <input id="remember" type="checkbox" checked style="width:auto; margin:0;" />
+          Remember me on this device
+        </label>
+        <button id="loginBtn">Sign in &amp; start</button>
+        <div class="err" id="err"></div>
+      </div>
+
+      <div id="statusView" class="card hide">
+        <div class="row"><span>Signed in</span><span id="who">—</span></div>
+        <div class="row"><span>Organization</span><span id="org">—</span></div>
+        <div class="row"><span>Status</span><span id="state">—</span></div>
+        <div class="row"><span>Current app</span><span id="app">—</span></div>
+        <div class="row"><span>Current site</span><span id="site">—</span></div>
+        <div class="row"><span>Screenshots</span><span id="shots">—</span></div>
+        <div class="row"><span>Queued events</span><span id="queued">0</span></div>
+        <div class="row"><span>Uploaded</span><span id="uploaded">0</span></div>
+        <div class="row"><span>Last upload</span><span id="flush">—</span></div>
+        <button id="toggleBtn">Pause tracking</button>
+        <button id="logoutBtn" class="secondary">Sign out</button>
+      </div>
+
+      <!-- Attendance mirrors the web app; hidden for owners, who aren't tracked. -->
+      <div id="attendance" class="card hide">
+        <div class="row"><span>Attendance</span><span id="attState">—</span></div>
+        <div class="row"><span>Checked in</span><span id="attIn">—</span></div>
+        <div class="row"><span>Checked out</span><span id="attOut">—</span></div>
+        <div class="row"><span>Break today</span><span id="attBreak">0 min</span></div>
+        <div class="row" id="attOtRow"><span>Overtime today</span><span id="attOt">—</span></div>
+        <!-- Break kind is chosen before starting a break; hidden while on one. -->
+        <select id="breakKind" class="hide">
+          <option value="LUNCH">Lunch</option>
+          <option value="TEA">Tea / coffee</option>
+          <option value="PERSONAL">Personal</option>
+          <option value="MEETING">Meeting</option>
+          <option value="OTHER">Other</option>
+        </select>
+        <button id="punchBtn" class="secondary hide">Check in</button>
+        <button id="breakBtn" class="secondary hide">Start break</button>
+      </div>
+
+      <!-- Attendance corrections: raise a fix for a day the clock got wrong.
+           The request goes to the employee's manager; nothing here edits the
+           record. Hidden for owners (same as the attendance card). -->
+      <div id="corrections" class="card hide" style="margin-top:14px;">
+        <div class="row" style="border-bottom:0; padding-bottom:2px;">
+          <span style="font-weight:600;">Corrections</span>
+          <button id="corrNewBtn" class="secondary" style="width:auto; margin:0; padding:6px 12px; font-size:13px;">Request a fix</button>
+        </div>
+        <div id="corrList" style="font-size:13px;"></div>
+
+        <!-- Request form (hidden until "Request a fix"). -->
+        <div id="corrForm" class="hide" style="border-top:1px solid var(--line); margin-top:10px; padding-top:12px;">
+          <label>Day</label>
+          <input id="corrDay" type="date" />
+          <label>What happened</label>
+          <select id="corrType">
+            <option value="MISSED_CHECK_IN">I forgot to check in</option>
+            <option value="MISSED_CHECK_OUT" selected>I forgot to check out</option>
+            <option value="WRONG_TIME">The recorded time is wrong</option>
+            <option value="OVERTIME">Claim overtime I worked</option>
+            <option value="OTHER">Something else</option>
+          </select>
+          <div id="corrInWrap"><label>Actual check-in time</label><input id="corrIn" type="time" /></div>
+          <div id="corrOutWrap"><label>Actual check-out time</label><input id="corrOut" type="time" /></div>
+          <div id="corrOtWrap"><label>Overtime minutes</label><input id="corrOt" type="number" min="1" max="1440" value="60" /></div>
+          <label>Why</label>
+          <input id="corrReason" type="text" placeholder="e.g. Client meeting ran late" />
+          <div class="err" id="corrErr"></div>
+          <button id="corrSubmit">Send to my manager</button>
+          <button id="corrCancel" class="secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Idle auto-checkout warning. Shown by the main process via onIdleWarn with
+         a live countdown; dismissed on activity (onIdleWarnClear) or checkout. -->
+    <div id="idleOverlay" class="hide">
+      <div class="idle-card">
+        <h2>Are you still there?</h2>
+        <p>You've been idle. You'll be checked out automatically in</p>
+        <div id="idleCount">5:00</div>
+        <div class="idle-hint">Move your mouse or press a key to stay checked in.</div>
+        <button id="idleStayBtn">I'm still here</button>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
