@@ -32,6 +32,7 @@ export interface NavItem {
   adminOnly?: boolean;
   employeeOnly?: boolean; // hidden from anyone who can manage projects (Owner/Manager)
   hideForOwner?: boolean; // hidden for the Owner specifically (still shown to Managers/staff)
+  ownerLabel?: string; // label shown to the Owner instead of `label`
   flag?: string; // hidden when this platform feature flag is off
   permission?: string; // hidden unless the member holds this permission
 }
@@ -53,7 +54,8 @@ export function isNavGroup(entry: NavEntry): entry is NavGroup {
 
 export const NAV_ITEMS: NavEntry[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "My Time", href: "/time", icon: Timer, flag: "timeTracking" },
+  // The Owner doesn't file time (backend rejects it) — they only review/approve.
+  { label: "My Time", ownerLabel: "Timesheet Approvals", href: "/time", icon: Timer, flag: "timeTracking" },
   { label: "Attendance", href: "/attendance", icon: CalendarCheck, flag: "attendance" },
   { label: "Leave", href: "/leave", icon: CalendarDays, flag: "leave" },
   { label: "Payslips", href: "/payslips", icon: FileText, flag: "payroll", hideForOwner: true },

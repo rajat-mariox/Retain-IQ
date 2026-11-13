@@ -3,7 +3,7 @@ import { allPermissions, permissions, type Permission } from "@retainiq/authz";
 import { requireTenantContext } from "../../common/context/request-context.store.js";
 import { PrismaService } from "../../common/database/prisma.service.js";
 import { PermissionBundleService } from "../../common/security/permission-bundle.service.js";
-import { ensureSystemRoles } from "../../common/security/roles.util.js";
+import { OWNER_ROLE, ensureSystemRoles } from "../../common/security/roles.util.js";
 
 type ScopeType = "ORG" | "DEPARTMENT" | "TEAM" | "SELF";
 
@@ -106,12 +106,11 @@ export class RbacService implements OnModuleInit {
   ) {}
 
   /**
-   * Re-sync every org's built-in Owner/Manager/Employee roles to the current
-   * definitions on boot. ensureSystemRoles upserts by (orgId, name) and rewrites
-   * the permission set, so a change to what a built-in role includes (e.g.
-   * removing payroll from Manager) propagates to organizations that already
-   * exist, not just newly-created ones. Cached bundles then refresh within their
-   * 60s TTL. Idempotent and safe to run every start-up.
+   * Re-sync every org's built-in roles to the current definitions on boot, so a
+   * change to what a built-in role includes (e.g. removing payroll from Manager)
+   * propagates to organizations that already exist. Built-in roles an org has
+   * customized are left as the org set them (see ensureSystemRoles). Cached
+   * bundles then refresh within their 60s TTL. Idempotent and safe every start-up.
    */
   async onModuleInit(): Promise<void> {
     const orgs = await this.prisma.organization.findMany({ select: { id: true } });
@@ -173,19 +172,25 @@ export class RbacService implements OnModuleInit {
   }
 
   /**
-   * Edit a custom role's name / description / permissions. Built-in roles are
-   * locked — they're re-synced from code on boot, so an edit here wouldn't
-   * stick and could confuse. Bumps version and clears the cached bundle of
-   * everyone holding the role, so the change takes effect at once.
+   * Edit a role's name / description / permissions. Built-in roles (Manager, HR
+   * Manager, Employee) can have their description and permissions edited but
+   * not their name — code and approval routing refer to them by name. The Owner
+   * role stays fixed so an org can never lock itself out. Editing permissions
+   * bumps version, which also tells the boot re-sync (ensureSystemRoles) to stop
+   * overwriting a customized built-in role. Clears the cached bundle of everyone
+   * holding the role, so the change takes effect at once.
    */
   async updateRole(id: string, input: Partial<RoleInput>) {
     const ctx = requireTenantContext();
     const role = await this.prisma.role.findFirst({ where: { id, orgId: ctx.orgId } });
     if (!role) throw new NotFoundException("Role not found.");
-    if (role.isSystem) throw new ForbiddenException("The built-in Owner, Manager and Employee roles can't be edited.");
+    if (role.isSystem && role.name === OWNER_ROLE) throw new ForbiddenException("The Owner role always has full access and can't be edited.");
+    if (role.isSystem && input.name !== undefined && input.name.trim() !== role.name) {
+      throw new BadRequestException("Built-in roles can't be renamed. You can still change what they can do.");
+    }
 
     const data: { name?: string; description?: string | null; permissions?: Permission[]; version?: number } = {};
-    if (input.name !== undefined) {
+    if (input.name !== undefined && !role.isSystem) {
       const name = input.name.trim();
       if (name.length < 2) throw new BadRequestException("Give the role a name (at least 2 characters).");
       const clash = await this.prisma.role.findFirst({ where: { orgId: ctx.orgId, name, id: { not: id } } });

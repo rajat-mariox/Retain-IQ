@@ -23,6 +23,8 @@ export interface Session {
   employeeId: string;
   email: string;
   orgName: string;
+  /** When this agent signed in; a web-panel logout after this signs it out. */
+  signedInAt?: string;
 }
 
 interface Persisted {

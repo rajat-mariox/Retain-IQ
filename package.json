@@ -56,7 +56,9 @@
     "up:local": "docker compose -f docker-compose.local.yml up -d --build",
     "up:local:all": "npm run up:local && node scripts/dev-parallel.mjs all",
     "down:local": "docker compose -f docker-compose.local.yml down",
-    "down:local:clean": "docker compose -f docker-compose.local.yml down -v"
+    "down:local:clean": "docker compose -f docker-compose.local.yml down -v",
+    "demo:seed": "node scripts/demo-it-org.mjs seed",
+    "demo:remove": "node scripts/demo-it-org.mjs remove"
   },
   "devDependencies": {
     "@eslint/js": "^9.29.0",

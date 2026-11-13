@@ -12,8 +12,8 @@ const input = "w-full rounded-lg border border-hairline bg-panel px-3 py-2 text-
 const labelCls = "mb-1.5 block text-sm font-medium text-slate-700";
 const btnPrimary = "inline-flex items-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-white hover:bg-brand-soft disabled:opacity-60";
 
-type Draft = { id: string | null; name: string; description: string; permissions: Set<string> };
-const emptyDraft = (): Draft => ({ id: null, name: "", description: "", permissions: new Set() });
+type Draft = { id: string | null; name: string; description: string; permissions: Set<string>; system: boolean };
+const emptyDraft = (): Draft => ({ id: null, name: "", description: "", permissions: new Set(), system: false });
 
 /**
  * Create and manage the roles your organization uses. Deliberately plain
@@ -34,7 +34,7 @@ export function RolesManager({ initial, catalog }: { initial: OrgRole[]; catalog
   const openNew = () => { setError(null); setDraft(emptyDraft()); };
   const openEdit = (r: OrgRole) => {
     setError(null);
-    setDraft({ id: r.id, name: r.name, description: r.description ?? "", permissions: new Set(r.permissions) });
+    setDraft({ id: r.id, name: r.name, description: r.description ?? "", permissions: new Set(r.permissions), system: r.isSystem });
   };
 
   const toggle = (key: string) =>
@@ -86,7 +86,7 @@ export function RolesManager({ initial, catalog }: { initial: OrgRole[]; catalog
     <Card>
       <CardHeader
         title="Roles"
-        subtitle="A role is a named set of what someone can see and do. Create your own, like Finance or HR."
+        subtitle="A role is a named set of what someone can see and do. Edit the built-in ones or create your own, like Finance."
         action={
           <button type="button" onClick={openNew} className={btnPrimary}>
             <Plus className="size-4" /> New role
@@ -126,9 +126,13 @@ export function RolesManager({ initial, catalog }: { initial: OrgRole[]; catalog
                 <td className="px-5 py-3 tabular-nums text-slate-600">{r.assignedCount}</td>
                 <td className="px-5 py-3">
                   <div className="flex justify-end gap-1.5">
-                    {/* Built-in roles are fixed; only custom roles can be changed. */}
-                    {r.isSystem ? (
+                    {/* Owner is fixed. Other built-in roles can be edited (not renamed or deleted). */}
+                    {r.isSystem && r.name === "Owner" ? (
                       <span className="text-xs text-slate-400">Fixed</span>
+                    ) : r.isSystem ? (
+                      <button onClick={() => openEdit(r)} title="Edit" className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+                        <Pencil className="size-4" />
+                      </button>
                     ) : (
                       <>
                         <button onClick={() => openEdit(r)} title="Edit" className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
@@ -153,7 +157,14 @@ export function RolesManager({ initial, catalog }: { initial: OrgRole[]; catalog
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className={labelCls}>Role name</label>
-                <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="e.g. Finance" className={input} />
+                <input
+                  value={draft.name}
+                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                  placeholder="e.g. Finance"
+                  disabled={draft.system}
+                  title={draft.system ? "Built-in roles can't be renamed" : undefined}
+                  className={`${input} disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500`}
+                />
               </div>
               <div>
                 <label className={labelCls}>Short description <span className="font-normal text-slate-400">(optional)</span></label>

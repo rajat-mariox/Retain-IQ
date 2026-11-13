@@ -43,6 +43,8 @@ export type RefreshInput = z.infer<typeof refreshSchema>;
 
 export const logoutSchema = z.object({
   refreshToken: z.string().min(1),
+  /** Web-panel logout: also sign out (and close) this user's desktop agent. */
+  signOutAgent: z.boolean().optional(),
 });
 
 export type LogoutInput = z.infer<typeof logoutSchema>;

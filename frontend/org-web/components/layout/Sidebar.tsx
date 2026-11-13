@@ -51,6 +51,7 @@ export function Sidebar({
   // Filter groups' children too, and drop a group once nothing inside it is visible.
   const items: NavEntry[] = NAV_ITEMS.filter(visible)
     .map((entry) => (isNavGroup(entry) ? { ...entry, children: entry.children.filter(visible) } : entry))
+    .map((entry) => (isOwner && !isNavGroup(entry) && entry.ownerLabel ? { ...entry, label: entry.ownerLabel } : entry))
     .filter((entry) => !isNavGroup(entry) || entry.children.length > 0);
 
   // A group is open when it holds the active route, unless the user toggled it.

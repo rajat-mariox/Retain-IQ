@@ -8,7 +8,7 @@ async function forward(method: string, id: string, body?: unknown) {
   if (!token) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   const res = await fetch(`${IDENTITY_URL}/v1/designations/${id}`, {
     method,
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    headers: { ...(body ? { "Content-Type": "application/json" } : {}), Authorization: `Bearer ${token}` },
     body: body ? JSON.stringify(body) : undefined,
     cache: "no-store",
   });

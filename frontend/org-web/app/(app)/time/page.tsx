@@ -9,14 +9,18 @@ export default async function TimePage() {
     getSession().catch(() => null),
     getProjects(1, 100).catch(() => ({ items: [], total: 0, page: 1, pageSize: 100 })),
   ]);
-  const isManager = Boolean(session && (session.role.permissions.includes("attendance.approve") || session.role.name === "Owner"));
+  const isOwner = session?.role.name === "Owner";
+  const isManager = Boolean(session && (session.role.permissions.includes("attendance.approve") || isOwner));
   const projectOptions = projects.items.map((p) => ({ id: p.id, name: p.name }));
 
   return (
     <>
-      <Topbar title="Time Tracking" subtitle="Timesheets, tracked time & approvals" />
+      <Topbar
+        title={isOwner ? "Timesheet Approvals" : "Time Tracking"}
+        subtitle={isOwner ? "Review and approve your team's timesheets" : "Timesheets, tracked time & approvals"}
+      />
       <PageBody>
-        <TimeTrackingWorkspace insights={insights} projects={projectOptions} isManager={isManager} />
+        <TimeTrackingWorkspace insights={insights} projects={projectOptions} isManager={isManager} isOwner={isOwner} />
       </PageBody>
     </>
   );

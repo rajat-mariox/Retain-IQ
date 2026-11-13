@@ -26,12 +26,63 @@ export async function login(email: string, password: string, remember = true): P
     const body = (await res.json().catch(() => ({}))) as { message?: string };
     throw new Error(body.message ?? `Login failed (${res.status}).`);
   }
-  const tokens = (await res.json()) as { accessToken: string; refreshToken: string };
+  const tokens = (await res.json()) as { accessToken?: string; refreshToken?: string; requiresOrgSelection?: boolean };
+  if (!tokens.accessToken || !tokens.refreshToken) {
+    throw new Error("Your account belongs to more than one organization. Open the agent from the web panel instead.");
+  }
+  return finishLogin({ accessToken: tokens.accessToken, refreshToken: tokens.refreshToken }, email, remember);
+}
 
-  const me = await fetch(`${identityUrl}/v1/auth/me`, { headers: { Authorization: `Bearer ${tokens.accessToken}` } });
+/**
+ * Sign in with a one-time code from the web panel (the `retainiq://login?code=…`
+ * link). The code is traded for the agent's OWN session; no password is involved.
+ */
+export async function loginWithLinkCode(
+  code: string,
+  confirmSwitch?: (fromEmail: string, toEmail: string) => Promise<boolean>,
+): Promise<Session | null> {
+  const { identityUrl } = getConfig();
+  const res = await fetch(`${identityUrl}/v1/auth/agent/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: { message?: string } };
+    throw new Error(body.error?.message ?? body.message ?? `Sign-in link failed (${res.status}).`);
+  }
+  const tokens = (await res.json()) as { accessToken: string; refreshToken: string };
+  // Linked from the panel = the person's own machine: remember the session.
+  return finishLogin(tokens, "", true, confirmSwitch);
+}
+
+/**
+ * Shared tail of both sign-in paths: load the profile, refuse anyone who isn't
+ * tracked (the Owner), then persist the session.
+ */
+async function finishLogin(
+  tokens: { accessToken: string; refreshToken: string },
+  email: string,
+  remember: boolean,
+  confirmSwitch?: (fromEmail: string, toEmail: string) => Promise<boolean>,
+): Promise<Session> {
+  const { identityUrl } = getConfig();
+  const auth = { Authorization: `Bearer ${tokens.accessToken}` };
+  const me = await fetch(`${identityUrl}/v1/auth/me`, { headers: auth });
   if (!me.ok) throw new Error("Could not load your profile.");
   const membership = (await me.json()) as { org?: { name?: string }; user?: { email?: string }; employee?: { id?: string } | null };
   if (!membership.employee?.id) throw new Error("Your account is not linked to an employee record — monitoring can't attribute activity.");
+
+  // Only tracked staff use the agent. The server says who's tracked; if it can't
+  // be reached right now we let the sign-in through rather than lock someone out.
+  const status = await fetch(`${identityUrl}/v1/attendance/status`, { headers: auth }).catch(() => null);
+  if (status?.ok) {
+    const s = (await status.json().catch(() => ({}))) as { tracksAttendance?: boolean };
+    if (s.tracksAttendance === false) {
+      await revokeTokens(tokens.refreshToken);
+      throw new Error(NOT_TRACKED_MESSAGE);
+    }
+  }
 
   const session: Session = {
     accessToken: tokens.accessToken,
@@ -39,9 +90,61 @@ export async function login(email: string, password: string, remember = true): P
     employeeId: membership.employee.id,
     email: membership.user?.email ?? email,
     orgName: membership.org?.name ?? "Organization",
+    signedInAt: new Date().toISOString(),
   };
+  // Already signed in as someone else on this PC? Ask before replacing them.
+  const current = getSession();
+  if (current && confirmSwitch && current.email.toLowerCase() !== session.email.toLowerCase()) {
+    if (!(await confirmSwitch(current.email, session.email))) {
+      await revokeTokens(tokens.refreshToken);
+      return current;
+    }
+  }
+
   saveSession(session, remember);
   return session;
+}
+
+export const NOT_TRACKED_MESSAGE = "Owner accounts aren't tracked, so the desktop agent isn't used. Please use the web panel.";
+
+/** End a server session by its refresh token (best effort). */
+async function revokeTokens(refreshToken: string): Promise<void> {
+  const { identityUrl } = getConfig();
+  await fetch(`${identityUrl}/v1/auth/logout`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refreshToken }),
+  }).catch(() => undefined);
+}
+
+/** End the current saved session on the server too (used when switching accounts). */
+export async function revokeCurrentSession(): Promise<void> {
+  const s = getSession();
+  if (s) await revokeTokens(s.refreshToken);
+}
+
+/** Tell the server the agent is running, so the web panel can show "Connected". */
+/**
+ * Tell the server the agent is running, so the web panel can show "Connected".
+ * Returns the time of the person's last web-panel logout (or null), so an agent
+ * that was offline when they logged out still signs itself out.
+ */
+export async function sendHeartbeat(): Promise<{ signOutBefore: string | null }> {
+  const res = await identityFetch("/auth/agent/heartbeat", { method: "POST" });
+  if (!res?.ok) return { signOutBefore: null };
+  const body = (await res.json().catch(() => ({}))) as { signOutBefore?: string | null };
+  return { signOutBefore: body.signOutBefore ?? null };
+}
+
+/**
+ * Is the signed-in person still someone the agent should track? Returns false
+ * only on a definite "not tracked" answer; unknown (offline) counts as tracked.
+ */
+export async function isTracked(): Promise<boolean> {
+  const res = await identityFetch("/attendance/status");
+  if (!res?.ok) return true;
+  const s = (await res.json().catch(() => ({}))) as { tracksAttendance?: boolean };
+  return s.tracksAttendance !== false;
 }
 
 /**

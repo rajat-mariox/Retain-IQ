@@ -10,7 +10,8 @@ export async function POST() {
       await fetch(`${IDENTITY_URL}/v1/auth/logout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken }),
+        // Logging out of the panel also signs out and closes this person's desktop agent.
+        body: JSON.stringify({ refreshToken, signOutAgent: true }),
         cache: "no-store",
       });
     } catch {

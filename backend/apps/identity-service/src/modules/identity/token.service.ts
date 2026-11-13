@@ -11,6 +11,14 @@ import { PrismaService } from "../../common/database/prisma.service.js";
 const config = loadConfig();
 const REFRESH_TTL_MS = config.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000;
 
+/**
+ * A just-rotated refresh token presented again within this window is treated as
+ * a concurrent request from the same client (e.g. a Next.js page render and its
+ * prefetch both renewing an expired access token at once), not as theft. Reuse
+ * AFTER the window still revokes the user's whole session family.
+ */
+const REFRESH_REUSE_GRACE_MS = 30_000;
+
 /** The principal fields the service layer builds; jti/sid are stamped at issue. */
 type PrincipalClaims = Omit<AccessTokenClaims, "jti" | "sid">;
 
@@ -43,9 +51,15 @@ export class TokenService {
 
   /**
    * Validates a presented refresh token and marks it rotated, returning the
-   * principal identifiers it was bound to. Reuse of an already-consumed token
-   * signals theft and revokes the whole user family. The caller reloads fresh
+   * principal identifiers it was bound to. The caller reloads fresh
    * role/permissions before issuing new tokens via {@link issue}.
+   *
+   * - ACTIVE: consumed atomically, so only one concurrent request can rotate it.
+   * - ROTATED within REFRESH_REUSE_GRACE_MS: a duplicate from the same client —
+   *   allowed (the caller issues a fresh session), nothing is revoked.
+   * - ROTATED after the grace window: reuse signals theft — the whole user
+   *   family is revoked.
+   * - Expired or REVOKED (e.g. after logout): refused, nothing else revoked.
    */
   async verifyAndConsume(rawRefreshToken: string): Promise<{
     userId: string;
@@ -59,25 +73,40 @@ export class TokenService {
       throw new UnauthorizedException("Invalid refresh token.");
     }
 
-    if (session.status !== "ACTIVE" || session.expiresAt <= new Date()) {
-      // Reuse of a consumed token signals theft — invalidate the family.
-      await this.prisma.session.updateMany({
-        where: { userId: session.userId, status: "ACTIVE" },
-        data: { status: "REVOKED", revokedAt: new Date() },
-      });
+    const now = new Date();
+    const principal = { userId: session.userId, membershipId: session.membershipId, orgId: session.orgId };
+
+    if (session.expiresAt <= now || session.status === "REVOKED") {
       throw new UnauthorizedException("Refresh token is no longer valid.");
     }
 
-    await this.prisma.session.update({
-      where: { id: session.id },
-      data: { status: "ROTATED", rotatedAt: new Date() },
+    if (session.status === "ROTATED") {
+      const sinceRotation = session.rotatedAt ? now.getTime() - session.rotatedAt.getTime() : Number.POSITIVE_INFINITY;
+      if (sinceRotation <= REFRESH_REUSE_GRACE_MS) {
+        return principal; // concurrent duplicate from the same client
+      }
+      // Reuse of a consumed token outside the grace window signals theft.
+      await this.revokeFamily(session.userId);
+      throw new UnauthorizedException("Refresh token is no longer valid.");
+    }
+
+    // Atomic consume: the status guard means only one concurrent request flips
+    // ACTIVE → ROTATED. A request that loses this race was a few ms behind the
+    // winner — the same duplicate case as above, so it is allowed too.
+    await this.prisma.session.updateMany({
+      where: { id: session.id, status: "ACTIVE" },
+      data: { status: "ROTATED", rotatedAt: now, lastUsedAt: now },
     });
 
-    return {
-      userId: session.userId,
-      membershipId: session.membershipId,
-      orgId: session.orgId,
-    };
+    return principal;
+  }
+
+  /** Revoke every active session for a user (refresh-token reuse detected). */
+  private async revokeFamily(userId: string): Promise<void> {
+    await this.prisma.session.updateMany({
+      where: { userId, status: "ACTIVE" },
+      data: { status: "REVOKED", revokedAt: new Date() },
+    });
   }
 
   /**

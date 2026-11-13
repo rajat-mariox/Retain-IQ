@@ -2,8 +2,8 @@
  * Electron main process. Owns the window, the tray, and the Collector lifecycle,
  * and exposes a small IPC surface to the renderer (login / start / stop / status).
  */
-import { app, BrowserWindow, ipcMain, Menu, Notification, powerMonitor, Tray, nativeImage } from "electron";
-import { join } from "node:path";
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, Tray, nativeImage } from "electron";
+import { join, resolve } from "node:path";
 import { Collector } from "./collector.js";
 import {
   agentCheckIn,
@@ -12,9 +12,13 @@ import {
   agentStartBreak,
   cancelCorrection,
   fetchAttendanceStatus,
+  isTracked,
   login,
+  loginWithLinkCode,
   myCorrections,
   requestCorrection,
+  revokeCurrentSession,
+  sendHeartbeat,
   type CorrectionRequest,
 } from "./api.js";
 import { clearSession, getConfig, getSession } from "./store.js";
@@ -24,6 +28,182 @@ import { startAttendanceStream, stopAttendanceStream } from "./attendance-stream
 const collector = new Collector();
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
+
+// ---- Single instance + retainiq:// links ----------------------------------
+// The web panel opens `retainiq://login?code=…` (sign in with a one-time code) or
+// `retainiq://open` (just bring the agent forward). Windows/Linux deliver the
+// link as a command-line argument to a NEW process, so a single-instance lock
+// forwards it to the running agent; macOS delivers it via `open-url`.
+const PROTOCOL = "retainiq";
+/** Launched by the OS at login: stay in the tray instead of popping the window. */
+const startHidden = process.argv.includes("--hidden");
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_e, argv) => {
+    const link = findLink(argv);
+    if (link) void handleLink(link);
+    else showWindow();
+  });
+}
+
+// macOS: the link arrives as an event (possibly before ready).
+let pendingLink: string | null = findLink(process.argv);
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  if (app.isReady()) void handleLink(url);
+  else pendingLink = url;
+});
+
+function findLink(argv: string[]): string | null {
+  return argv.find((a) => a.toLowerCase().startsWith(`${PROTOCOL}://`)) ?? null;
+}
+
+/** Register retainiq:// with the OS. In dev, point it at this electron binary + app dir. */
+function registerProtocol(): void {
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient(PROTOCOL);
+  } else if (process.argv[1]) {
+    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [resolve(process.argv[1])]);
+  }
+}
+
+/** Start with the OS so tracking doesn't depend on someone opening the app. */
+function registerAutoStart(): void {
+  // Installed app only: in dev this would register the bare electron binary.
+  if (!app.isPackaged) return;
+  app.setLoginItemSettings({ openAtLogin: true, args: ["--hidden"] });
+}
+
+function showWindow(): void {
+  if (!win) createWindow();
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+let linking = false;
+async function handleLink(raw: string): Promise<void> {
+  showWindow();
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return;
+  }
+  // retainiq://login?code=… → host "login"; tolerate retainiq:///login too.
+  const action = (url.host || url.pathname.replace(/^\/+/, "")).toLowerCase();
+  if (action !== "login") return; // "open" (or anything else) just shows the window
+  const code = url.searchParams.get("code");
+  if (!code || linking) return;
+  linking = true;
+  try {
+    const before = getSession();
+    const session = await loginWithLinkCode(code, confirmSwitch);
+    if (session && session !== before) await afterSignIn({ checkIn: false });
+    pushAttendanceChanged(); // re-render (login view → status view)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Sign-in from the web panel failed.";
+    void dialog.showMessageBox({ type: "warning", title: "RetainIQ Agent", message: "Couldn't sign in", detail: message });
+  } finally {
+    linking = false;
+  }
+}
+
+/** Someone else is signed in here: ask, and close their day before switching. */
+async function confirmSwitch(fromEmail: string, toEmail: string): Promise<boolean> {
+  const { response } = await dialog.showMessageBox({
+    type: "question",
+    title: "RetainIQ Agent",
+    message: `Switch account to ${toEmail}?`,
+    detail: `The agent is signed in as ${fromEmail}. Switching checks ${fromEmail} out and signs them out of this computer.`,
+    buttons: ["Switch account", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response !== 0) return false;
+  await signOutCurrent();
+  return true;
+}
+
+/** Stop everything for the current person and end their session. */
+async function signOutCurrent(): Promise<void> {
+  stopAttendanceStream();
+  await collector.stop();
+  await agentCheckOut();
+  await revokeCurrentSession();
+  clearSession();
+}
+
+/**
+ * Common setup after any sign-in. A password sign-in at the agent IS arriving
+ * at work, so it checks in. A sign-in from the web panel does NOT: opening the
+ * panel isn't starting work. Tracking then follows the attendance state.
+ */
+async function afterSignIn({ checkIn }: { checkIn: boolean }): Promise<void> {
+  void collector.replayPending(); // send anything buffered before this sign-in
+  resetIdleClock();
+  startAttendanceStream(onAttendanceEvent, (at) => void signOutIfBefore(at));
+  void heartbeat();
+  if (checkIn) await agentCheckIn();
+  await syncTrackingWithAttendance();
+}
+
+/**
+ * Monitoring runs only while the person is checked in and working, whether they
+ * checked in here or in the web app. Checked out / not in yet / on a break →
+ * stopped. Other states (leave, holiday, …) are left as they are.
+ */
+async function syncTrackingWithAttendance(): Promise<void> {
+  if (!getSession()) return;
+  const a = await fetchAttendanceStatus();
+  if (!a || !a.tracksAttendance) return;
+  if (a.state === "WORKING") {
+    if (!collector.isRunning()) { collector.start(); resetIdleClock(); }
+  } else if (["NOT_CHECKED_IN", "CHECKED_OUT", "COMPLETED", "ON_BREAK"].includes(a.state)) {
+    if (collector.isRunning()) await collector.stop();
+  }
+}
+
+/** An attendance change arrived on the live stream (from here or the web app). */
+function onAttendanceEvent(): void {
+  pushAttendanceChanged();
+  void syncTrackingWithAttendance();
+}
+
+// Heartbeat: lets the web panel show "Agent connected".
+setInterval(() => { if (getSession()) void heartbeat(); }, 60_000);
+
+async function heartbeat(): Promise<void> {
+  const { signOutBefore } = await sendHeartbeat();
+  if (signOutBefore) await signOutIfBefore(signOutBefore);
+}
+
+/**
+ * The person logged out of the web panel at `at`. If this agent signed in before
+ * that, sign out (which checks them out) and close the app. An agent signed in
+ * after that logout (they logged back in) is left alone.
+ */
+let remoteSigningOut = false;
+async function signOutIfBefore(at: string): Promise<void> {
+  const session = getSession();
+  if (!session || remoteSigningOut) return;
+  const signedIn = session.signedInAt ? Date.parse(session.signedInAt) : 0;
+  if (!(signedIn < Date.parse(at))) return;
+  remoteSigningOut = true;
+  try {
+    await signOutCurrent();
+    if (Notification.isSupported()) {
+      new Notification({ title: "RetainIQ Agent", body: "You logged out of the web panel, so the agent signed out and closed." }).show();
+    }
+  } finally {
+    (app as unknown as { isQuitting?: boolean }).isQuitting = true;
+    app.quit();
+  }
+}
 
 /**
  * Live-sync: when an attendance change arrives on the SSE stream, tell the
@@ -181,6 +361,7 @@ function startIdleWatch(): void {
 
 function createWindow(): void {
   win = new BrowserWindow({
+    show: !startHidden,
     width: 420,
     height: 560,
     resizable: false,
@@ -215,7 +396,7 @@ function buildTray(): void {
       Menu.buildFromTemplate([
         { label: s.running ? "Tracking active" : "Not tracking", enabled: false },
         { type: "separator" },
-        { label: "Open", click: () => (win ? win.show() : createWindow()) },
+        { label: "Open", click: () => showWindow() },
         {
           label: s.running ? "Pause tracking" : "Resume tracking",
           click: async () => {
@@ -250,14 +431,9 @@ ipcMain.handle("agent:idle-still-here", () => {
 });
 ipcMain.handle("agent:login", async (_e, email: string, password: string, remember: boolean) => {
   const session = await login(email, password, remember !== false);
-  void collector.replayPending(); // send anything buffered before this login
-  collector.start(); // auto-start tracking after login
-  resetIdleClock(); // count idle FROM login, not the OS's pre-login idle time
-  startAttendanceStream(pushAttendanceChanged); // live-sync attendance changes
-  // Signing in to the agent IS arriving at work: mark the employee present.
-  // Awaited so the first render already shows the right state rather than
-  // flashing "not checked in". Owners aren't tracked — a 403 here is expected.
-  await agentCheckIn();
+  // Signing in at the agent IS arriving at work: check in, then track. Awaited
+  // so the first render already shows the right state.
+  await afterSignIn({ checkIn: true });
   return session;
 });
 
@@ -265,10 +441,12 @@ ipcMain.handle("agent:login", async (_e, email: string, password: string, rememb
 ipcMain.handle("agent:attendance", () => fetchAttendanceStatus());
 ipcMain.handle("agent:check-in", async () => {
   await agentCheckIn();
+  await syncTrackingWithAttendance(); // checked in → start tracking
   return fetchAttendanceStatus();
 });
 ipcMain.handle("agent:check-out", async () => {
   await agentCheckOut();
+  await syncTrackingWithAttendance(); // checked out → stop tracking
   return fetchAttendanceStatus();
 });
 ipcMain.handle("agent:break-start", async (_e, kind?: string) => {
@@ -298,24 +476,36 @@ ipcMain.handle("agent:logout", async () => {
   stopAttendanceStream();
   await collector.stop();
   await agentCheckOut(); // close the day before the session is dropped
+  await revokeCurrentSession();
   clearSession();
   return true;
 });
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  if (!gotLock) return; // a second copy only forwards its link, then quits
+  registerProtocol();
+  registerAutoStart();
   startTabServer(getConfig().tabServerPort); // receive active-tab URLs from the browser extension
   createWindow();
   buildTray();
   startIdleWatch(); // the single 1-second idle-warning/auto-checkout watcher
+  if (getSession() && !(await isTracked())) {
+    // A remembered session for someone who isn't tracked (e.g. an Owner signed
+    // in before the agent refused them): drop it rather than run an empty agent.
+    await revokeCurrentSession();
+    clearSession();
+    pushAttendanceChanged();
+  }
   if (getSession()) {
-    void collector.replayPending(); // upload anything left over from a previous run
-    collector.start(); // resume tracking on relaunch
-    resetIdleClock(); // fresh idle window on relaunch
-    startAttendanceStream(pushAttendanceChanged); // resume live-sync too
     // Relaunching with a remembered session is the same as arriving at work —
     // without this, someone whose agent auto-starts each morning would never be
     // marked present. Check-in is idempotent, so a same-day restart is a no-op.
-    void agentCheckIn();
+    void afterSignIn({ checkIn: true });
+  }
+  if (pendingLink) {
+    const link = pendingLink;
+    pendingLink = null;
+    void handleLink(link);
   }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

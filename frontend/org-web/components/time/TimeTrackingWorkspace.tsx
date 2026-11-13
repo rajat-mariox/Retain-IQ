@@ -58,8 +58,9 @@ const HISTORY_FILTERS: { key: string; label: string }[] = [
   { key: "REJECTED", label: "Rejected" },
 ];
 
-export function TimeTrackingWorkspace({ insights, projects, isManager }: { insights: InsightsMe | null; projects: { id: string; name: string }[]; isManager: boolean }) {
-  const [tab, setTab] = useState<Tab>("timesheet");
+export function TimeTrackingWorkspace({ insights, projects, isManager, isOwner = false }: { insights: InsightsMe | null; projects: { id: string; name: string }[]; isManager: boolean; isOwner?: boolean }) {
+  // The Owner doesn't file time (the backend rejects it), so they only get the review tabs.
+  const [tab, setTab] = useState<Tab>(isOwner ? "approvals" : "timesheet");
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
@@ -199,16 +200,16 @@ export function TimeTrackingWorkspace({ insights, projects, isManager }: { insig
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-1 rounded-xl border border-hairline bg-panel-2 p-1">
-        <TabBtn k="timesheet" labelText="Timesheet" />
-        <TabBtn k="history" labelText="My Timesheets" />
-        <TabBtn k="mytime" labelText="My Time" />
+        {!isOwner ? <TabBtn k="timesheet" labelText="Timesheet" /> : null}
+        {!isOwner ? <TabBtn k="history" labelText="My Timesheets" /> : null}
+        {!isOwner ? <TabBtn k="mytime" labelText="My Time" /> : null}
         {isManager ? <TabBtn k="approvals" labelText="Approvals" count={approvals.length || undefined} /> : null}
         {isManager ? <TabBtn k="billable" labelText="Billable" /> : null}
       </div>
 
       {error && tab !== "timesheet" ? <p className="text-sm text-rose-600">{error}</p> : null}
 
-      {tab === "mytime" ? <MyTime insights={insights} /> : null}
+      {tab === "mytime" && !isOwner ? <MyTime insights={insights} /> : null}
 
       {tab === "history" ? (
         <Card>

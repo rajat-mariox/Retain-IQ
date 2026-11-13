@@ -20,6 +20,7 @@ import { requireTenantContext } from "../../common/context/request-context.store
 import { PublicRoute } from "../../common/decorators/public-route.decorator.js";
 import { AuthGuard } from "../../common/guards/auth.guard.js";
 import { ZodValidationPipe } from "../../common/pipes/zod-validation.pipe.js";
+import { AgentLinkService } from "./agent-link.service.js";
 import { IdentityService } from "./identity.service.js";
 
 // The auth controller: sign-up, sign-in and session/password management. None
@@ -29,7 +30,10 @@ import { IdentityService } from "./identity.service.js";
 // check without changing any behaviour.
 @Controller("auth")
 export class IdentityController {
-  constructor(private readonly identityService: IdentityService) {}
+  constructor(
+    private readonly identityService: IdentityService,
+    private readonly agentLink: AgentLinkService,
+  ) {}
 
   // Register must signal a genuinely new account (a new org has to know sign-up
   // succeeded), so the 409 for a taken email is distinguishable from success and
@@ -65,7 +69,11 @@ export class IdentityController {
   @HttpCode(204)
   @PublicRoute("end a session by its refresh token")
   async logout(@Body(new ZodValidationPipe(logoutSchema)) body: LogoutInput) {
-    await this.identityService.logout(body.refreshToken);
+    const revoked = await this.identityService.logout(body.refreshToken);
+    // Logging out of the web panel also signs out (and closes) the desktop agent.
+    if (body.signOutAgent && revoked?.orgId) {
+      await this.agentLink.requestSignOut(revoked.userId, revoked.orgId);
+    }
   }
 
   /** Logout everywhere: revokes every active session for the authenticated user. */

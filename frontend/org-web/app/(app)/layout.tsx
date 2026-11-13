@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { AlertTriangle, Megaphone, Wrench } from "lucide-react";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { AgentConnectBanner } from "@/components/layout/AgentConnectBanner";
 import { MobileNavProvider } from "@/components/layout/MobileNav";
 import { NotificationsProvider } from "@/components/notifications/NotificationsProvider";
 import { getSession } from "@/lib/api";
@@ -66,6 +67,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               <span>{notification.message}</span>
             </div>
           ) : null}
+          {/* Desktop agent sign-in from the panel. Owners aren't tracked, so it's skipped for them. */}
+          {session && !isOwner ? <AgentConnectBanner /> : null}
           {children}
         </div>
       </div>

@@ -33,7 +33,7 @@ function backoffMs(): number {
  * the connection ends. Returns "retry" to reconnect, "reauth" if the token was
  * rejected (caller refreshes first), or "stop" when we've been told to stop.
  */
-async function consume(onAttendance: () => void): Promise<"retry" | "reauth" | "stop"> {
+async function consume(onAttendance: () => void, onSignOut?: (at: string) => void): Promise<"retry" | "reauth" | "stop"> {
   const session = getSession();
   if (!session) return "stop";
   controller = new AbortController();
@@ -73,8 +73,10 @@ async function consume(onAttendance: () => void): Promise<"retry" | "reauth" | "
           const raw = line.slice(5).trim();
           if (!raw) continue;
           try {
-            const data = JSON.parse(raw) as { type?: string };
+            const data = JSON.parse(raw) as { type?: string; at?: string };
             if (data.type === "attendance") onAttendance();
+            // The person logged out of the web panel: sign this agent out too.
+            else if (data.type === "agent.signout") onSignOut?.(data.at ?? new Date().toISOString());
           } catch {
             // ping / connected / non-JSON keep-alives — ignore
           }
@@ -93,14 +95,14 @@ async function consume(onAttendance: () => void): Promise<"retry" | "reauth" | "
  * first. `onAttendance` is called (in the main process) whenever an attendance
  * change arrives; wire it to push a refresh to the renderer.
  */
-export function startAttendanceStream(onAttendance: () => void): void {
+export function startAttendanceStream(onAttendance: () => void, onSignOut?: (at: string) => void): void {
   stopAttendanceStream();
   stopped = false;
   attempt = 0;
 
   void (async () => {
     while (!stopped && getSession()) {
-      const outcome = await consume(onAttendance);
+      const outcome = await consume(onAttendance, onSignOut);
       if (stopped) break;
       if (outcome === "stop") break;
       if (outcome === "reauth") {

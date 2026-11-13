@@ -28,6 +28,7 @@
     "appId": "com.retainiq.agent",
     "productName": "RetainIQ Agent",
     "copyright": "RetainIQ",
+    "protocols": [{ "name": "RetainIQ Agent", "schemes": ["retainiq"] }],
     "npmRebuild": false,
     "files": [
       "dist/**/*",

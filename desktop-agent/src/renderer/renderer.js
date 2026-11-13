@@ -12,7 +12,7 @@ async function render() {
     statusView.classList.add("hide");
     $("attendance").classList.add("hide");
     $("corrections").classList.add("hide");
-    $("sub").textContent = "Sign in to start activity tracking.";
+    $("sub").textContent = "Sign in here, or open the agent from the RetainIQ web panel.";
     return;
   }
   loginView.classList.add("hide");

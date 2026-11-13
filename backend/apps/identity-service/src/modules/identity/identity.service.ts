@@ -232,7 +232,7 @@ export class IdentityService {
   }
 
   /** Single-session logout: revokes the refresh session and denylists its access token. */
-  async logout(rawRefreshToken: string): Promise<void> {
+  async logout(rawRefreshToken: string): Promise<{ userId: string; orgId: string | null } | null> {
     const revoked = await this.tokenService.revoke(rawRefreshToken);
     if (revoked?.orgId) {
       await this.audit.record({
@@ -243,6 +243,7 @@ export class IdentityService {
         resourceId: revoked.userId,
       });
     }
+    return revoked;
   }
 
   /** Logout everywhere: revokes all of the user's active sessions and access tokens. */
@@ -392,6 +393,16 @@ export class IdentityService {
     // public and must not leak per-org configuration.
     const featureFlags = await this.settings.resolveFeatureFlagsFlat(membership.org.id);
     return { ...membership, role, featureFlags };
+  }
+
+  /**
+   * Issue a fresh session for an already-verified membership. Used by the
+   * desktop-agent link flow, where a one-time code (not a password) proved who
+   * the caller is. Role/permissions are re-read from the DB, as on refresh.
+   */
+  async issueForMembership(membershipId: string): Promise<AuthTokens> {
+    const claims = await this.resolveClaimsForMembership(membershipId);
+    return this.tokenService.issue(claims);
   }
 
   private async resolveClaimsForMembership(membershipId: string): Promise<AccessTokenClaims> {
